@@ -1,5 +1,8 @@
 @import "tailwindcss";
 
+@source "../**/*.{js,jsx,mjs,ts,tsx}";
+@source "../../src/**/*.{js,jsx,mjs,ts,tsx}";
+
 :root {
   --background: #ffffff;
   --foreground: #171717;
@@ -10,6 +13,8 @@
   --color-foreground: var(--foreground);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
+  --font-display: var(--font-zalando-expanded);
+  --font-body: var(--font-zalando-sans);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -23,4 +28,246 @@ body {
   background: var(--background);
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
+}
+
+@keyframes splashTile {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(1.02);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes splashLogo {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.92);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+}
+
+@keyframes sidebarSlideInRight {
+  from {
+    opacity: 0;
+    transform: translateX(80px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes sidebarSlideInLeft {
+  from {
+    opacity: 0;
+    transform: translateX(-80px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+/* ---------- Drawer animations ---------- */
+
+@keyframes backdropFadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes backdropFadeOut {
+  from { opacity: 1; }
+  to   { opacity: 0; }
+}
+
+.drawer-backdrop[data-state="open"] {
+  animation: backdropFadeIn 280ms linear;
+}
+.drawer-backdrop[data-state="closing"] {
+  animation: backdropFadeOut 280ms linear forwards;
+}
+
+/* Mobile bottom-anchored cards (FilterDrawer + AddToCartDrawer share this).
+   Open: slides bottom → top. Close: reverses (top → bottom). PURE vertical
+   motion — horizontal centering is done via left:0/right:0 + mx-auto on the
+   element, NOT translateX, so the keyframes only need translateY. Same
+   duration both ways, with mirrored easings so the motion feels continuous. */
+@keyframes bottomCardSlideIn {
+  from { transform: translateY(calc(100% + 24px)); }
+  to   { transform: translateY(0); }
+}
+@keyframes bottomCardSlideOut {
+  from { transform: translateY(0); }
+  to   { transform: translateY(calc(100% + 24px)); }
+}
+
+@media (max-width: 767px) {
+  .bottom-card[data-state="open"] {
+    animation: bottomCardSlideIn 320ms linear;
+  }
+  .bottom-card[data-state="closing"] {
+    animation: bottomCardSlideOut 320ms linear forwards;
+  }
+}
+
+/* FilterDrawer desktop card (top-right pinned). Bottom → top on open,
+   reverse on close — matches the mobile direction. */
+@keyframes filterCardSlideIn {
+  from { transform: translateY(12px); opacity: 0; }
+  to   { transform: translateY(0); opacity: 1; }
+}
+@keyframes filterCardSlideOut {
+  from { transform: translateY(0); opacity: 1; }
+  to   { transform: translateY(12px); opacity: 0; }
+}
+
+@media (min-width: 768px) {
+  .filter-card-desktop[data-state="open"] {
+    animation: filterCardSlideIn 240ms linear;
+  }
+  .filter-card-desktop[data-state="closing"] {
+    animation: filterCardSlideOut 240ms linear forwards;
+  }
+}
+
+/* AddToCartDrawer desktop (right-side full-height drawer). */
+@keyframes rightDrawerEnter {
+  from { transform: translateX(100%); }
+  to   { transform: translateX(0); }
+}
+@keyframes rightDrawerExit {
+  from { transform: translateX(0); }
+  to   { transform: translateX(100%); }
+}
+
+@media (min-width: 768px) {
+  .right-drawer[data-state="open"] {
+    animation: rightDrawerEnter 300ms linear;
+  }
+  .right-drawer[data-state="closing"] {
+    animation: rightDrawerExit 300ms linear forwards;
+  }
+}
+
+/* SearchOverlay (full-screen mobile search) — linear fade in/out. */
+@keyframes searchOverlayIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes searchOverlayOut {
+  from { opacity: 1; }
+  to   { opacity: 0; }
+}
+
+.search-overlay[data-state="open"] {
+  animation: searchOverlayIn 240ms linear;
+}
+.search-overlay[data-state="closing"] {
+  animation: searchOverlayOut 240ms linear forwards;
+}
+
+/* Figma-spec placeholder for the search overlay input —
+   Zalando Sans Expanded Regular 12px @ rgba(17,25,31,0.5). */
+.search-overlay-input::placeholder {
+  color: rgba(17, 25, 31, 0.5);
+  font-family: var(--font-zalando-expanded);
+  font-weight: 400;
+  font-size: 12px;
+  opacity: 1;
+}
+
+/* Add Card drawer inputs — placeholder matches the field's resting Figma
+   style (Zalando Expanded Medium @ rgba(17,25,31,0.5)); the inline size
+   styling on the input carries the per-breakpoint font-size. */
+.add-card-input::placeholder {
+  color: rgba(17, 25, 31, 0.5);
+  font-family: var(--font-zalando-expanded);
+  font-weight: 500;
+  opacity: 1;
+}
+
+/* Contact form fields — placeholders are Zalando Expanded Medium @
+   rgba(17,25,31,0.5) per Figma 66:2449. Native input placeholders don't
+   always inherit `font-family` from the host element, so we set it here
+   explicitly. Sizes come from per-element Tailwind classes. */
+.contact-input,
+.contact-input::placeholder {
+  font-family: var(--font-zalando-expanded);
+  font-weight: 500;
+}
+.contact-input::placeholder {
+  color: rgba(17, 25, 31, 0.5);
+  text-transform: uppercase;
+  opacity: 1;
+}
+
+/* CardAddedBanner — soft slide-down from above the shop header on mount.
+   Auto-dismiss is handled by the component's setTimeout, so this only needs
+   an enter animation. */
+@keyframes cardAddedBannerIn {
+  from {
+    transform: translateY(-100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.card-added-banner {
+  animation: cardAddedBannerIn 220ms linear forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .card-added-banner {
+    animation: none;
+  }
+}
+
+/* Minimal scrollbar for drawers — 4px wide, transparent track, subtle dark
+   thumb (#11191F at 20% / 35% on hover) with rounded ends. Hidden until
+   hover/scroll to keep the design clean. Applies to Chromium + Firefox. */
+.drawer-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(17, 25, 31, 0.2) transparent;
+}
+.drawer-scroll::-webkit-scrollbar {
+  width: 4px;
+}
+.drawer-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.drawer-scroll::-webkit-scrollbar-thumb {
+  background-color: rgba(17, 25, 31, 0.2);
+  border-radius: 999px;
+}
+.drawer-scroll::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(17, 25, 31, 0.35);
+}
+
+/* Hide scrollbar while preserving scroll — product page horizontal carousels. */
+.no-scrollbar {
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .splash-anim,
+  .sidebar-view-anim,
+  .drawer-backdrop,
+  .bottom-card,
+  .filter-card-desktop,
+  .right-drawer,
+  .search-overlay {
+    animation: none !important;
+    opacity: 1 !important;
+  }
 }
