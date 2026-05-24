@@ -20,7 +20,7 @@ const SWATCH_PALETTES = {
   tri: ["#11191f", "#ffffff", "#fbbf24"],
 };
 
-function product(id, name, subtitle, price, swatchKey, sub, imageIdx = 0, salePrice = null) {
+function product(id, name, subtitle, price, swatchKey, sub, imageIdx = 0, salePrice = null, labels = []) {
   return {
     id,
     name,
@@ -31,6 +31,7 @@ function product(id, name, subtitle, price, swatchKey, sub, imageIdx = 0, salePr
     colors: SWATCH_PALETTES[swatchKey] ?? SWATCH_PALETTES.neutral,
     sub,
     image: MODEL_IMAGES[imageIdx % MODEL_IMAGES.length],
+    labels,
   };
 }
 
@@ -95,26 +96,26 @@ export const MAJOR_CATEGORIES = [
 ];
 
 const ALL_PRODUCTS = [
-  product(1, "Sweat Pants", "Soft Cotton", 30, "neutral", "bottoms", 0),
-  product(2, "Performance Tank", "Dry Fit", 25, "bold", "tops", 0),
+  product(1, "Sweat Pants", "Soft Cotton", 30, "neutral", "bottoms", 0, null, ["Best Seller"]),
+  product(2, "Performance Tank", "Dry Fit", 25, "bold", "tops", 0, null, ["New Arrival"]),
   product(3, "Training Shorts", "Lightweight", 30, "earth", "shorts", 0),
-  product(4, "Core Tee", "Breathable", 30, "earth", "tops", 0),
-  product(5, "Essential Hoodie", "Fleece Lined", 55, null, "hoodies", 0),
-  product(6, "Graphic Tee", "Organic Cotton", 28, "mono", "tops", 0),
+  product(4, "Core Tee", "Breathable", 30, "earth", "tops", 0, null, ["Most Popular"]),
+  product(5, "Essential Hoodie", "Fleece Lined", 55, null, "hoodies", 0, null, ["Best Seller"]),
+  product(6, "Graphic Tee", "Organic Cotton", 28, "mono", "tops", 0, null, ["Limited"]),
   product(7, "Active Tank", "Mesh Back", 22, "tri", "tops", 0),
-  product(8, "Yoga Set", "High Stretch", 45, "pastel", "sets", 0),
+  product(8, "Yoga Set", "High Stretch", 45, "pastel", "sets", 0, null, ["New Arrival"]),
   product(9, "Compression Tee", "Quick Dry", 32, "bold", "tops", 1),
-  product(10, "Joggers", "Tapered Fit", 38, "neutral", "bottoms", 1),
+  product(10, "Joggers", "Tapered Fit", 38, "neutral", "bottoms", 1, null, ["Most Popular"]),
   product(11, "Lightweight Hoodie", "Brushed Inside", 52, "mono", "hoodies", 1),
-  product(12, "Run Short", "Stretch Woven", 28, "earth", "shorts", 1),
+  product(12, "Run Short", "Stretch Woven", 28, "earth", "shorts", 1, null, ["Low Stock"]),
 ];
 
 // Sale catalogue (matches Figma frame 7:244 — strikethrough original + blue
 // discounted-price chip).
 const SALE_PRODUCTS = [
-  product(101, "Sweat Pants", "Soft Cotton", 30, "neutral", "men", 0, 15.99),
+  product(101, "Sweat Pants", "Soft Cotton", 30, "neutral", "men", 0, 15.99, ["Limited"]),
   product(102, "Sweat Pants", "Soft Cotton", 25, "neutral", "women", 0, 17.99),
-  product(103, "Performance Tank", "Dry Fit", 35, "bold", "men", 0, 19.99),
+  product(103, "Performance Tank", "Dry Fit", 35, "bold", "men", 0, 19.99, ["Best Seller"]),
   product(104, "Training Shorts", "Lightweight", 30, "earth", "men", 1, 14.99),
 ];
 
@@ -149,6 +150,19 @@ export const ACTIVE_FILTER_COUNT = (filters) => {
   return n;
 };
 
+// "types" is the de-duplicated set of sub-category names across all major
+// categories — sub-categories ARE the customer-facing "type" facet (the
+// admin manages them under Categories, no separate Product Type list).
+const _TYPES_FROM_SUBS = (() => {
+  const seen = new Set();
+  for (const major of MAJOR_CATEGORIES) {
+    for (const sub of major.subs || []) {
+      if (sub.name && !seen.has(sub.name)) seen.add(sub.name);
+    }
+  }
+  return [...seen];
+})();
+
 export const FILTER_OPTIONS = {
   sizes: ["S", "M", "L", "XL", "XXL"],
   numericSizes: ["36", "38", "40", "42", "44", "46", "48"],
@@ -164,7 +178,7 @@ export const FILTER_OPTIONS = {
     { name: "Butter",    hex: "#fbe7a6" },
     { name: "White",     hex: "#ffffff" },
   ],
-  materials: ["Cotton", "Polyester", "Nylon", "Spandex"],
-  types: ["Leggins", "T-Shirts", "Joggers", "Hoodies", "Sport Bras"],
+  materials: ["Cotton", "Polyester", "Nylon", "Spandex", "Elastane"],
+  types: _TYPES_FROM_SUBS,
   priceRange: [0, 200],
 };

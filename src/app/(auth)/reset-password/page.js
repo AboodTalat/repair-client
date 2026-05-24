@@ -1,9 +1,9 @@
+import { Suspense } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import HeroPanel from "@/components/auth/HeroPanel";
 import AuthHeader from "@/components/auth/AuthHeader";
-import PasswordInput from "@/components/auth/PasswordInput";
-import AuthButton from "@/components/auth/AuthButton";
+import ResetPasswordForm from "@/components/auth/ResetPasswordForm";
 import TermsFooter from "@/components/auth/TermsFooter";
 
 export const metadata = { title: "Reset Password — Repair" };
@@ -54,28 +54,12 @@ export default function ResetPasswordPage() {
               Reset Password
             </h1>
 
-            <form className="flex w-full flex-col gap-5">
-              <PasswordInput label="New Password" name="newPassword" autoComplete="new-password" required />
-              <PasswordInput
-                label="Confirm New Password"
-                name="confirmNewPassword"
-                autoComplete="new-password"
-                required
-              />
-              <AuthButton>Reset Password</AuthButton>
-            </form>
-
-            <div className="flex items-center justify-center gap-1 pt-2">
-              <span className="font-display text-[12px] font-semibold uppercase leading-[16px] tracking-[0.3px] text-[#11191f]">
-                Didn&apos;t receive link?
-              </span>
-              <Link
-                href="/email-sent"
-                className="font-display text-[12px] font-semibold uppercase leading-[16px] tracking-[0.3px] text-[#11191f] underline"
-              >
-                Resend Link
-              </Link>
-            </div>
+            {/* useSearchParams inside the client component requires a
+                Suspense boundary in App Router so the static shell renders
+                while the search-param-dependent subtree streams in. */}
+            <Suspense fallback={null}>
+              <ResetPasswordForm />
+            </Suspense>
           </div>
         </div>
 

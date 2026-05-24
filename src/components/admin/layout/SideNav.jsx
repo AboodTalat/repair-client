@@ -17,6 +17,7 @@ import {
   IconBell,
   IconSettings,
   IconLogout,
+  IconEdit,
 } from "@/components/admin/shared/Icons";
 import { ORDERS, CONTACT_MESSAGES, STOCK_ALERTS } from "@/lib/mockAdmin";
 
@@ -32,6 +33,7 @@ const SECTIONS = [
     items: [
       { href: `${PREFIX}/categories`, label: "Categories", icon: IconFolder },
       { href: `${PREFIX}/products`, label: "Products", icon: IconBox },
+      { href: `${PREFIX}/taxonomies`, label: "Taxonomies", icon: IconTag },
       { href: `${PREFIX}/discounts`, label: "Discounts", icon: IconTag },
       { href: `${PREFIX}/promo-codes`, label: "Promo Codes", icon: IconPercent },
     ],
@@ -50,6 +52,9 @@ const SECTIONS = [
     title: "Insight",
     items: [
       { href: `${PREFIX}/reports`, label: "Reports", icon: IconChart },
+      { href: `${PREFIX}/wishlist-insights`, label: "Wishlist Insights", icon: IconBell },
+      { href: `${PREFIX}/storefront`, label: "Storefront Content", icon: IconEdit },
+      { href: `${PREFIX}/subscribers`, label: "Subscribers", icon: IconUsers },
       { href: `${PREFIX}/broadcast`, label: "Broadcast Email", icon: IconMail },
     ],
   },

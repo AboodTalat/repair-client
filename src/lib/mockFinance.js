@@ -177,3 +177,194 @@ export function pctDelta(curr, prev) {
 // surface tidy when these become resolver calls.
 
 export { REVENUE_BY_CATEGORY, formatCurrency, formatNumber };
+
+// ── Export history ──────────────────────────────────────────────────────────
+// Past exports the accountant has generated from the Overview page. Real data
+// will come from a future `myAppFinanceListExports` resolver — each row is the
+// audit record of an export operation (filename, format, report, range,
+// generated_by user, generated_at, status, size).
+
+export const EXPORT_HISTORY = [
+  {
+    id: "exp-001",
+    fileName: "revenue-overview-2026-05-20.pdf",
+    format: "PDF",
+    report: "Revenue overview",
+    range: "Apr 21 – May 20, 2026",
+    generatedBy: { name: "Sara Ahmad",   email: "sara.ahmad@repair.example" },
+    generatedAt: "2026-05-20T14:32:00Z",
+    status: "ready",
+    sizeKb: 412,
+  },
+  {
+    id: "exp-002",
+    fileName: "discount-impact-2026-05-19.csv",
+    format: "CSV",
+    report: "Discount impact by code",
+    range: "Apr 21 – May 20, 2026",
+    generatedBy: { name: "Sara Ahmad",   email: "sara.ahmad@repair.example" },
+    generatedAt: "2026-05-19T09:14:00Z",
+    status: "ready",
+    sizeKb: 18,
+  },
+  {
+    id: "exp-003",
+    fileName: "revenue-by-product-2026-05-15.csv",
+    format: "CSV",
+    report: "Revenue by product",
+    range: "Apr 16 – May 15, 2026",
+    generatedBy: { name: "Sara Ahmad",   email: "sara.ahmad@repair.example" },
+    generatedAt: "2026-05-15T17:48:00Z",
+    status: "ready",
+    sizeKb: 26,
+  },
+  {
+    id: "exp-004",
+    fileName: "revenue-overview-2026-05-12.pdf",
+    format: "PDF",
+    report: "Revenue overview",
+    range: "Apr 13 – May 12, 2026",
+    generatedBy: { name: "Omar Khalil",  email: "omar.khalil@repair.example" },
+    generatedAt: "2026-05-12T11:02:00Z",
+    status: "ready",
+    sizeKb: 388,
+  },
+  {
+    id: "exp-005",
+    fileName: "category-breakdown-2026-05-08.csv",
+    format: "CSV",
+    report: "Revenue by category",
+    range: "Apr 9 – May 8, 2026",
+    generatedBy: { name: "Sara Ahmad",   email: "sara.ahmad@repair.example" },
+    generatedAt: "2026-05-08T08:21:00Z",
+    status: "ready",
+    sizeKb: 12,
+  },
+  {
+    id: "exp-006",
+    fileName: "revenue-overview-2026-04-30.pdf",
+    format: "PDF",
+    report: "Revenue overview",
+    range: "Apr 1 – Apr 30, 2026",
+    generatedBy: { name: "Omar Khalil",  email: "omar.khalil@repair.example" },
+    generatedAt: "2026-04-30T22:05:00Z",
+    status: "expired",
+    sizeKb: 401,
+  },
+  {
+    id: "exp-007",
+    fileName: "discount-impact-2026-04-28.pdf",
+    format: "PDF",
+    report: "Discount impact by code",
+    range: "Mar 29 – Apr 28, 2026",
+    generatedBy: { name: "Sara Ahmad",   email: "sara.ahmad@repair.example" },
+    generatedAt: "2026-04-28T15:11:00Z",
+    status: "expired",
+    sizeKb: 264,
+  },
+  {
+    id: "exp-008",
+    fileName: "revenue-by-product-2026-04-22.csv",
+    format: "CSV",
+    report: "Revenue by product",
+    range: "Mar 23 – Apr 22, 2026",
+    generatedBy: { name: "Sara Ahmad",   email: "sara.ahmad@repair.example" },
+    generatedAt: "2026-04-22T10:33:00Z",
+    status: "expired",
+    sizeKb: 24,
+  },
+  {
+    id: "exp-009",
+    fileName: "revenue-overview-2026-05-21.pdf",
+    format: "PDF",
+    report: "Revenue overview",
+    range: "Apr 22 – May 21, 2026",
+    generatedBy: { name: "Sara Ahmad",   email: "sara.ahmad@repair.example" },
+    generatedAt: "2026-05-21T07:55:00Z",
+    status: "generating",
+    sizeKb: 0,
+  },
+];
+
+export const EXPORT_STATUS_TONE = {
+  ready:      { bg: "#dcfce7", fg: "#166534", label: "Ready" },
+  expired:    { bg: "#f3f4f6", fg: "#6b7280", label: "Expired" },
+  generating: { bg: "#dbeafe", fg: "#1e40af", label: "Generating…" },
+};
+
+export function formatBytes(kb) {
+  if (!kb) return "—";
+  if (kb < 1024) return `${kb} KB`;
+  return `${(kb / 1024).toFixed(1)} MB`;
+}
+
+// ── Audit log ───────────────────────────────────────────────────────────────
+// Read-only audit trail of accountant actions (sign-in, sign-out, viewing a
+// report, changing a date range, running an export). Backed by a future
+// `myAppFinanceAuditLog({ from, to })` resolver that returns the same shape.
+
+export const AUDIT_ACTION_KINDS = {
+  view:    { label: "Viewed report",   bg: "#eff6ff", fg: "#1d4ed8" },
+  export:  { label: "Generated export", bg: "#ecfccb", fg: "#3f6212" },
+  filter:  { label: "Changed filter",   bg: "#fef3c7", fg: "#92400e" },
+  signin:  { label: "Signed in",        bg: "#f3f4f6", fg: "#6b7280" },
+  signout: { label: "Signed out",       bg: "#f3f4f6", fg: "#6b7280" },
+};
+
+export const AUDIT_LOG = [
+  { id: "a-001", kind: "export",  actor: { name: "Sara Ahmad",  email: "sara.ahmad@repair.example" },
+    detail: "Exported Revenue overview as PDF",
+    target: "Revenue overview", occurredAt: "2026-05-20T14:32:00Z", ip: "196.219.211.42" },
+  { id: "a-002", kind: "view",    actor: { name: "Sara Ahmad",  email: "sara.ahmad@repair.example" },
+    detail: "Opened Financial Overview page",
+    target: "/r3pr-ledger/overview", occurredAt: "2026-05-20T14:30:00Z", ip: "196.219.211.42" },
+  { id: "a-003", kind: "filter",  actor: { name: "Sara Ahmad",  email: "sara.ahmad@repair.example" },
+    detail: "Changed date range to Apr 21 – May 20",
+    target: "Revenue overview", occurredAt: "2026-05-20T14:29:14Z", ip: "196.219.211.42" },
+  { id: "a-004", kind: "signin",  actor: { name: "Sara Ahmad",  email: "sara.ahmad@repair.example" },
+    detail: "Signed in via email + password",
+    target: "/sign-in", occurredAt: "2026-05-20T14:28:51Z", ip: "196.219.211.42" },
+  { id: "a-005", kind: "export",  actor: { name: "Sara Ahmad",  email: "sara.ahmad@repair.example" },
+    detail: "Exported Discount impact by code as CSV",
+    target: "Discount impact by code", occurredAt: "2026-05-19T09:14:00Z", ip: "196.219.211.42" },
+  { id: "a-006", kind: "view",    actor: { name: "Omar Khalil", email: "omar.khalil@repair.example" },
+    detail: "Opened Financial Overview page",
+    target: "/r3pr-ledger/overview", occurredAt: "2026-05-19T08:02:33Z", ip: "212.118.20.91" },
+  { id: "a-007", kind: "export",  actor: { name: "Sara Ahmad",  email: "sara.ahmad@repair.example" },
+    detail: "Exported Revenue by product as CSV",
+    target: "Revenue by product", occurredAt: "2026-05-15T17:48:00Z", ip: "196.219.211.42" },
+  { id: "a-008", kind: "signout", actor: { name: "Omar Khalil", email: "omar.khalil@repair.example" },
+    detail: "Signed out",
+    target: "/sign-out", occurredAt: "2026-05-15T11:46:18Z", ip: "212.118.20.91" },
+  { id: "a-009", kind: "filter",  actor: { name: "Omar Khalil", email: "omar.khalil@repair.example" },
+    detail: "Switched breakdown tab to By product",
+    target: "Revenue by product", occurredAt: "2026-05-15T11:39:02Z", ip: "212.118.20.91" },
+  { id: "a-010", kind: "view",    actor: { name: "Omar Khalil", email: "omar.khalil@repair.example" },
+    detail: "Opened Financial Overview page",
+    target: "/r3pr-ledger/overview", occurredAt: "2026-05-15T11:32:11Z", ip: "212.118.20.91" },
+  { id: "a-011", kind: "export",  actor: { name: "Omar Khalil", email: "omar.khalil@repair.example" },
+    detail: "Exported Revenue overview as PDF",
+    target: "Revenue overview", occurredAt: "2026-05-12T11:02:00Z", ip: "212.118.20.91" },
+  { id: "a-012", kind: "export",  actor: { name: "Sara Ahmad",  email: "sara.ahmad@repair.example" },
+    detail: "Exported Revenue by category as CSV",
+    target: "Revenue by category", occurredAt: "2026-05-08T08:21:00Z", ip: "196.219.211.42" },
+  { id: "a-013", kind: "signin",  actor: { name: "Omar Khalil", email: "omar.khalil@repair.example" },
+    detail: "Signed in via Google",
+    target: "/sign-in", occurredAt: "2026-04-30T21:58:04Z", ip: "212.118.20.91" },
+  { id: "a-014", kind: "export",  actor: { name: "Omar Khalil", email: "omar.khalil@repair.example" },
+    detail: "Exported Revenue overview as PDF",
+    target: "Revenue overview", occurredAt: "2026-04-30T22:05:00Z", ip: "212.118.20.91" },
+  { id: "a-015", kind: "export",  actor: { name: "Sara Ahmad",  email: "sara.ahmad@repair.example" },
+    detail: "Exported Discount impact by code as PDF",
+    target: "Discount impact by code", occurredAt: "2026-04-28T15:11:00Z", ip: "196.219.211.42" },
+  { id: "a-016", kind: "view",    actor: { name: "Sara Ahmad",  email: "sara.ahmad@repair.example" },
+    detail: "Opened Financial Overview page",
+    target: "/r3pr-ledger/overview", occurredAt: "2026-04-28T15:08:22Z", ip: "196.219.211.42" },
+];
+
+export function formatAuditTime(iso) {
+  const d = new Date(iso);
+  const date = d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+  const time = d.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false });
+  return { date, time };
+}

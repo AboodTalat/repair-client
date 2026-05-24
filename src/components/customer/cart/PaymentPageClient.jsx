@@ -513,11 +513,11 @@ function TermsCheckbox({ checked, onChange, variant }) {
         style={desktop ? undefined : condensed}
       >
         I agree to the{" "}
-        <a href="#" className="font-bold text-[#11191f] underline">
+        <a href="/#terms" className="font-bold text-[#11191f] underline">
           Terms &amp; Conditions
         </a>{" "}
         and{" "}
-        <a href="#" className="font-bold text-[#11191f] underline">
+        <a href="/#privacy" className="font-bold text-[#11191f] underline">
           Privacy Policy
         </a>
         . I understand that my order is final and non-refundable once placed.
@@ -724,11 +724,11 @@ function PaymentOrderSummaryCard({
         style={condensed}
       >
         By proceeding to payment, you agree to our{" "}
-        <a href="#" className="underline">
+        <a href="/#terms" className="underline">
           Terms of Service
         </a>{" "}
         and{" "}
-        <a href="#" className="underline">
+        <a href="/#privacy" className="underline">
           Privacy Policy
         </a>
         .

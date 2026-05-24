@@ -7,8 +7,10 @@ import CraftedToLast from "@/components/public/homePage/CraftedToLast";
 import StatsSection from "@/components/public/homePage/StatsSection";
 import BrowseCollection from "@/components/public/homePage/BrowseCollection";
 import Footer from "@/components/public/homePage/Footer";
+import { fetchCategories } from "@/lib/storeNav";
 
-export default function Home() {
+export default async function Home() {
+  const categories = await fetchCategories();
   return (
     <>
       <SplashSection />
@@ -49,7 +51,7 @@ export default function Home() {
         <CraftedToLast />
         <StatsSection />
           <BrowseCollection />
-          <Footer />
+          <Footer categories={categories} />
         </div>
       </main>
     </>

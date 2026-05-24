@@ -67,6 +67,55 @@ function QuickAddButton({ size, offset = 8, product, onQuickAdd }) {
   );
 }
 
+// Label badges shown at top-left of the product image (#5). Tones are
+// keyed off the well-known label set the admin Products drawer exposes.
+const LABEL_TONES = {
+  "Best Seller":   { bg: "#11191f", fg: "#ffffff" },
+  "Most Popular":  { bg: "#0066b2", fg: "#ffffff" },
+  "New Arrival":   { bg: "#16a34a", fg: "#ffffff" },
+  "Limited":       { bg: "#a855f7", fg: "#ffffff" },
+  "Low Stock":     { bg: "#dc2626", fg: "#ffffff" },
+};
+
+function LabelBadges({ labels, small = true }) {
+  if (!labels || labels.length === 0) return null;
+  const fontSize = small ? 9 : 10;
+  const padY = small ? 2 : 3;
+  const padX = small ? 4 : 6;
+  const gap = small ? 4 : 6;
+  const offset = small ? 8 : 16;
+  return (
+    <div
+      className="pointer-events-none absolute flex flex-wrap"
+      style={{ top: offset, left: offset, gap, maxWidth: `calc(100% - ${offset * 2}px)` }}
+      aria-hidden
+    >
+      {labels.map((lab) => {
+        const tone = LABEL_TONES[lab] || { bg: "#11191f", fg: "#ffffff" };
+        return (
+          <span
+            key={lab}
+            className="font-display font-bold uppercase whitespace-nowrap"
+            style={{
+              backgroundColor: tone.bg,
+              color: tone.fg,
+              fontSize,
+              letterSpacing: "0.5px",
+              paddingTop: padY,
+              paddingBottom: padY,
+              paddingLeft: padX,
+              paddingRight: padX,
+              borderRadius: 2,
+            }}
+          >
+            {lab}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
 function Swatches({ colors, small, offset = 8 }) {
   // Figma:
   //   Mobile: up to 4 swatches, 8x8, gap 2, anchor left:8/bottom:8.
@@ -111,6 +160,7 @@ function MobileCard({ product, onQuickAdd }) {
             className="object-cover"
           />
         </Link>
+        <LabelBadges labels={product.labels} small />
         {product.colors?.length > 0 && <Swatches colors={product.colors} small />}
         <QuickAddButton size={24} product={product} onQuickAdd={onQuickAdd} />
       </div>
@@ -198,6 +248,7 @@ function DesktopCard({ product, onQuickAdd }) {
             className="object-cover"
           />
         </Link>
+        <LabelBadges labels={product.labels} small={false} />
         {product.colors?.length > 0 && (
           <Swatches colors={product.colors} offset={16} />
         )}

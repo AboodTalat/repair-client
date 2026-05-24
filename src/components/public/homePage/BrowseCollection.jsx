@@ -1,10 +1,11 @@
 import Image from "next/image";
+import Link from "next/link";
 
 const PRODUCTS = [
-  { name: "Sweat Pants", subtitle: "Soft Cotton", price: "JOD 30", image: "/home/card-1.png" },
-  { name: "Sweat Pants", subtitle: "Soft Cotton", price: "JOD 30", image: "/home/card-2.png" },
-  { name: "Sweat Pants", subtitle: "Soft Cotton", price: "JOD 30", image: "/home/card-1.png" },
-  { name: "Sweat Pants", subtitle: "Soft Cotton", price: "JOD 30", image: "/home/card-2.png" },
+  { slug: "sweat-pants", name: "Sweat Pants", subtitle: "Soft Cotton", price: "JOD 30", image: "/home/card-1.png" },
+  { slug: "sweat-pants", name: "Sweat Pants", subtitle: "Soft Cotton", price: "JOD 30", image: "/home/card-2.png" },
+  { slug: "sweat-pants", name: "Sweat Pants", subtitle: "Soft Cotton", price: "JOD 30", image: "/home/card-1.png" },
+  { slug: "sweat-pants", name: "Sweat Pants", subtitle: "Soft Cotton", price: "JOD 30", image: "/home/card-2.png" },
 ];
 
 const SWATCHES = ["#ede9dd", "#232323", "#12013f", "#3e0000"];
@@ -13,20 +14,26 @@ function ProductCard({ product }) {
   return (
     <div className="flex w-[176px] shrink-0 snap-start flex-col gap-2 md:w-auto md:gap-3">
       <div className="relative h-[264px] w-full shadow-[0_0_10px_0_rgba(0,0,0,0.05)] md:aspect-[3/4] md:h-auto">
-        <Image
-          src={product.image}
-          alt={product.name}
-          fill
-          sizes="(min-width: 1024px) 280px, (min-width: 768px) 33vw, 176px"
-          className="object-cover"
-        />
-        <button
-          type="button"
+        <Link
+          href={`/products/${product.slug}`}
+          aria-label={`View ${product.name}`}
+          className="absolute inset-0"
+        >
+          <Image
+            src={product.image}
+            alt={product.name}
+            fill
+            sizes="(min-width: 1024px) 280px, (min-width: 768px) 33vw, 176px"
+            className="object-cover"
+          />
+        </Link>
+        <Link
+          href="/cart"
           aria-label={`Add ${product.name} to bag`}
           className="absolute bottom-2 right-2 grid size-6 place-items-center rounded-sm border border-white/70 bg-white/30 backdrop-blur-[1.5px] md:bottom-3 md:right-3 md:size-8"
         >
           <Image src="/home/icon-add.svg" alt="" width={24} height={24} />
-        </button>
+        </Link>
         <div className="absolute bottom-2 left-2 flex gap-[2px] md:bottom-3 md:left-3 md:gap-1">
           {SWATCHES.map((c) => (
             <span
@@ -70,13 +77,13 @@ export default function BrowseCollection() {
         <h2 className="font-display text-[20px] font-bold leading-7 text-white/90 md:text-[40px] md:leading-[1.1] lg:text-[48px]">
           Browse Collection
         </h2>
-        <a
-          href="#"
+        <Link
+          href="/shop"
           className="hidden font-body text-[14px] uppercase tracking-[0.2em] text-white/70 underline-offset-4 hover:text-white hover:underline md:inline-flex"
           style={{ fontStretch: "75%" }}
         >
           View all
-        </a>
+        </Link>
       </div>
       <div className="mt-4 -mr-4 flex snap-x snap-mandatory gap-2 overflow-x-auto pb-2 pr-4 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden md:mr-0 md:mt-10 md:grid md:grid-cols-3 md:gap-6 md:overflow-visible md:pr-0 lg:grid-cols-4 lg:gap-8">
         {PRODUCTS.map((p, i) => (

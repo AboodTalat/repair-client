@@ -3,26 +3,30 @@
 import { useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import Sidebar from "@/components/shared/Sidebar";
-
-const STATIC_TOP = [
-  { label: "Home", href: "/" },
-  { label: "Shop", href: "/shop" },
-];
-
-const STATIC_BOTTOM = [
-  { label: "Orders", href: "/account/orders" },
-  { label: "Wishlist", href: "/account/wishlist" },
-  { label: "Addresses", href: "/account/addresses" },
-  { label: "Cart", href: "/cart" },
-];
+import { sidebarItems as buildSidebarItems } from "@/lib/storeNav";
+import { useRepairStore, selectIsLoggedIn } from "@/lib/useRepairStore";
+import { repairCall } from "@/lib/repairAuthedApi";
 
 export default function Header({ categories = [] }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const pathname = usePathname();
+  const router = useRouter();
+  const isAuthenticated = useRepairStore(selectIsLoggedIn);
 
-  const sidebarItems = [...STATIC_TOP, ...categories, ...STATIC_BOTTOM];
+  const sidebarItems = buildSidebarItems(categories);
+
+  const handleSignOut = async () => {
+    const refreshToken = useRepairStore.getState().authInfo.refreshToken;
+    try {
+      if (refreshToken) await repairCall("myAppLogout", { refreshToken });
+    } catch {
+      // Server-side revoke is best-effort; clearAuth always runs.
+    }
+    useRepairStore.getState().clearAuth();
+    router.push("/");
+  };
 
   return (
     <>
@@ -39,7 +43,11 @@ export default function Header({ categories = [] }) {
           </button>
 
           {/* Logo */}
-          <div className="relative h-[22px] w-8 md:h-7 md:w-10">
+          <Link
+            href="/"
+            aria-label="Repair home"
+            className="relative h-[22px] w-8 md:h-7 md:w-10"
+          >
             <Image
               src="/home/logo-re.png"
               alt="Repair"
@@ -48,7 +56,7 @@ export default function Header({ categories = [] }) {
               className="object-contain"
               priority
             />
-          </div>
+          </Link>
 
           {/* Desktop nav — categories fetched from server */}
           <nav className="hidden md:flex md:items-center md:gap-8 lg:gap-10">
@@ -62,8 +70,8 @@ export default function Header({ categories = [] }) {
             <button type="button" aria-label="Search" className="grid size-6 place-items-center">
               <Image src="/home/icon-search.svg" alt="" width={24} height={24} />
             </button>
-            <button
-              type="button"
+            <Link
+              href="/account"
               aria-label="Account"
               className="hidden size-6 place-items-center md:grid"
             >
@@ -78,7 +86,7 @@ export default function Header({ categories = [] }) {
                 <circle cx="12" cy="8" r="4" />
                 <path d="M4 21c0-4 4-7 8-7s8 3 8 7" strokeLinecap="round" />
               </svg>
-            </button>
+            </Link>
             <Link href="/cart" aria-label="Bag" className="grid size-6 place-items-center">
               <Image src="/home/icon-bag.svg" alt="" width={24} height={24} />
             </Link>
@@ -91,7 +99,8 @@ export default function Header({ categories = [] }) {
         onClose={() => setMenuOpen(false)}
         activeHref={pathname}
         items={sidebarItems}
-        isAuthenticated={false}
+        isAuthenticated={isAuthenticated}
+        onSignOut={handleSignOut}
         signInHref="/sign-in"
         contactHref="/contact"
       />

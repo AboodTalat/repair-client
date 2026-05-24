@@ -1,13 +1,19 @@
 "use client";
 
-import { useState } from "react";
+import Link from "next/link";
+import { useMemo, useState } from "react";
 import Button from "@/components/admin/shared/Button";
 import DataTable from "@/components/admin/shared/DataTable";
 import Modal from "@/components/admin/shared/Modal";
 import StatusBadge from "@/components/admin/shared/StatusBadge";
 import { Field, TextInput, TextArea, Chip, Select } from "@/components/admin/shared/Form";
 import { IconSend, IconMail } from "@/components/admin/shared/Icons";
-import { BROADCAST_HISTORY, MARKETING_OPT_IN_COUNT, formatNumber } from "@/lib/mockAdmin";
+import {
+  BROADCAST_HISTORY,
+  MARKETING_OPT_IN_COUNT,
+  NEWSLETTER_SUBSCRIBERS,
+  formatNumber,
+} from "@/lib/mockAdmin";
 
 const AUDIENCE_LABELS = {
   all: "All customers",
@@ -15,18 +21,21 @@ const AUDIENCE_LABELS = {
   vip: "VIP",
   inactive: "Lapsed",
   marketing: "Marketing",
+  subscribers: "Newsletter subscribers",
 };
 
-const AUDIENCES = [
-  { value: "all", label: "All customers (1,842)" },
-  { value: "active", label: "Active in last 30 days (954)" },
-  { value: "vip", label: "VIP — top 10% spend (184)" },
-  { value: "inactive", label: "Lapsed — no order in 90 days (412)" },
-  { value: "marketing", label: "Marketing subscribers (1,203)" },
+// Newsletter-subscriber source sub-filter — admins can narrow the
+// broadcast to just one signup channel when targeting subscribers.
+const SUBSCRIBER_SOURCES = [
+  { value: "all",      label: "All sources" },
+  { value: "footer",   label: "Footer signup" },
+  { value: "checkout", label: "Checkout opt-in" },
+  { value: "popup",    label: "Site popup" },
 ];
 
 export default function BroadcastComposer() {
   const [audience, setAudience] = useState("all");
+  const [subscriberSource, setSubscriberSource] = useState("all");
   const [subject, setSubject] = useState("");
   const [preheader, setPreheader] = useState("");
   const [body, setBody] = useState("");
@@ -34,11 +43,33 @@ export default function BroadcastComposer() {
   const [sent, setSent] = useState(BROADCAST_HISTORY);
   const [historyFilter, setHistoryFilter] = useState("all");
 
+  // Live subscriber counts (active rows only — unsubscribed are excluded
+  // from every broadcast pick, per CAN-SPAM / unsubscribe respect).
+  const subscriberCounts = useMemo(() => {
+    const active = NEWSLETTER_SUBSCRIBERS.filter((s) => s.status === "active");
+    const bySource = { all: active.length };
+    for (const opt of SUBSCRIBER_SOURCES) {
+      if (opt.value === "all") continue;
+      bySource[opt.value] = active.filter((s) => s.source === opt.value).length;
+    }
+    return bySource;
+  }, []);
+
+  const AUDIENCES = useMemo(() => [
+    { value: "all", label: "All customers (1,842)" },
+    { value: "active", label: "Active in last 30 days (954)" },
+    { value: "vip", label: "VIP — top 10% spend (184)" },
+    { value: "inactive", label: "Lapsed — no order in 90 days (412)" },
+    { value: "marketing", label: `Marketing — checkout opt-in (${formatNumber(MARKETING_OPT_IN_COUNT)})` },
+    { value: "subscribers", label: `Newsletter subscribers (${formatNumber(subscriberCounts.all)})` },
+  ], [subscriberCounts.all]);
+
   const recipientCount =
     audience === "all" ? 1842 :
     audience === "active" ? 954 :
     audience === "vip" ? 184 :
     audience === "marketing" ? MARKETING_OPT_IN_COUNT :
+    audience === "subscribers" ? (subscriberCounts[subscriberSource] ?? 0) :
     412;
 
   function send() {
@@ -48,6 +79,9 @@ export default function BroadcastComposer() {
       sent: new Date().toISOString().replace("T", " ").slice(0, 16),
       recipients: recipientCount,
       audience,
+      // Source is only meaningful for subscriber broadcasts — null for
+      // customer-segment audiences (all/active/vip/inactive/marketing).
+      subscriberSource: audience === "subscribers" ? subscriberSource : null,
       status: "delivered",
       openRate: null,
       clickRate: null,
@@ -60,7 +94,9 @@ export default function BroadcastComposer() {
   }
 
   const visibleHistory =
-    historyFilter === "marketing" ? sent.filter((r) => r.audience === "marketing") : sent;
+    historyFilter === "marketing"   ? sent.filter((r) => r.audience === "marketing") :
+    historyFilter === "subscribers" ? sent.filter((r) => r.audience === "subscribers") :
+    sent;
 
   return (
     <>
@@ -95,6 +131,38 @@ export default function BroadcastComposer() {
                   <p className="font-body text-[12px] text-[#1e40af]">
                     Sending to <strong>{formatNumber(MARKETING_OPT_IN_COUNT)}</strong> customers who opted in to{" "}
                     <em>"Email me with news and offers"</em> at checkout. These subscribers have consented to promotional emails.
+                  </p>
+                </div>
+              )}
+              {audience === "subscribers" && (
+                <div className="flex flex-col gap-3 rounded-[2px] border border-[#dbeafe] bg-[#eff6ff] p-3">
+                  <p className="font-body text-[12px] leading-relaxed text-[#1e40af]">
+                    Sending to people who joined the newsletter via the storefront — not necessarily customers (some haven&apos;t placed an order yet). Unsubscribed rows are automatically excluded.{" "}
+                    <Link
+                      href="/r3pr-console/subscribers"
+                      className="font-semibold underline-offset-2 hover:underline"
+                    >
+                      Manage subscriber list →
+                    </Link>
+                  </p>
+                  <div className="flex flex-col gap-1.5">
+                    <span className="font-body text-[11px] font-medium uppercase tracking-[1px] text-[#1e3a8a]">
+                      Filter by signup source
+                    </span>
+                    <div className="flex flex-wrap gap-1.5">
+                      {SUBSCRIBER_SOURCES.map((opt) => (
+                        <Chip
+                          key={opt.value}
+                          active={subscriberSource === opt.value}
+                          onClick={() => setSubscriberSource(opt.value)}
+                        >
+                          {opt.label} ({formatNumber(subscriberCounts[opt.value] ?? 0)})
+                        </Chip>
+                      ))}
+                    </div>
+                  </div>
+                  <p className="font-body text-[11px] text-[#1e40af]/80">
+                    <strong>Heads-up:</strong> newsletter rows only carry an email address, so the <code>{"{{first_name}}"}</code> token won&apos;t render personalised text — keep the greeting generic (e.g. <em>&ldquo;Hi there,&rdquo;</em>) when sending to this audience.
                   </p>
                 </div>
               )}
@@ -146,7 +214,11 @@ export default function BroadcastComposer() {
                     {formatNumber(recipientCount)} recipients
                   </span>
                   <span className="mt-0.5 font-body text-[11px] text-[#6b7280]">
-                    {`${AUDIENCE_LABELS[audience] ?? audience} · Delivered within minutes`}
+                    {`${AUDIENCE_LABELS[audience] ?? audience}${
+                      audience === "subscribers" && subscriberSource !== "all"
+                        ? ` · ${SUBSCRIBER_SOURCES.find((s) => s.value === subscriberSource)?.label ?? subscriberSource}`
+                        : ""
+                    } · Delivered within minutes`}
                   </span>
                 </div>
                 <div className="flex flex-col items-end gap-2">
@@ -231,6 +303,9 @@ export default function BroadcastComposer() {
             <Chip active={historyFilter === "marketing"} onClick={() => setHistoryFilter("marketing")}>
               Marketing campaigns
             </Chip>
+            <Chip active={historyFilter === "subscribers"} onClick={() => setHistoryFilter("subscribers")}>
+              Newsletter
+            </Chip>
           </div>
         </div>
         <DataTable
@@ -246,6 +321,14 @@ export default function BroadcastComposer() {
                       Marketing opt-in
                     </span>
                   )}
+                  {r.audience === "subscribers" && (
+                    <span className="font-body text-[10px] uppercase tracking-[0.8px] text-[#1d4ed8]">
+                      Newsletter
+                      {r.subscriberSource && r.subscriberSource !== "all"
+                        ? ` · ${r.subscriberSource}`
+                        : ""}
+                    </span>
+                  )}
                 </div>
               ),
             },
@@ -255,6 +338,9 @@ export default function BroadcastComposer() {
               render: (r) => (
                 <span className="font-body text-[12px] text-[#6b7280]">
                   {AUDIENCE_LABELS[r.audience] ?? r.audience}
+                  {r.audience === "subscribers" && r.subscriberSource && r.subscriberSource !== "all"
+                    ? ` · ${r.subscriberSource}`
+                    : ""}
                 </span>
               ),
             },
@@ -311,7 +397,12 @@ export default function BroadcastComposer() {
             </div>
             <div className="flex items-center justify-between gap-4 px-4 py-2.5">
               <span className="font-body text-[11px] uppercase tracking-[0.8px] text-[#6b7280]">Audience</span>
-              <span className="font-body text-[12px] font-medium text-[#11191f]">{AUDIENCE_LABELS[audience] ?? audience}</span>
+              <span className="font-body text-[12px] font-medium text-[#11191f]">
+                {AUDIENCE_LABELS[audience] ?? audience}
+                {audience === "subscribers" && subscriberSource !== "all"
+                  ? ` · ${SUBSCRIBER_SOURCES.find((s) => s.value === subscriberSource)?.label ?? subscriberSource}`
+                  : ""}
+              </span>
             </div>
             <div className="flex items-center justify-between gap-4 px-4 py-2.5">
               <span className="font-body text-[11px] uppercase tracking-[0.8px] text-[#6b7280]">Recipients</span>

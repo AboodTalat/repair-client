@@ -1,18 +1,21 @@
 import Image from "next/image";
+import Link from "next/link";
+import {
+  FOOTER_HELP_LINKS,
+  FOOTER_LEGAL_LINKS,
+  footerShopLinks,
+} from "@/lib/storeNav";
 
-const SHOP = ["New Arrivals", "Best Sellers", "Men", "Women", "Accessories"];
-const HELP = ["Shipping & Returns", "FAQ", "Size Guide", "Contact Us", "Track Order"];
-
-function FooterLink({ children }) {
+function FooterLink({ href = "#", children }) {
   return (
     <li>
-      <a
-        href="#"
+      <Link
+        href={href}
         className="font-body text-[14px] leading-4 text-[#232323]/50 hover:text-[#232323]"
         style={{ fontStretch: "75%" }}
       >
         {children}
-      </a>
+      </Link>
     </li>
   );
 }
@@ -25,12 +28,13 @@ function Heading({ children }) {
   );
 }
 
-export default function Footer() {
+export default function Footer({ categories = [] }) {
+  const shopLinks = footerShopLinks(categories);
   return (
     <footer className="w-full bg-white px-4 pb-[102px] pt-8 text-[#11191f] sm:px-8 sm:pb-16 md:px-12 md:pt-16 lg:px-16">
       <div className="mx-auto flex max-w-[357px] flex-col gap-6 sm:max-w-[720px] md:max-w-[1100px] md:grid md:grid-cols-12 md:gap-x-10 md:gap-y-10">
         <div className="flex flex-col gap-6 md:col-span-4">
-          <a href="#" aria-label="Repair home" className="inline-flex h-8 w-[44.5px]">
+          <Link href="/" aria-label="Repair home" className="inline-flex h-8 w-[44.5px]">
             <Image
               src="/home/logo-re.png"
               alt="Repair"
@@ -39,7 +43,7 @@ export default function Footer() {
               className="h-8 w-auto"
               style={{ filter: "brightness(0)" }}
             />
-          </a>
+          </Link>
 
           <p
             className="font-body text-[14px] leading-[19.5px] text-[#232323]/50 md:max-w-[320px]"
@@ -51,14 +55,18 @@ export default function Footer() {
 
           <div className="flex gap-3">
             <a
-              href="#"
+              href="https://instagram.com"
+              target="_blank"
+              rel="noopener noreferrer"
               aria-label="Instagram"
               className="grid size-12 place-items-center rounded-full bg-[#11191f]"
             >
               <Image src="/home/social-1.png" color="white" alt="" width={22} height={22} />
             </a>
             <a
-              href="#"
+              href="https://twitter.com"
+              target="_blank"
+              rel="noopener noreferrer"
               aria-label="Twitter"
               className="grid size-12 place-items-center rounded-full bg-[#11191f]"
             >
@@ -71,16 +79,20 @@ export default function Footer() {
           <div className="flex flex-1 flex-col gap-4">
             <Heading>Shop</Heading>
             <ul className="flex flex-col gap-3">
-              {SHOP.map((s) => (
-                <FooterLink key={s}>{s}</FooterLink>
+              {shopLinks.map((link) => (
+                <FooterLink key={link.label} href={link.href}>
+                  {link.label}
+                </FooterLink>
               ))}
             </ul>
           </div>
           <div className="flex flex-1 flex-col gap-4">
             <Heading>Help</Heading>
             <ul className="flex flex-col gap-3">
-              {HELP.map((s) => (
-                <FooterLink key={s}>{s}</FooterLink>
+              {FOOTER_HELP_LINKS.map((link) => (
+                <FooterLink key={link.label} href={link.href}>
+                  {link.label}
+                </FooterLink>
               ))}
             </ul>
           </div>
@@ -117,12 +129,14 @@ export default function Footer() {
             className="text-center font-body text-[14px] leading-4 text-[#232323]/50 md:text-left"
             style={{ fontStretch: "75%" }}
           >
-            © 2026 RE. All rights reserved.
+            © {new Date().getFullYear()} RE. All rights reserved.
           </p>
           <ul className="flex justify-center gap-4 md:justify-end">
-            <FooterLink>Privacy Policy</FooterLink>
-            <FooterLink>Terms</FooterLink>
-            <FooterLink>Cookies</FooterLink>
+            {FOOTER_LEGAL_LINKS.map((link) => (
+              <FooterLink key={link.label} href={link.href}>
+                {link.label}
+              </FooterLink>
+            ))}
           </ul>
         </div>
       </div>

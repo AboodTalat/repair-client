@@ -368,6 +368,7 @@ export default function ProductPageClient({ product }) {
             {/* Name + subtitle  ▸  strikethrough price + sale chip */}
             <div className="flex w-full items-start justify-between">
               <div className="flex flex-col items-start gap-1">
+                <ProductLabelRow labels={product.labels} />
                 <h1 className="font-display text-[24px] font-bold leading-9 text-[#11191f]">
                   {product.name}
                 </h1>
@@ -508,27 +509,21 @@ export default function ProductPageClient({ product }) {
         {/* Name / price */}
         <div className="flex items-start justify-between px-2">
           <div className="flex flex-col gap-0.5">
+            <ProductLabelRow labels={product.labels} mobile />
             <h1
               className="font-body text-[16px] font-medium leading-normal text-[#11191f]"
               style={{ fontStretch: "75%" }}
             >
               {product.name}
             </h1>
-            <div className="flex items-center gap-1">
-              <span
+            {product.subtitle ? (
+              <p
                 className="font-body text-[12px] leading-normal text-[rgba(17,25,31,0.5)]"
                 style={{ fontStretch: "75%" }}
               >
-                80% nylon
-              </span>
-              <span className="size-1 rounded-full bg-[rgba(17,25,31,0.5)]" />
-              <span
-                className="font-body text-[12px] leading-normal text-[rgba(17,25,31,0.5)]"
-                style={{ fontStretch: "75%" }}
-              >
-                20% spandex
-              </span>
-            </div>
+                {product.subtitle}
+              </p>
+            ) : null}
           </div>
           <PriceBlock
             currency={product.currency}
@@ -1072,6 +1067,51 @@ export default function ProductPageClient({ product }) {
 // `plainSize` only affects the no-discount fallback — when no salePrice is
 // present, fall back to the surrounding context's font size (lg = 24px
 // desktop header, md = 20px mobile header, sm = 12px related card).
+// (#5) Product label row used by both desktop and mobile hero.
+const PRODUCT_LABEL_TONES = {
+  "Best Seller":   { bg: "#11191f", fg: "#ffffff" },
+  "Most Popular":  { bg: "#0066b2", fg: "#ffffff" },
+  "New Arrival":   { bg: "#16a34a", fg: "#ffffff" },
+  "Limited":       { bg: "#a855f7", fg: "#ffffff" },
+  "Low Stock":     { bg: "#dc2626", fg: "#ffffff" },
+};
+
+function ProductLabelRow({ labels, mobile = false }) {
+  if (!labels || labels.length === 0) return null;
+  const fontSize = mobile ? 9 : 11;
+  const padY = mobile ? 2 : 4;
+  const padX = mobile ? 4 : 8;
+  return (
+    <div
+      className="mb-1 flex flex-wrap"
+      style={{ gap: mobile ? 4 : 6 }}
+    >
+      {labels.map((lab) => {
+        const tone = PRODUCT_LABEL_TONES[lab] || { bg: "#11191f", fg: "#ffffff" };
+        return (
+          <span
+            key={lab}
+            className="font-display font-bold uppercase"
+            style={{
+              backgroundColor: tone.bg,
+              color: tone.fg,
+              fontSize,
+              letterSpacing: "0.5px",
+              paddingTop: padY,
+              paddingBottom: padY,
+              paddingLeft: padX,
+              paddingRight: padX,
+              borderRadius: 2,
+            }}
+          >
+            {lab}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
 function PriceBlock({ currency, price, salePrice, plainSize = "md" }) {
   const hasDiscount = salePrice != null && salePrice < price;
 

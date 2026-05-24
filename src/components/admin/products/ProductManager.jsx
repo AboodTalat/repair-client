@@ -34,6 +34,8 @@ import {
   MAJOR_CATEGORIES,
   COLORS,
   SIZES,
+  COLLECTIONS,
+  MATERIALS,
   formatCurrency,
   formatNumber,
 } from "@/lib/mockAdmin";
@@ -46,11 +48,39 @@ const LABEL_OPTIONS = [
   "Limited",
 ];
 
+// Photo placeholder thumbnails (used by Media tab when admin "uploads" a
+// file — pure UI, no real upload). Cycled so 1st upload uses the 1st
+// thumb, 2nd uses the 2nd, etc.
+const PLACEHOLDER_PHOTOS = [
+  "/shop/model-1.png",
+  "/shop/model-2.png",
+  "/shop/model-3.png",
+  "/shop/model-4.png",
+  "/shop/model-5.png",
+];
+
 function formatComposition(rows) {
   return (rows || [])
     .filter((r) => r.pct > 0 && r.material.trim())
     .map((r) => `${r.pct}% ${r.material.trim()}`)
     .join(" • ");
+}
+
+// Backfill photo arrays from the legacy `colorImages` { [colorId]: count }
+// shape so existing mock products still render thumbnails when edited.
+function buildPhotosFromCounter(colorImages) {
+  if (!colorImages) return {};
+  const out = {};
+  Object.entries(colorImages).forEach(([colorId, count]) => {
+    const n = Number(count) || 0;
+    out[colorId] = Array.from({ length: n }).map((_, i) => ({
+      id: `ph-seed-${colorId}-${i}`,
+      url: PLACEHOLDER_PHOTOS[i % PLACEHOLDER_PHOTOS.length],
+      name: `Photo ${i + 1}`,
+      primary: i === 0,
+    }));
+  });
+  return out;
 }
 
 export default function ProductManager() {
@@ -155,11 +185,12 @@ export default function ProductManager() {
               subtitle: "",
               subtitleMode: "text",
               composition: [],
+              materialTags: [],
+              collections: [],
               subId: SUB_CATEGORIES[0]?.id,
               price: 0,
               visible: true,
               labels: [],
-              materials: { recycledPolyester: 0, premiumElastane: 0, performanceGuaranteed: 100 },
               description: "",
               details: [
                 { title: "Lightweight Construction", desc: "Barely-there feel at just 180g. Engineered to disappear on your body." },
@@ -168,7 +199,7 @@ export default function ProductManager() {
               ],
               productColors: [],
               productSizes: [],
-              colorImages: {},
+              photos: {},
               variants: [],
               totalStock: 0,
             })
@@ -891,24 +922,131 @@ function ProductDrawer({ editing, colors, sizes, onClose, onSave }) {
       const variants = editing.variants || [];
       const usedColorNames = new Set(variants.map((v) => v.color));
       const usedSizeLabels = new Set(variants.map((v) => v.size));
+      // Backfill `photos` from the legacy `colorImages` counter when an
+      // older product is opened. Each counter slot becomes a placeholder
+      // thumb so the existing data doesn't visually disappear.
+      const seedPhotos = editing.photos ?? buildPhotosFromCounter(editing.colorImages);
       setDraft({
         ...editing,
         subtitleMode: editing.composition?.length ? "composition" : "text",
+        materialTags: editing.materialTags ?? [],
+        collections: editing.collections ?? [],
         productColors: editing.productColors ??
           colors.filter((c) => usedColorNames.has(c.name)).map((c) => c.id),
         productSizes: editing.productSizes ??
           sizes.filter((s) => usedSizeLabels.has(s.label)).map((s) => s.id),
-        colorImages: editing.colorImages ?? {},
-        materials: {
-          recycledPolyester: String(editing.materials?.recycledPolyester ?? 0),
-          premiumElastane: String(editing.materials?.premiumElastane ?? 0),
-          performanceGuaranteed: String(editing.materials?.performanceGuaranteed ?? 100),
-        },
+        photos: seedPhotos,
       });
       setTab("details");
       setErrors({});
     }
   }, [editing, colors, sizes]);
+
+  function toggleCollection(id) {
+    setDraft((d) => {
+      const has = (d.collections || []).includes(id);
+      return {
+        ...d,
+        collections: has
+          ? d.collections.filter((x) => x !== id)
+          : [...(d.collections || []), id],
+      };
+    });
+  }
+
+  function toggleMaterialTag(id) {
+    setDraft((d) => {
+      const has = (d.materialTags || []).includes(id);
+      return {
+        ...d,
+        materialTags: has
+          ? d.materialTags.filter((x) => x !== id)
+          : [...(d.materialTags || []), id],
+      };
+    });
+  }
+
+  // ── Photo management (real Media tab — UI only, no upload) ─────────
+  function addPhotos(colorId, files) {
+    setDraft((d) => {
+      const current = (d.photos || {})[colorId] || [];
+      const nextItems = Array.from(files || []).map((file, i) => {
+        const url = typeof URL !== "undefined" && file
+          ? URL.createObjectURL(file)
+          : PLACEHOLDER_PHOTOS[(current.length + i) % PLACEHOLDER_PHOTOS.length];
+        return {
+          id: `ph-${Date.now()}-${i}`,
+          url,
+          name: file?.name || `Photo ${current.length + i + 1}`,
+        };
+      });
+      const combined = [...current, ...nextItems];
+      // First-ever photo for this color becomes the primary.
+      const withPrimary = combined.map((p, i) => ({
+        ...p,
+        primary: i === 0 ? true : !!p.primary,
+      }));
+      return {
+        ...d,
+        photos: { ...(d.photos || {}), [colorId]: withPrimary },
+      };
+    });
+    clearError("photos");
+  }
+
+  function addPlaceholderPhoto(colorId) {
+    setDraft((d) => {
+      const current = (d.photos || {})[colorId] || [];
+      const url = PLACEHOLDER_PHOTOS[current.length % PLACEHOLDER_PHOTOS.length];
+      const next = [
+        ...current,
+        {
+          id: `ph-${Date.now()}`,
+          url,
+          name: `Photo ${current.length + 1}`,
+          primary: current.length === 0,
+        },
+      ];
+      return {
+        ...d,
+        photos: { ...(d.photos || {}), [colorId]: next },
+      };
+    });
+    clearError("photos");
+  }
+
+  function removePhoto(colorId, photoId) {
+    setDraft((d) => {
+      const current = ((d.photos || {})[colorId] || []).filter((p) => p.id !== photoId);
+      const next = current.length > 0 && !current.some((p) => p.primary)
+        ? current.map((p, i) => ({ ...p, primary: i === 0 }))
+        : current;
+      return { ...d, photos: { ...(d.photos || {}), [colorId]: next } };
+    });
+  }
+
+  function setPrimaryPhoto(colorId, photoId) {
+    setDraft((d) => {
+      const next = ((d.photos || {})[colorId] || []).map((p) => ({
+        ...p,
+        primary: p.id === photoId,
+      }));
+      return { ...d, photos: { ...(d.photos || {}), [colorId]: next } };
+    });
+  }
+
+  function movePhoto(colorId, photoId, dir) {
+    setDraft((d) => {
+      const current = (d.photos || {})[colorId] || [];
+      const idx = current.findIndex((p) => p.id === photoId);
+      if (idx < 0) return d;
+      const target = dir === "up" ? idx - 1 : idx + 1;
+      if (target < 0 || target >= current.length) return d;
+      const next = [...current];
+      [next[idx], next[target]] = [next[target], next[idx]];
+      return { ...d, photos: { ...(d.photos || {}), [colorId]: next } };
+    });
+  }
 
   function toggleLabel(label) {
     setDraft((d) => {
@@ -981,10 +1119,6 @@ function ProductDrawer({ editing, colors, sizes, onClose, onSave }) {
       }
     }
 
-    const mat = draft.materials || {};
-    const matTotal = Number(mat.recycledPolyester || 0) + Number(mat.premiumElastane || 0) + Number(mat.performanceGuaranteed || 0);
-    if (matTotal !== 100) errs.materials = `Percentages must total 100% (currently ${matTotal}%).`;
-
     const details = draft.details || [];
     if (details.length < 3) {
       errs.details = `Add at least 3 product details (${details.length}/3 added).`;
@@ -996,9 +1130,10 @@ function ProductDrawer({ editing, colors, sizes, onClose, onSave }) {
     if ((draft.productColors || []).length === 0) errs.productColors = "Select at least one color.";
     if ((draft.productSizes || []).length === 0) errs.productSizes = "Select at least one size.";
 
-    const colorImages = draft.colorImages || {};
-    const colorsWithoutImages = (draft.productColors || []).filter((id) => !(colorImages[id] > 0));
-    if (colorsWithoutImages.length > 0) errs.colorImages = "Upload at least one photo for every selected color.";
+    const photos = draft.photos || {};
+    const colorsWithoutImages = (draft.productColors || [])
+      .filter((id) => !((photos[id] || []).length > 0));
+    if (colorsWithoutImages.length > 0) errs.photos = "Upload at least one photo for every selected color.";
 
     // Inventory tab
     const selectedColors = (draft.productColors || [])
@@ -1019,21 +1154,13 @@ function ProductDrawer({ editing, colors, sizes, onClose, onSave }) {
     if (errors[key]) setErrors((prev) => { const n = { ...prev }; delete n[key]; return n; });
   }
 
-  function addColorImage(colorId) {
-    setDraft((d) => ({
-      ...d,
-      colorImages: { ...(d.colorImages || {}), [colorId]: ((d.colorImages || {})[colorId] || 0) + 1 },
-    }));
-    clearError("colorImages");
-  }
-
   function handleSave() {
     const errs = validate();
     if (Object.keys(errs).length > 0) {
       setErrors(errs);
-      if (errs.name || errs.subtitle || errs.price || errs.composition || errs.materials || errs.details) {
+      if (errs.name || errs.subtitle || errs.price || errs.composition || errs.details) {
         setTab("details");
-      } else if (errs.productColors || errs.productSizes || errs.colorImages) {
+      } else if (errs.productColors || errs.productSizes || errs.photos) {
         setTab("media");
       } else if (errs.inventory) {
         setTab("inventory");
@@ -1041,15 +1168,7 @@ function ProductDrawer({ editing, colors, sizes, onClose, onSave }) {
       return;
     }
     setErrors({});
-    const mat = draft.materials || {};
-    onSave({
-      ...draft,
-      materials: {
-        recycledPolyester: Number(mat.recycledPolyester) || 0,
-        premiumElastane: Number(mat.premiumElastane) || 0,
-        performanceGuaranteed: Number(mat.performanceGuaranteed) || 0,
-      },
-    });
+    onSave({ ...draft });
   }
 
   return (
@@ -1073,8 +1192,8 @@ function ProductDrawer({ editing, colors, sizes, onClose, onSave }) {
           <div className="mb-5 border-b border-[#e5e7eb]">
             <div className="flex items-center gap-1 overflow-x-auto">
               {[
-                { key: "details", hasError: !!(errors.name || errors.subtitle || errors.price || errors.composition || errors.materials || errors.details) },
-                { key: "media", hasError: !!(errors.productColors || errors.productSizes || errors.colorImages) },
+                { key: "details", hasError: !!(errors.name || errors.subtitle || errors.price || errors.composition || errors.details) },
+                { key: "media", hasError: !!(errors.productColors || errors.productSizes || errors.photos) },
                 { key: "inventory", hasError: !!errors.inventory },
                 { key: "labels", hasError: false },
               ].map(({ key: t, hasError }) => (
@@ -1317,57 +1436,47 @@ function ProductDrawer({ editing, colors, sizes, onClose, onSave }) {
                 />
               </Field>
 
+              {/* Filter facets (#1 wiring): the product's sub-category IS
+                  the customer-facing "type" facet, and Material tags drive
+                  the materials filter on /shop. Sub-category is set above
+                  in the Sub-category field; this panel manages materials
+                  and re-affirms that "type = sub-category". */}
               <div className="rounded-[2px] border border-[#e5e7eb] bg-[#fafafa] p-4">
-                <p className="mb-3 font-body text-[11px] font-medium uppercase tracking-[1px] text-[#6b7280]">
-                  Material percentages
-                </p>
-                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3">
-                  <Field label="Recycled polyester">
-                    <NumberInput
-                      min="0"
-                      max="100"
-                      value={draft.materials?.recycledPolyester ?? ""}
-                      onChange={(e) => {
-                        setDraft((d) => ({
-                          ...d,
-                          materials: { ...d.materials, recycledPolyester: e.target.value },
-                        }));
-                        clearError("materials");
-                      }}
-                    />
-                  </Field>
-                  <Field label="Premium elastane">
-                    <NumberInput
-                      min="0"
-                      max="100"
-                      value={draft.materials?.premiumElastane ?? ""}
-                      onChange={(e) => {
-                        setDraft((d) => ({
-                          ...d,
-                          materials: { ...d.materials, premiumElastane: e.target.value },
-                        }));
-                        clearError("materials");
-                      }}
-                    />
-                  </Field>
-                  <Field label="Performance guaranteed">
-                    <NumberInput
-                      min="0"
-                      max="100"
-                      value={draft.materials?.performanceGuaranteed ?? ""}
-                      onChange={(e) => {
-                        setDraft((d) => ({
-                          ...d,
-                          materials: { ...d.materials, performanceGuaranteed: e.target.value },
-                        }));
-                        clearError("materials");
-                      }}
-                    />
-                  </Field>
+                <div className="mb-3 flex items-center justify-between gap-2">
+                  <p className="font-body text-[11px] font-medium uppercase tracking-[1px] text-[#6b7280]">
+                    Filter facets
+                  </p>
+                  <span className="font-body text-[11px] text-[#6b7280]">
+                    Product type = sub-category (set above).
+                  </span>
                 </div>
-                {errors.materials ? (
-                  <p className="mt-2 font-body text-[11px] text-[#dc2626]">{errors.materials}</p>
-                ) : null}
+                <div className="flex flex-col gap-1.5">
+                  <span className="font-body text-[11px] font-medium uppercase tracking-[1px] text-[#6b7280]">
+                    Material tags
+                  </span>
+                  <p className="font-body text-[11px] text-[#6b7280]">
+                    Tag this product with any fabric materials customers should be able to filter by.
+                  </p>
+                  <div className="mt-1 flex flex-wrap gap-1.5">
+                    {MATERIALS.map((m) => (
+                      <Chip
+                        key={m.id}
+                        active={(draft.materialTags || []).includes(m.id)}
+                        onClick={() => toggleMaterialTag(m.id)}
+                      >
+                        {m.name}
+                      </Chip>
+                    ))}
+                  </div>
+                  {(draft.materialTags || []).length === 0 ? (
+                    <p className="mt-1 font-body text-[11px] text-[#9ca3af]">
+                      No materials selected — this product won&apos;t match any material filter on the storefront.
+                    </p>
+                  ) : null}
+                </div>
+                <p className="mt-3 font-body text-[11px] text-[#6b7280]">
+                  Manage the materials list from <strong>Catalog → Taxonomies</strong>.
+                </p>
               </div>
 
               <div className="rounded-[2px] border border-[#e5e7eb] bg-[#fafafa] p-4">
@@ -1547,8 +1656,8 @@ function ProductDrawer({ editing, colors, sizes, onClose, onSave }) {
 
               <div className="h-px bg-[#e5e7eb]" />
 
-              {errors.colorImages ? (
-                <p className="-mt-2 font-body text-[11px] text-[#dc2626]">{errors.colorImages}</p>
+              {errors.photos ? (
+                <p className="-mt-2 font-body text-[11px] text-[#dc2626]">{errors.photos}</p>
               ) : null}
 
               {(draft.productColors || []).length === 0 ? (
@@ -1566,46 +1675,20 @@ function ProductDrawer({ editing, colors, sizes, onClose, onSave }) {
                 <div className="flex flex-col gap-6">
                   {(draft.productColors || []).map((colorId) => {
                     const color = colors.find((c) => c.id === colorId);
-                    const imageCount = (draft.colorImages || {})[colorId] || 0;
-                    const missingImage = errors.colorImages && imageCount === 0;
+                    const photos = (draft.photos || {})[colorId] || [];
+                    const missingImage = errors.photos && photos.length === 0;
                     return (
-                      <div key={colorId} className="flex flex-col gap-2">
-                        <div className="flex items-center justify-between gap-2">
-                          <div className="flex items-center gap-2">
-                            <span
-                              className="size-3.5 rounded-full border border-[#e5e7eb]"
-                              style={{ backgroundColor: color?.hex }}
-                            />
-                            <span className="font-body text-[12px] font-medium text-[#11191f]">
-                              {color?.name}
-                            </span>
-                          </div>
-                          {imageCount > 0 ? (
-                            <span className="font-body text-[11px] text-[#6b7280]">{imageCount} photo{imageCount !== 1 ? "s" : ""}</span>
-                          ) : null}
-                        </div>
-                        <div
-                          className="flex flex-col items-center gap-3 rounded-[2px] border border-dashed bg-[#fafafa] px-6 py-8 text-center"
-                          style={{ borderColor: missingImage ? "#dc2626" : "#e5e7eb" }}
-                        >
-                          <svg className="size-8 text-[#9ca3af]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                            <polyline points="17 8 12 3 7 8" />
-                            <line x1="12" y1="3" x2="12" y2="15" />
-                          </svg>
-                          <div className="flex flex-col gap-1">
-                            <p className="font-body text-[12px] font-medium text-[#11191f]">
-                              Drop photos here
-                            </p>
-                            <p className="font-body text-[11px] text-[#6b7280]">
-                              JPG, PNG, WebP — max 4 MB each
-                            </p>
-                          </div>
-                          <Button variant="secondary" icon={<IconPlus />} onClick={() => addColorImage(colorId)}>
-                            Choose photos
-                          </Button>
-                        </div>
-                      </div>
+                      <PhotoColorBlock
+                        key={colorId}
+                        color={color}
+                        photos={photos}
+                        missing={missingImage}
+                        onAdd={(files) => addPhotos(colorId, files)}
+                        onAddPlaceholder={() => addPlaceholderPhoto(colorId)}
+                        onRemove={(photoId) => removePhoto(colorId, photoId)}
+                        onSetPrimary={(photoId) => setPrimaryPhoto(colorId, photoId)}
+                        onMove={(photoId, dir) => movePhoto(colorId, photoId, dir)}
+                      />
                     );
                   })}
                 </div>
@@ -1755,21 +1838,64 @@ function ProductDrawer({ editing, colors, sizes, onClose, onSave }) {
           ) : null}
 
           {tab === "labels" ? (
-            <div className="flex flex-col gap-4">
-              <p className="font-body text-[12px] text-[#6b7280]">
-                Labels appear as badges on the storefront. Use sparingly — too many badges and they lose meaning.
-              </p>
-              <div className="flex flex-wrap gap-2">
-                {LABEL_OPTIONS.map((lab) => (
-                  <Chip
-                    key={lab}
-                    active={(draft.labels || []).includes(lab)}
-                    onClick={() => toggleLabel(lab)}
-                  >
-                    {lab}
-                  </Chip>
-                ))}
+            <div className="flex flex-col gap-6">
+              <div className="flex flex-col gap-2">
+                <span className="font-body text-[11px] font-medium uppercase tracking-[1px] text-[#11191f]">
+                  Storefront labels
+                </span>
+                <p className="font-body text-[12px] text-[#6b7280]">
+                  Labels appear as badges on the storefront. Use sparingly — too many badges and they lose meaning.
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  {LABEL_OPTIONS.map((lab) => (
+                    <Chip
+                      key={lab}
+                      active={(draft.labels || []).includes(lab)}
+                      onClick={() => toggleLabel(lab)}
+                    >
+                      {lab}
+                    </Chip>
+                  ))}
+                </div>
               </div>
+
+              {/* #4 Curated collections — which special tabs surface this
+                  product on the storefront. */}
+              <div className="flex flex-col gap-2">
+                <span className="font-body text-[11px] font-medium uppercase tracking-[1px] text-[#11191f]">
+                  Featured in collections
+                </span>
+                <p className="font-body text-[12px] text-[#6b7280]">
+                  Choose which curated tabs this product appears in.
+                </p>
+                <div className="flex flex-col gap-2">
+                  {COLLECTIONS.map((col) => {
+                    const active = (draft.collections || []).includes(col.id);
+                    return (
+                      <label
+                        key={col.id}
+                        className="flex cursor-pointer items-start gap-3 rounded-[2px] border border-[#e5e7eb] bg-white p-3 hover:bg-[#fafafa]"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={active}
+                          onChange={() => toggleCollection(col.id)}
+                          className="mt-0.5 size-4 accent-[#11191f]"
+                        />
+                        <div className="min-w-0">
+                          <p className="font-body text-[13px] font-semibold text-[#11191f]">
+                            {col.name}
+                          </p>
+                          <p className="font-body text-[11px] text-[#6b7280]">
+                            {col.description}
+                          </p>
+                        </div>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+
               <Field label="Low-stock alert threshold" hint="Trigger admin alerts when total stock falls below this.">
                 <NumberInput
                   min="0"
@@ -1784,5 +1910,189 @@ function ProductDrawer({ editing, colors, sizes, onClose, onSave }) {
         </>
       ) : null}
     </Drawer>
+  );
+}
+
+// ── PhotoColorBlock ────────────────────────────────────────────────────
+// Real per-color photo manager used by the Media tab. Mock-only — files
+// chosen are previewed via URL.createObjectURL; no upload is performed.
+function PhotoColorBlock({
+  color,
+  photos,
+  missing,
+  onAdd,
+  onAddPlaceholder,
+  onRemove,
+  onSetPrimary,
+  onMove,
+}) {
+  const fileRef = useRef(null);
+
+  function openPicker() {
+    if (fileRef.current) fileRef.current.click();
+  }
+
+  function onChange(e) {
+    const files = e.target.files;
+    if (files && files.length > 0) onAdd(files);
+    e.target.value = ""; // allow re-choosing the same file
+  }
+
+  const hasPhotos = photos.length > 0;
+
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <span
+            className="size-3.5 rounded-full border border-[#e5e7eb]"
+            style={{ backgroundColor: color?.hex }}
+          />
+          <span className="font-body text-[12px] font-medium text-[#11191f]">
+            {color?.name}
+          </span>
+        </div>
+        {hasPhotos ? (
+          <span className="font-body text-[11px] text-[#6b7280]">
+            {photos.length} photo{photos.length !== 1 ? "s" : ""}
+          </span>
+        ) : null}
+      </div>
+
+      <input
+        ref={fileRef}
+        type="file"
+        accept="image/*"
+        multiple
+        onChange={onChange}
+        className="hidden"
+      />
+
+      {hasPhotos ? (
+        <>
+          <ul className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4">
+            {photos.map((p, idx) => (
+              <li
+                key={p.id}
+                className="relative overflow-hidden rounded-[2px] border bg-white"
+                style={{
+                  borderColor: p.primary ? "#11191f" : "#e5e7eb",
+                  borderWidth: p.primary ? 2 : 1,
+                }}
+              >
+                <div className="relative w-full" style={{ aspectRatio: "3 / 4" }}>
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={p.url}
+                    alt={p.name}
+                    className="absolute inset-0 size-full object-cover"
+                  />
+                  {p.primary ? (
+                    <span
+                      className="absolute left-1.5 top-1.5 rounded-full px-1.5 py-0.5 font-display text-[9px] font-bold uppercase tracking-[0.6px] text-white"
+                      style={{ backgroundColor: "#11191f" }}
+                    >
+                      Primary
+                    </span>
+                  ) : null}
+                </div>
+                <div className="flex items-center justify-between gap-1 border-t border-[#f3f4f6] bg-[#fafafa] p-1.5">
+                  <div className="flex items-center gap-0.5">
+                    <button
+                      type="button"
+                      onClick={() => onMove(p.id, "up")}
+                      disabled={idx === 0}
+                      aria-label="Move left"
+                      className="grid size-7 place-items-center rounded-[2px] text-[#11191f] hover:bg-[#f3f4f6] disabled:opacity-30"
+                    >
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" className="size-4">
+                        <path d="M15 18l-6-6 6-6" />
+                      </svg>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onMove(p.id, "down")}
+                      disabled={idx === photos.length - 1}
+                      aria-label="Move right"
+                      className="grid size-7 place-items-center rounded-[2px] text-[#11191f] hover:bg-[#f3f4f6] disabled:opacity-30"
+                    >
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" className="size-4">
+                        <path d="M9 6l6 6-6 6" />
+                      </svg>
+                    </button>
+                  </div>
+                  <div className="flex items-center gap-0.5">
+                    <button
+                      type="button"
+                      onClick={() => onSetPrimary(p.id)}
+                      aria-label={p.primary ? "Primary photo" : "Set as primary"}
+                      title={p.primary ? "Primary photo" : "Set as primary"}
+                      className="grid size-7 place-items-center rounded-[2px] hover:bg-[#f3f4f6]"
+                      style={{ color: p.primary ? "#f59e0b" : "#9ca3af" }}
+                    >
+                      <svg viewBox="0 0 24 24" fill={p.primary ? "currentColor" : "none"} stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" className="size-4">
+                        <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
+                      </svg>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onRemove(p.id)}
+                      aria-label="Delete photo"
+                      className="grid size-7 place-items-center rounded-[2px] text-[#dc2626] hover:bg-[#fef2f2]"
+                    >
+                      <span className="grid size-4 place-items-center">
+                        <IconTrash />
+                      </span>
+                    </button>
+                  </div>
+                </div>
+              </li>
+            ))}
+            <li>
+              <button
+                type="button"
+                onClick={openPicker}
+                className="flex h-full w-full flex-col items-center justify-center gap-1.5 rounded-[2px] border border-dashed border-[#e5e7eb] bg-[#fafafa] p-3 text-[#11191f] hover:bg-[#f3f4f6]"
+                style={{ aspectRatio: "3 / 4" }}
+              >
+                <span className="grid size-6 place-items-center">
+                  <IconPlus />
+                </span>
+                <span className="font-body text-[11px] font-medium uppercase tracking-[0.6px]">
+                  Add photo
+                </span>
+              </button>
+            </li>
+          </ul>
+        </>
+      ) : (
+        <div
+          className="flex flex-col items-center gap-3 rounded-[2px] border border-dashed bg-[#fafafa] px-6 py-8 text-center"
+          style={{ borderColor: missing ? "#dc2626" : "#e5e7eb" }}
+        >
+          <svg className="size-8 text-[#9ca3af]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+            <polyline points="17 8 12 3 7 8" />
+            <line x1="12" y1="3" x2="12" y2="15" />
+          </svg>
+          <div className="flex flex-col gap-1">
+            <p className="font-body text-[12px] font-medium text-[#11191f]">
+              Drop photos here or choose files
+            </p>
+            <p className="font-body text-[11px] text-[#6b7280]">
+              JPG, PNG, WebP — max 4 MB each
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button variant="secondary" icon={<IconPlus />} onClick={openPicker}>
+              Choose photos
+            </Button>
+            <Button variant="ghost" onClick={onAddPlaceholder}>
+              Use sample
+            </Button>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }

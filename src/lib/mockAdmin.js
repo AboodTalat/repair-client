@@ -702,6 +702,7 @@ export const STATUS_TONE = {
   archived: { bg: "#f1f5f9", fg: "#94a3b8", dot: "#cbd5e1" },
   notified: { bg: "#dcfce7", fg: "#166534", dot: "#16a34a" },
   dismissed: { bg: "#f1f5f9", fg: "#94a3b8", dot: "#cbd5e1" },
+  unsubscribed: { bg: "#f1f5f9", fg: "#64748b", dot: "#94a3b8" },
 };
 
 export function formatCurrency(n) {
@@ -711,3 +712,204 @@ export function formatCurrency(n) {
 export function formatNumber(n) {
   return Number(n).toLocaleString("en-US");
 }
+
+// ------------------------------------------------------------------
+// Filter taxonomies (#1): Materials + Types used by the /shop filter
+// drawer. Editing these here drives both the admin Taxonomies page and
+// the storefront filter facets — keep one list, not two.
+
+export const MATERIALS = [
+  { id: "mat-1", name: "Cotton" },
+  { id: "mat-2", name: "Polyester" },
+  { id: "mat-3", name: "Nylon" },
+  { id: "mat-4", name: "Spandex" },
+  { id: "mat-5", name: "Elastane" },
+];
+
+// (Note) Product "type" is intentionally NOT a separate taxonomy — the
+// customer-facing type facet on /shop is the product's sub-category. The
+// admin manages sub-categories on the Categories page; the Taxonomies
+// page renders a read-only view of them as the "Product Types" reference.
+
+// ------------------------------------------------------------------
+// Curated collections (#4): the special tabs on /shop that aren't
+// regular major categories — Sale / Just Dropped (weekly + monthly) /
+// Discover All featured. A product can belong to many collections.
+
+export const COLLECTIONS = [
+  { id: "col-sale", name: "Sale", description: "Featured in the Sale tab and shown with the sale price." },
+  { id: "col-jd-weekly", name: "Just Dropped — This Week", description: "Surfaces in Just Dropped > This week." },
+  { id: "col-jd-monthly", name: "Just Dropped — This Month", description: "Surfaces in Just Dropped > This month." },
+  { id: "col-discover", name: "Featured on Discover All", description: "Promoted to the top of Discover All." },
+];
+
+// ------------------------------------------------------------------
+// Newsletter subscribers (#10) — mock list. Status: active | unsubscribed.
+
+export const NEWSLETTER_SUBSCRIBERS = [
+  { id: "sub-1", email: "ella.m@gmail.com",    signedUp: "2026-05-19 14:02", status: "active",       source: "footer" },
+  { id: "sub-2", email: "noah.k@outlook.com",  signedUp: "2026-05-18 09:31", status: "active",       source: "checkout" },
+  { id: "sub-3", email: "salma.h@gmail.com",   signedUp: "2026-05-17 22:10", status: "active",       source: "footer" },
+  { id: "sub-4", email: "tarek.b@example.com", signedUp: "2026-05-16 11:48", status: "unsubscribed", source: "footer" },
+  { id: "sub-5", email: "leila.f@gmail.com",   signedUp: "2026-05-15 08:55", status: "active",       source: "popup" },
+  { id: "sub-6", email: "rami.j@outlook.com",  signedUp: "2026-05-14 19:22", status: "active",       source: "checkout" },
+  { id: "sub-7", email: "sara.q@example.com",  signedUp: "2026-05-13 17:04", status: "active",       source: "footer" },
+  { id: "sub-8", email: "khaled.n@gmail.com",  signedUp: "2026-05-12 13:11", status: "active",       source: "popup" },
+  { id: "sub-9", email: "huda.a@gmail.com",    signedUp: "2026-05-11 10:33", status: "unsubscribed", source: "footer" },
+  { id: "sub-10", email: "omar.t@example.com", signedUp: "2026-05-10 08:18", status: "active",       source: "footer" },
+  { id: "sub-11", email: "yasmin.r@gmail.com", signedUp: "2026-05-09 21:50", status: "active",       source: "checkout" },
+  { id: "sub-12", email: "fadi.s@example.com", signedUp: "2026-05-08 14:42", status: "active",       source: "footer" },
+];
+
+// ------------------------------------------------------------------
+// Storefront content (#11): every hardcoded marketing surface lives
+// here so the admin page can drive what customers see. Mock-only —
+// frontend reads at module level; admin writes update local useState.
+
+export const STOREFRONT_HERO = {
+  eyebrow: "ENGINEERED FOR PERFORMANCE",
+  title: "MOVE WITHOUT LIMITS",
+  subtitle: "Premium athletic wear engineered for every workout.",
+  ctaLabel: "EXPLORE COLLECTION",
+  ctaHref: "/shop",
+  image: "/home/hero.jpg",
+};
+
+export const STOREFRONT_COLORWAYS = [
+  {
+    id: "cw-1",
+    image: "/home/bright-white.png",
+    imageAlt: "Bright White colorway",
+    badge: "",
+    reversed: false,
+    multiSwatch: true,
+    ctaLabel: "SELECT YOUR COLOR",
+    swatches: [
+      { color: "#11191f", name: "Midnight Black", tagline: "Timeless. Versatile. Essential." },
+      { color: "#ffffff", name: "Bright White", tagline: "Bold. Modern. Dynamic." },
+    ],
+  },
+  {
+    id: "cw-2",
+    image: "/home/deep-blue.png",
+    imageAlt: "Deep Blue colorway",
+    badge: "UNISEX",
+    reversed: true,
+    multiSwatch: false,
+    ctaLabel: "ADD TO CART",
+    swatches: [{ color: "#11233f", name: "Deep Blue", tagline: "Pure. Clean. Confident." }],
+  },
+  {
+    id: "cw-3",
+    image: "/home/fresh-green.png",
+    imageAlt: "Fresh Green colorway",
+    badge: "UNISEX",
+    reversed: false,
+    multiSwatch: false,
+    ctaLabel: "ADD TO CART",
+    swatches: [{ color: "#a8c0b2", name: "Fresh Green", tagline: "Sleek. Sophisticated. Powerful." }],
+  },
+];
+
+export const STOREFRONT_STATS = [
+  { id: "stat-1", value: "10K+",  label: "Happy customers" },
+  { id: "stat-2", value: "4.9/5", label: "Average rating" },
+  { id: "stat-3", value: "98%",   label: "Repeat orders" },
+  { id: "stat-4", value: "24h",   label: "Avg. dispatch" },
+];
+
+export const STOREFRONT_BROWSE_TILES = [
+  { id: "bt-1", title: "Women",   image: "/home/bright-white.png", href: "/shop?category=women" },
+  { id: "bt-2", title: "Men",     image: "/home/deep-blue.png",    href: "/shop?category=men" },
+  { id: "bt-3", title: "Sale",    image: "/home/fresh-green.png",  href: "/shop?category=sale" },
+];
+
+// Product detail marketing sections that today are hardcoded in
+// ProductPageClient.jsx (Crafted to Last, Stays Dry, Move Without
+// Limits, Sculpted Support, Four Colorways, The Details). Admin can
+// toggle visibility per-section and edit the headline/body copy.
+export const STOREFRONT_PRODUCT_SECTIONS = [
+  { id: "pds-1", key: "crafted",    title: "Crafted to Last",        body: "Premium materials engineered for the long run.",        enabled: true },
+  { id: "pds-2", key: "stays-dry",  title: "Stays Dry. Stays Fresh.", body: "Moisture-wicking fabric that breathes through the hardest sets.", enabled: true },
+  { id: "pds-3", key: "move",       title: "Move Without Limits",    body: "Four-way stretch that moves in every direction.",       enabled: true },
+  { id: "pds-4", key: "sculpted",   title: "Sculpted Support",        body: "Compression that contours without constricting.",      enabled: true },
+  { id: "pds-5", key: "colorways",  title: "Four Colorways. One Vision.", body: "Pick the palette that matches the way you train.", enabled: true },
+  { id: "pds-6", key: "details",    title: "The Details",            body: "The little decisions that add up to a piece you reach for.", enabled: true },
+];
+
+export const STOREFRONT_FOOTER = {
+  brandCopy: "Engineered for performance, designed for life. We create premium athletic wear for the modern mover.",
+  social: [
+    { id: "soc-1", network: "Instagram", url: "https://instagram.com/repair" },
+    { id: "soc-2", network: "Twitter",   url: "https://twitter.com/repair" },
+    { id: "soc-3", network: "Facebook",  url: "https://facebook.com/repair" },
+  ],
+  columns: [
+    { id: "col-shop", heading: "Shop", links: [
+      { id: "l-1", label: "New Arrivals",  href: "/shop?category=just-dropped" },
+      { id: "l-2", label: "Best Sellers",  href: "/shop?category=discover-all" },
+      { id: "l-3", label: "Men",            href: "/shop?category=men" },
+      { id: "l-4", label: "Women",          href: "/shop?category=women" },
+      { id: "l-5", label: "Accessories",    href: "/shop?category=discover-all&sub=accessories" },
+    ]},
+    { id: "col-help", heading: "Help", links: [
+      { id: "l-6", label: "Shipping & Returns", href: "/help/shipping" },
+      { id: "l-7", label: "FAQ",                 href: "/help/faq" },
+      { id: "l-8", label: "Size Guide",          href: "/help/sizes" },
+      { id: "l-9", label: "Contact Us",          href: "/contact" },
+      { id: "l-10", label: "Track Order",        href: "/account/orders" },
+    ]},
+  ],
+};
+
+// ------------------------------------------------------------------
+// Coaching cross-sell (#14) shown on /checkout/success.
+
+export const COACHING_CTA = {
+  enabled: true,
+  eyebrow: "TRAIN WITH AN EXPERT",
+  title: "APPLY FOR COACHING",
+  body: "1:1 programming from elite athletes. Limited slots open monthly.",
+  ctaLabel: "APPLY FOR COACHING",
+  ctaHref: "https://repair.app/coaching",
+  image: "/cart/coaching-model.png",
+};
+
+// ------------------------------------------------------------------
+// Wishlist insights (#15): aggregate "most wishlisted" view for admin.
+// Mocked here; production should derive from a wishlist count query.
+
+export const WISHLIST_INSIGHTS = [
+  { id: "wi-1", productId: "p-1", product: "Bright White Hoodie", wishlistCount: 184, addedLast7Days: 42, inStock: true,  variantsLow: 0 },
+  { id: "wi-2", productId: "p-6", product: "Onyx Joggers",        wishlistCount: 162, addedLast7Days: 38, inStock: false, variantsLow: 0 },
+  { id: "wi-3", productId: "p-2", product: "Deep Blue Pullover",  wishlistCount: 141, addedLast7Days: 29, inStock: true,  variantsLow: 1 },
+  { id: "wi-4", productId: "p-4", product: "Stone Grey Shorts",   wishlistCount: 119, addedLast7Days: 26, inStock: true,  variantsLow: 1 },
+  { id: "wi-5", productId: "p-3", product: "Fresh Green Tee",     wishlistCount: 92,  addedLast7Days: 18, inStock: true,  variantsLow: 0 },
+  { id: "wi-6", productId: "p-5", product: "Sand Cap",            wishlistCount: 64,  addedLast7Days: 12, inStock: true,  variantsLow: 0 },
+];
+
+// ------------------------------------------------------------------
+// Settings additions (#6, #7, #8).
+
+export const PAYMENT_METHOD_SETTINGS = [
+  { id: "pm-visa",      label: "Visa / Mastercard", description: "Major credit and debit cards.", enabled: true },
+  { id: "pm-apple",     label: "Apple Pay",          description: "Tap to pay on supported devices.", enabled: true },
+  { id: "pm-google",    label: "Google Pay",         description: "Tap to pay on supported devices.", enabled: true },
+  { id: "pm-cod",       label: "Cash on Delivery",   description: "Pay the courier at delivery.",     enabled: true },
+];
+
+export const TAX_SETTINGS = {
+  rate: 9,
+  inclusive: false,
+  appliesToShipping: true,
+};
+
+export const SHIPPING_METHODS = [
+  { id: "sm-standard", key: "standard", name: "Standard Delivery", eta: "3–5 business days", enabled: true,  removable: false },
+  { id: "sm-express",  key: "express",  name: "Express Shipping",   eta: "1–2 business days", enabled: true,  removable: false },
+  { id: "sm-pickup",   key: "pickup",   name: "Store Pickup",        eta: "Ready in 24 hours", enabled: true,  removable: false },
+];
+
+export const PICKUP_LOCATIONS = [
+  { id: "loc-1", name: "Abdoun Flagship Store", address: "Abdoun Circle, Building 4, Amman, Jordan", hours: "Sun–Thu 10:00–22:00, Fri–Sat 14:00–22:00" },
+];

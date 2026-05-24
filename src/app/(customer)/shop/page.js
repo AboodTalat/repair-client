@@ -15,7 +15,7 @@ import ShopPageClient from "@/components/customer/shop/ShopPageClient";
 // Coming-soon overlay (Figma 198:5080) is rendered when:
 //   - The major category slug is unknown (cat lookup fails)
 //   - The sub-category slug is unknown for the matched major category
-//   - The matched sub-category is explicitly inactive (active === false)
+//   - The matched sub-category is explicitly hidden (visible === false)
 // In any of those cases we still render ShopPageClient with a placeholder
 // product list so the blurred grid background looks populated.
 
@@ -39,7 +39,7 @@ export default async function ShopPage({ searchParams }) {
     comingSoon = true;
   } else if (sub) {
     const subMatch = cat.subs?.find((s) => s.slug === sub);
-    if (!subMatch || subMatch.active === false) {
+    if (!subMatch || subMatch.visible === false) {
       comingSoon = true;
       // Use the sub label (if we know it) so the breadcrumb stays meaningful.
       displayName = subMatch?.name ?? slugToLabel(sub);

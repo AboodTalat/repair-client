@@ -258,3 +258,80 @@ export function flagEmoji(iso2) {
 }
 
 export const DEFAULT_COUNTRY = COUNTRY_CODES.find((c) => c.iso2 === "JO");
+
+// National-subscriber-number length (digits AFTER the country code) keyed by
+// ISO 3166-1 alpha-2. Sourced from ITU-T E.164 country plans for the major
+// markets we ship to; covers MENA, the Gulf, EU, NA, big APAC, and a handful
+// of African markets. Anything not listed falls back to DEFAULT_PHONE_LENGTH
+// (the E.164 practical range, 7–14 digits — the dial code takes 1–3 of the
+// 15-digit E.164 maximum).
+const PHONE_LENGTHS = {
+  // Levant / Gulf
+  JO: { min: 9, max: 9 },   // Jordan
+  SA: { min: 9, max: 9 },   // Saudi Arabia
+  AE: { min: 9, max: 9 },   // UAE
+  PS: { min: 9, max: 9 },   // Palestine
+  SY: { min: 9, max: 9 },   // Syria
+  YE: { min: 9, max: 9 },   // Yemen
+  IQ: { min: 10, max: 10 }, // Iraq
+  EG: { min: 10, max: 10 }, // Egypt
+  LB: { min: 7, max: 8 },   // Lebanon
+  KW: { min: 8, max: 8 },   // Kuwait
+  QA: { min: 8, max: 8 },   // Qatar
+  BH: { min: 8, max: 8 },   // Bahrain
+  OM: { min: 8, max: 8 },   // Oman
+  // North Africa
+  MA: { min: 9, max: 9 },   // Morocco
+  DZ: { min: 9, max: 9 },   // Algeria
+  TN: { min: 8, max: 8 },   // Tunisia
+  LY: { min: 9, max: 9 },   // Libya
+  // Europe
+  GB: { min: 10, max: 10 }, // United Kingdom
+  FR: { min: 9, max: 9 },   // France
+  DE: { min: 10, max: 11 }, // Germany
+  IT: { min: 9, max: 10 },  // Italy
+  ES: { min: 9, max: 9 },   // Spain
+  NL: { min: 9, max: 9 },   // Netherlands
+  BE: { min: 9, max: 9 },   // Belgium
+  CH: { min: 9, max: 9 },   // Switzerland
+  AT: { min: 10, max: 11 }, // Austria
+  SE: { min: 9, max: 9 },   // Sweden
+  NO: { min: 8, max: 8 },   // Norway
+  DK: { min: 8, max: 8 },   // Denmark
+  FI: { min: 9, max: 10 },  // Finland
+  PL: { min: 9, max: 9 },   // Poland
+  RU: { min: 10, max: 10 }, // Russia
+  UA: { min: 9, max: 9 },   // Ukraine
+  TR: { min: 10, max: 10 }, // Turkey
+  // North America
+  US: { min: 10, max: 10 },
+  CA: { min: 10, max: 10 },
+  MX: { min: 10, max: 10 },
+  // South America
+  BR: { min: 10, max: 11 },
+  AR: { min: 10, max: 10 },
+  // APAC
+  AU: { min: 9, max: 9 },
+  NZ: { min: 8, max: 10 },
+  CN: { min: 11, max: 11 },
+  JP: { min: 10, max: 10 },
+  KR: { min: 9, max: 10 },
+  IN: { min: 10, max: 10 },
+  PK: { min: 10, max: 10 },
+  BD: { min: 10, max: 10 },
+  ID: { min: 9, max: 12 },
+  // Sub-Saharan Africa
+  ZA: { min: 9, max: 9 },
+  NG: { min: 10, max: 10 },
+  KE: { min: 9, max: 9 },
+};
+
+export const DEFAULT_PHONE_LENGTH = { min: 7, max: 14 };
+
+// Returns { min, max } for the digit count expected AFTER the country code
+// for a given ISO2 code. Falls back to the E.164 practical range when the
+// country isn't in our table.
+export function phoneLengthFor(iso2) {
+  if (typeof iso2 !== "string") return DEFAULT_PHONE_LENGTH;
+  return PHONE_LENGTHS[iso2.toUpperCase()] ?? DEFAULT_PHONE_LENGTH;
+}

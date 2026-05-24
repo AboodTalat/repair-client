@@ -20,14 +20,9 @@ const SECTIONS = [
   {
     title: "Finance",
     items: [
-      { href: `${PREFIX}/overview`, label: "Overview", icon: IconChart },
-    ],
-  },
-  {
-    title: "Coming soon",
-    items: [
-      { href: `${PREFIX}/exports`, label: "Export history", icon: IconDownload, disabled: true },
-      { href: `${PREFIX}/audit`,   label: "Audit log",      icon: IconCalendar, disabled: true },
+      { href: `${PREFIX}/overview`, label: "Overview",       icon: IconChart },
+      { href: `${PREFIX}/exports`,  label: "Export history", icon: IconDownload },
+      { href: `${PREFIX}/audit`,    label: "Audit log",      icon: IconCalendar },
     ],
   },
 ];

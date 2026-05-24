@@ -1,8 +1,7 @@
 import Link from "next/link";
 import HeroPanel from "@/components/auth/HeroPanel";
 import AuthHeader from "@/components/auth/AuthHeader";
-import AuthInput from "@/components/auth/AuthInput";
-import AuthButton from "@/components/auth/AuthButton";
+import RequestPasswordResetForm from "@/components/auth/RequestPasswordResetForm";
 import TermsFooter from "@/components/auth/TermsFooter";
 
 export const metadata = { title: "Reset Password — Repair" };
@@ -84,23 +83,15 @@ export default function EmailSentPage() {
             </div>
           </div>
 
-          {/* Frame 114 — Headline + form, gap-16 internal */}
-          <div className="flex w-full max-w-[384px] flex-col gap-4">
-            <h1 className="font-display text-[18px] font-bold uppercase leading-[normal] tracking-[0.75px] text-[#11191f]/50 md:text-[#11191f]">
-              Reset Password
-            </h1>
-            {/* Form — gap-24 between input and button */}
-            <form className="flex w-full flex-col gap-6">
-              <AuthInput label="Email Address" type="email" name="email" autoComplete="email" required />
-              <AuthButton>Send Link</AuthButton>
-            </form>
-          </div>
+          {/* Heading + form (or post-submit "check your inbox" state) lives
+              in the client component so it can swap on success. */}
+          <RequestPasswordResetForm />
         </div>
 
         <div className="hidden md:block">
           <TermsFooter>
             Need help?{" "}
-            <Link href="#" className="underline">
+            <Link href="/contact" className="underline">
               Contact Support
             </Link>
           </TermsFooter>

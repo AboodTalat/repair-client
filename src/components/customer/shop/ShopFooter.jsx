@@ -1,8 +1,10 @@
 import Image from "next/image";
 import Link from "next/link";
-
-const SHOP = ["New Arrivals", "Best Sellers", "Men", "Women", "Accessories"];
-const HELP = ["Shipping & Returns", "FAQ", "Size Guide", "Contact Us", "Track Order"];
+import {
+  FOOTER_HELP_LINKS,
+  FOOTER_LEGAL_LINKS,
+  footerShopLinks,
+} from "@/lib/storeNav";
 
 function ColumnHeading({ children }) {
   return (
@@ -12,21 +14,26 @@ function ColumnHeading({ children }) {
   );
 }
 
-function FooterLink({ children }) {
+function FooterLink({ href = "#", children }) {
   return (
     <li>
-      <a href="#" className="font-body text-[14px] leading-5 text-[#9ca3af] hover:text-white">
+      <Link
+        href={href}
+        className="font-body text-[14px] leading-5 text-[#9ca3af] hover:text-white"
+      >
         {children}
-      </a>
+      </Link>
     </li>
   );
 }
 
-function SocialIcon({ label, children }) {
+function SocialIcon({ label, href = "#", children }) {
   return (
     <a
-      href="#"
+      href={href}
       aria-label={label}
+      target="_blank"
+      rel="noopener noreferrer"
       className="grid size-10 place-items-center rounded-full bg-white/10 text-white hover:bg-white/20"
     >
       {children}
@@ -34,7 +41,8 @@ function SocialIcon({ label, children }) {
   );
 }
 
-export default function ShopFooter() {
+export default function ShopFooter({ categories = [] }) {
+  const shopLinks = footerShopLinks(categories);
   return (
     <footer className="w-full bg-[#11191f] pb-8 pt-16 text-white">
       <div className="mx-auto flex w-full max-w-[1440px] flex-col gap-16 px-4 md:px-8">
@@ -55,7 +63,7 @@ export default function ShopFooter() {
               modern mover.
             </p>
             <div className="flex gap-4 pt-[1.2px]">
-              <SocialIcon label="Instagram">
+              <SocialIcon label="Instagram" href="https://instagram.com">
                 <svg
                   viewBox="0 0 24 24"
                   fill="none"
@@ -69,12 +77,12 @@ export default function ShopFooter() {
                   <circle cx="17.5" cy="6.5" r="0.6" fill="currentColor" />
                 </svg>
               </SocialIcon>
-              <SocialIcon label="Twitter">
+              <SocialIcon label="Twitter" href="https://twitter.com">
                 <svg viewBox="0 0 24 24" fill="currentColor" className="size-4" aria-hidden>
                   <path d="M22 5.8c-.7.3-1.5.6-2.3.7a4 4 0 0 0 1.8-2.2 8 8 0 0 1-2.6 1A4 4 0 0 0 12 9a11.3 11.3 0 0 1-8.2-4.2 4 4 0 0 0 1.2 5.3 4 4 0 0 1-1.8-.5v.1A4 4 0 0 0 6.4 13a4 4 0 0 1-1.8.1 4 4 0 0 0 3.7 2.8A8 8 0 0 1 2 17.6 11.3 11.3 0 0 0 8.1 19c7.3 0 11.3-6 11.3-11.3v-.5A8 8 0 0 0 22 5.8z" />
                 </svg>
               </SocialIcon>
-              <SocialIcon label="Facebook">
+              <SocialIcon label="Facebook" href="https://facebook.com">
                 <svg viewBox="0 0 24 24" fill="currentColor" className="size-4" aria-hidden>
                   <path d="M13.5 21v-7.5h2.5l.4-3h-2.9v-2c0-.9.3-1.5 1.6-1.5H17V4.1A23 23 0 0 0 14.6 4c-2.4 0-4 1.4-4 4v2.5H8v3h2.6V21z" />
                 </svg>
@@ -82,22 +90,26 @@ export default function ShopFooter() {
             </div>
           </div>
 
-          {/* Shop links */}
+          {/* Shop links — driven by the live category tree */}
           <div className="flex flex-col gap-6">
             <ColumnHeading>Shop</ColumnHeading>
             <ul className="flex flex-col gap-4">
-              {SHOP.map((s) => (
-                <FooterLink key={s}>{s}</FooterLink>
+              {shopLinks.map((link) => (
+                <FooterLink key={link.label} href={link.href}>
+                  {link.label}
+                </FooterLink>
               ))}
             </ul>
           </div>
 
-          {/* Help links */}
+          {/* Help links — wired to real customer pages */}
           <div className="flex flex-col gap-6">
             <ColumnHeading>Help</ColumnHeading>
             <ul className="flex flex-col gap-4">
-              {HELP.map((s) => (
-                <FooterLink key={s}>{s}</FooterLink>
+              {FOOTER_HELP_LINKS.map((link) => (
+                <FooterLink key={link.label} href={link.href}>
+                  {link.label}
+                </FooterLink>
               ))}
             </ul>
           </div>
@@ -141,15 +153,15 @@ export default function ShopFooter() {
             © {new Date().getFullYear()} RE. All rights reserved.
           </p>
           <div className="flex gap-6">
-            <a href="#" className="font-body text-[14px] leading-5 text-[#9ca3af] hover:text-white">
-              Privacy Policy
-            </a>
-            <a href="#" className="font-body text-[14px] leading-5 text-[#9ca3af] hover:text-white">
-              Terms of Service
-            </a>
-            <a href="#" className="font-body text-[14px] leading-5 text-[#9ca3af] hover:text-white">
-              Cookies
-            </a>
+            {FOOTER_LEGAL_LINKS.map((link) => (
+              <Link
+                key={link.label}
+                href={link.href}
+                className="font-body text-[14px] leading-5 text-[#9ca3af] hover:text-white"
+              >
+                {link.label}
+              </Link>
+            ))}
           </div>
         </div>
       </div>

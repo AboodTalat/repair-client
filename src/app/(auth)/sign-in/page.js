@@ -1,13 +1,12 @@
+import { Suspense } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import HeroPanel from "@/components/auth/HeroPanel";
 import AuthHeader from "@/components/auth/AuthHeader";
-import AuthInput from "@/components/auth/AuthInput";
-import PasswordInput from "@/components/auth/PasswordInput";
-import AuthButton from "@/components/auth/AuthButton";
-import GoogleButton from "@/components/auth/GoogleButton";
+import GoogleSignInButton from "@/components/auth/GoogleSignInButton";
 import Divider from "@/components/auth/Divider";
 import TermsFooter from "@/components/auth/TermsFooter";
+import SignInForm from "@/components/auth/SignInForm";
 
 export const metadata = { title: "Sign In — Repair" };
 
@@ -75,18 +74,18 @@ export default function SignInPage() {
             </div>
 
             <div className="pb-8">
-              <GoogleButton>Sign in with Google</GoogleButton>
+              <GoogleSignInButton>Sign in with Google</GoogleSignInButton>
             </div>
 
             <div className="pb-8">
               <Divider />
             </div>
 
-            <form className="flex w-full flex-col gap-5">
-              <AuthInput label="Email Address" type="email" name="email" autoComplete="email" required />
-              <PasswordInput label="Password" name="password" autoComplete="current-password" required />
-              <AuthButton>Sign In</AuthButton>
-            </form>
+            {/* useSearchParams inside the form needs a Suspense boundary in
+                App Router so the static page shell can prerender. */}
+            <Suspense fallback={null}>
+              <SignInForm />
+            </Suspense>
 
             <div className="flex items-center justify-center gap-1 pt-4">
               <span className="font-display text-[12px] uppercase leading-[16px] tracking-[0.3px] text-[#6b7280]">
@@ -105,11 +104,11 @@ export default function SignInPage() {
         <div className="hidden md:block">
           <TermsFooter>
             By signing in, you agree to our{" "}
-            <Link href="#" className="underline">
+            <Link href="/#terms" className="underline">
               Terms of Service
             </Link>{" "}
             and{" "}
-            <Link href="#" className="underline">
+            <Link href="/#privacy" className="underline">
               Privacy Policy
             </Link>
             .

@@ -1,0 +1,764 @@
+"use client";
+
+/**
+ * useRepairStore — global client state for the repair e-commerce storefront.
+ *
+ * Slices
+ * ──────
+ *   authInfo      JWT + refresh token + user identity         (persisted, AES-encrypted)
+ *   cartInfo      item count + last-synced timestamp          (persisted)
+ *   wishlistInfo  product-id list + last-synced timestamp     (persisted)
+ *   lastOrder     most recent successfully-placed order       (persisted — order
+ *                                                              confirmation page must
+ *                                                              survive a refresh)
+ *   checkoutInfo  in-progress checkout selections             (NOT persisted — stale
+ *                                                              promos and removed
+ *                                                              addresses are bad UX)
+ *
+ * Source of truth
+ * ───────────────
+ * Cart and wishlist live in the server database.  The store holds a lightweight
+ * cache:
+ *   cartInfo.itemCount      — sum of all cart-line quantities, for the header badge
+ *   wishlistInfo.productIds — product-id list, for instant heart-icon state
+ *
+ * Both are refreshed from the server via syncCart() / syncWishlist() on:
+ *   • app mount (if a token survived the page reload — StoreProvider triggers this)
+ *   • after login / signup / Google OAuth (call sites must trigger this — see
+ *     `setAuthInfo` JSDoc)
+ *
+ * Components do optimistic local updates first (incrementCartCount,
+ * toggleWishlistItem) and let the next sync reconcile with the server.
+ *
+ * 401 handling
+ * ────────────
+ * Access tokens expire after 30 minutes (server-side `ACCESS_TOKEN_TTL = "30m"`).
+ * syncCart and syncWishlist use `graphqlFetchWithRetry` which auto-refreshes
+ * once on a 401 and retries — so an idle tab still gets fresh counts.  For
+ * component-level API calls, use `repairCall` from `@/lib/repairAuthedApi`
+ * which wraps the same retry pattern.
+ *
+ * Proactive refresh
+ * ─────────────────
+ * `maybeProactiveRefresh()` peeks at the JWT `exp` claim (read-only, no
+ * verification — that's the server's job) and triggers a refresh when fewer
+ * than `PROACTIVE_REFRESH_WINDOW_SEC` (default 300s) remain.  StoreProvider
+ * fires it on tab focus, on network reconnect, and after rehydrate, so a
+ * user returning from a slept tab never sees the "first click is slow"
+ * round-trip and a critical surface like checkout never opens with a
+ * minutes-from-expiry token.
+ *
+ * Forced sign-out vs explicit sign-out
+ * ────────────────────────────────────
+ * `handleSessionExpired()` runs when refresh fails (token reuse detected,
+ * 30-day refresh window elapsed, account deactivated server-side).  It
+ * clears `authInfo` but PRESERVES `cartInfo`, `wishlistInfo`, and
+ * `lastOrder` so the user signs back in and finds their basket intact —
+ * the next `syncCart()` / `syncWishlist()` after re-auth reconciles with
+ * the server.  `sessionExpired` flag is also set so StoreProvider can
+ * surface a toast + redirect to `/sign-in?next=...`.
+ *
+ * `clearAuth()` is the explicit-logout path — when the user clicks Sign
+ * Out, the whole user-scoped slice is wiped including cart/wishlist/last
+ * order, because the next visitor on this device may be someone else.
+ *
+ * Persistence
+ * ───────────
+ * CryptoJS AES-256 encrypts the serialised JSON blob in localStorage under
+ * the key "RepairStore_v1".  The key comes from NEXT_PUBLIC_STORAGE_SECRET_KEY
+ * (set in .env.local for dev, in the Vercel project env for prod).  This is
+ * obfuscation-level protection — the key ships in the JS bundle.  Real
+ * security is server-side: refresh tokens are single-use, 30-day TTL, and
+ * the server detects and revokes reused tokens.
+ *
+ * Refresh tokens
+ * ──────────────
+ * The module-level `_refreshInFlight` lock ensures concurrent callers share
+ * one Promise instead of each firing a new request.  A second request would
+ * reuse an already-rotated token — the server detects this and revokes the
+ * entire token family, silently logging the user out.
+ *
+ * Refresh tokens are SLIDING on the server — each successful rotation hands
+ * back a brand-new 30-day window, so any user who returns within 30 days of
+ * their last activity is never logged out.  Only genuinely abandoned
+ * sessions ever expire.
+ *
+ * Cross-tab auth sync
+ * ───────────────────
+ * Without coordination, tab A refreshing the token would leave tab B holding
+ * the old refresh token; tab B's next 401 would refresh too, reusing tab A's
+ * already-rotated token, and the server would revoke the whole family —
+ * silently logging the user out of both tabs.  `BroadcastChannel("repair-
+ * auth")` ships every token update across tabs immediately so they stay in
+ * lock-step.  The applier path (`applyAuthInfoFromBroadcast`) does NOT
+ * re-broadcast, which prevents echo storms.
+ *
+ * SSR / hydration
+ * ───────────────
+ * `skipHydration: true` keeps Zustand off localStorage during SSR and the
+ * initial render.  StoreProvider calls `await rehydrate()` inside useEffect
+ * so the store rehydrates only client-side, after first paint.  The `await`
+ * matters — even with synchronous storage, Zustand's persist middleware
+ * applies the rehydrated state inside a `.then()` callback that runs as a
+ * microtask.
+ */
+
+import { create } from "zustand";
+import { persist, createJSONStorage } from "zustand/middleware";
+import CryptoJS from "crypto-js";
+import { graphqlFetch, graphqlFetchWithRetry } from "@/lib/repairClientApi";
+
+// ─── Encryption helpers ───────────────────────────────────────────────────────
+
+const SECRET =
+  process.env.NEXT_PUBLIC_STORAGE_SECRET_KEY || "repair-store-fallback-key-change-me";
+
+const secureStorage = {
+  getItem(key) {
+    try {
+      const cipher = localStorage.getItem(key);
+      if (!cipher) return null;
+      const bytes = CryptoJS.AES.decrypt(cipher, SECRET);
+      const plain = bytes.toString(CryptoJS.enc.Utf8);
+      return plain || null;
+    } catch {
+      return null;
+    }
+  },
+  setItem(key, value) {
+    try {
+      const cipher = CryptoJS.AES.encrypt(value, SECRET).toString();
+      localStorage.setItem(key, cipher);
+    } catch {
+      /* quota exceeded or private-browsing write block — silent */
+    }
+  },
+  removeItem(key) {
+    try {
+      localStorage.removeItem(key);
+    } catch {
+      /* ignore */
+    }
+  },
+};
+
+// ─── Initial state ────────────────────────────────────────────────────────────
+
+const initialAuthInfo = {
+  isLoggedIn: false,
+  token: null,         // JWT — 30-minute expiry (server constant ACCESS_TOKEN_TTL)
+  refreshToken: null,  // opaque 64-hex string — 30-day sliding, single-use rotation
+  user: null,          // { id, email, role: "customer"|"admin"|"delivery"|"accounting", is_active }
+};
+
+// Proactive-refresh window — when the access token has fewer than this many
+// seconds left, the next `maybeProactiveRefresh()` call (fired on tab focus,
+// network reconnect, post-rehydrate, and before sensitive flows like
+// checkout) will rotate it ahead of the first API call.  Five minutes gives
+// us a comfortable buffer for a slow refresh round-trip.
+const PROACTIVE_REFRESH_WINDOW_SEC = 5 * 60;
+
+const initialCartInfo = {
+  itemCount: 0,      // sum of cart-line quantities — header badge
+  lastSynced: null,  // ISO timestamp
+};
+
+const initialWishlistInfo = {
+  productIds: [],    // number[] — instant heart-icon state without a round-trip
+  lastSynced: null,
+};
+
+// lastOrder is its own top-level slice (not nested in checkoutInfo) so it can
+// be persisted independently. The order-confirmation page reads from here.
+const initialLastOrder = null; // { order_id, order_number, total } | null
+
+const initialCheckoutInfo = {
+  appliedPromoCode: null,                 // { code, discount_type, discount_value, discount_amount, total_after }
+  selectedAddressId: null,                // UUID string
+  selectedShippingMethodKey: "standard",  // "standard" | "express" | "pickup"
+  selectedPaymentMethodId: null,
+};
+
+// ─── Single-flight refresh lock (module-level, NOT in Zustand state) ──────────
+
+let _refreshInFlight = null;
+
+// ─── JWT exp helper ───────────────────────────────────────────────────────────
+//
+// Reads the `exp` claim from a JWT WITHOUT verifying the signature — the
+// server is the only place that can trust this token cryptographically.
+// We only use the timestamp to decide whether to fire a refresh, so a
+// tampered token just causes one extra round-trip on the next call.
+
+function decodeJwtPayload(token) {
+  if (!token || typeof token !== "string") return null;
+  const parts = token.split(".");
+  if (parts.length !== 3) return null;
+  try {
+    // base64url → base64 → string → JSON
+    const b64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    const padded = b64 + "===".slice((b64.length + 3) % 4);
+    const json =
+      typeof atob === "function"
+        ? atob(padded)
+        : Buffer.from(padded, "base64").toString("binary");
+    return JSON.parse(decodeURIComponent(escape(json)));
+  } catch {
+    return null;
+  }
+}
+
+function accessTokenSecondsLeft(token) {
+  const payload = decodeJwtPayload(token);
+  if (!payload?.exp) return null;
+  return Math.floor(payload.exp - Date.now() / 1000);
+}
+
+// ─── BroadcastChannel — cross-tab auth sync ───────────────────────────────────
+//
+// Without this, tab A refreshing leaves tab B holding the old refresh token;
+// B's next 401 refreshes too, reusing A's already-rotated token, and the
+// server's reuse-detection revokes the whole family.  We broadcast every
+// auth state change so tabs stay in lock-step.
+//
+// The applier path (applyAuthInfoFromBroadcast / applySessionExpired) does
+// NOT re-broadcast, which prevents echo storms when a third tab receives a
+// message and updates its own state.
+
+const AUTH_CHANNEL_NAME = "repair-auth";
+let _authChannel = null;
+
+function getAuthChannel() {
+  if (typeof window === "undefined") return null;
+  if (typeof BroadcastChannel !== "function") return null;
+  if (_authChannel) return _authChannel;
+  try {
+    _authChannel = new BroadcastChannel(AUTH_CHANNEL_NAME);
+  } catch {
+    _authChannel = null;
+  }
+  return _authChannel;
+}
+
+function broadcastAuth(message) {
+  const ch = getAuthChannel();
+  if (!ch) return;
+  try {
+    ch.postMessage(message);
+  } catch {
+    /* channel closed mid-flight — ignore */
+  }
+}
+
+// ─── Store ────────────────────────────────────────────────────────────────────
+
+export const useRepairStore = create(
+  persist(
+    (set, get) => ({
+      // ── State ──────────────────────────────────────────────────────────────
+      authInfo: { ...initialAuthInfo },
+      cartInfo: { ...initialCartInfo },
+      wishlistInfo: { ...initialWishlistInfo },
+      lastOrder: initialLastOrder,
+      checkoutInfo: { ...initialCheckoutInfo },
+
+      // Transient (NOT persisted) — flips true when a refresh fails OR
+      // another tab tells us the session is dead.  StoreProvider subscribes
+      // to this and surfaces a toast + redirect to /sign-in?next=<here>.
+      sessionExpired: false,
+
+      // ── Auth actions ───────────────────────────────────────────────────────
+
+      /**
+       * Call after every auth event: login, signup, Google OAuth, token refresh.
+       * Expects the shape every repair auth resolver returns:
+       *   { token, refresh_token, user: { id, email, role, is_active } }
+       *
+       * IMPORTANT: this method only updates auth state.  Login flows should
+       * also trigger syncCart() and syncWishlist() right after so the badge
+       * counts are fresh for the user's session:
+       *
+       *   const data = await repairCall("myAppLogin", { email, password });
+       *   useRepairStore.getState().setAuthInfo(data);
+       *   useRepairStore.getState().syncCart();
+       *   useRepairStore.getState().syncWishlist();
+       */
+      setAuthInfo({ token, refresh_token, user }) {
+        const next = {
+          isLoggedIn: true,
+          token,
+          refreshToken: refresh_token,
+          user,
+        };
+        set({ authInfo: next, sessionExpired: false });
+        // Broadcast so other tabs adopt the same fresh token pair and don't
+        // independently try to refresh the now-rotated one.
+        broadcastAuth({ kind: "auth-updated", at: Date.now(), authInfo: next });
+      },
+
+      /**
+       * Apply auth state from a BroadcastChannel message coming from a
+       * sibling tab.  Does NOT re-broadcast — that would echo forever in a
+       * 3+ tab setup.  Used only by the channel receiver.
+       */
+      applyAuthInfoFromBroadcast(authInfo) {
+        if (!authInfo || typeof authInfo !== "object") return;
+        set({ authInfo: { ...initialAuthInfo, ...authInfo }, sessionExpired: false });
+      },
+
+      /**
+       * Explicit user-initiated logout. Wipes EVERYTHING user-scoped,
+       * including cart/wishlist/lastOrder — the next person on this device
+       * may not be the same user. Broadcasts so sibling tabs sign out too.
+       */
+      clearAuth() {
+        set({
+          authInfo: { ...initialAuthInfo },
+          cartInfo: { ...initialCartInfo },
+          wishlistInfo: { ...initialWishlistInfo },
+          lastOrder: initialLastOrder,
+          checkoutInfo: { ...initialCheckoutInfo },
+          sessionExpired: false,
+        });
+        broadcastAuth({ kind: "auth-cleared", at: Date.now() });
+      },
+
+      /**
+       * Forced sign-out (refresh failed, token reuse detected server-side,
+       * account deactivated, or 30-day refresh window finally elapsed).
+       *
+       * Wipes only the auth slice — cart/wishlist/lastOrder stay cached so
+       * the user signs back in and their basket is right where they left
+       * it.  The next syncCart/syncWishlist after re-auth reconciles with
+       * the server.  `sessionExpired` is set so StoreProvider surfaces a
+       * toast + redirect to /sign-in?next=<current path>.
+       *
+       * Also broadcasts so sibling tabs hit the same expired state at the
+       * same moment instead of each discovering it independently with their
+       * own failed refresh attempt.
+       */
+      handleSessionExpired() {
+        const { authInfo, sessionExpired } = get();
+        // Idempotent: avoid re-broadcasting if a sibling tab already pushed
+        // this to us, and don't fire if the user wasn't logged in anyway
+        // (e.g. background sync race on a fresh tab).
+        if (sessionExpired) return;
+        if (!authInfo.isLoggedIn) {
+          set({ sessionExpired: true });
+          return;
+        }
+        set({
+          authInfo: { ...initialAuthInfo },
+          checkoutInfo: { ...initialCheckoutInfo },
+          sessionExpired: true,
+          // cartInfo / wishlistInfo / lastOrder DELIBERATELY preserved.
+        });
+        broadcastAuth({ kind: "session-expired", at: Date.now() });
+      },
+
+      /** Receiver-side mirror of handleSessionExpired — no rebroadcast. */
+      applySessionExpiredFromBroadcast() {
+        if (get().sessionExpired) return;
+        set({
+          authInfo: { ...initialAuthInfo },
+          checkoutInfo: { ...initialCheckoutInfo },
+          sessionExpired: true,
+        });
+      },
+
+      /** Clear the sessionExpired flag — call after the UI has handled it. */
+      clearSessionExpired() {
+        set({ sessionExpired: false });
+      },
+
+      /**
+       * Exchange the stored refresh token for a fresh access + refresh pair.
+       *
+       * Single-flight: concurrent callers share the same Promise so only one
+       * network request fires.  Without this lock a second in-flight 401
+       * would reuse an already-rotated token, causing server-side family
+       * revocation and a silent logout.
+       *
+       * `myAppRefreshToken` is a Mutation (revokes old + mints new).  The
+       * server's safeParse expects camelCase `refreshToken`.
+       *
+       * @returns {Promise<string|null>}  New access token on success, null on failure
+       */
+      async refreshAuth() {
+        if (_refreshInFlight) return _refreshInFlight;
+
+        _refreshInFlight = (async () => {
+          const { authInfo } = get();
+          if (!authInfo.refreshToken) {
+            // No refresh token at all — this only happens to a tab that
+            // never had a session.  Don't trigger sessionExpired UX since
+            // the user wasn't actually signed in.
+            return null;
+          }
+
+          try {
+            const data = await graphqlFetch(
+              "myAppRefreshToken",
+              { refreshToken: authInfo.refreshToken },
+              { token: null, isQuery: false }
+            );
+            get().setAuthInfo(data);
+            return data.token;
+          } catch {
+            // Refresh failed: 30-day window elapsed, token revoked, account
+            // deactivated, or family-revocation hit.  Fall into the forced-
+            // sign-out path so cart/wishlist survive and StoreProvider can
+            // redirect with ?next=<current page>.
+            get().handleSessionExpired();
+            return null;
+          }
+        })();
+
+        try {
+          return await _refreshInFlight;
+        } finally {
+          _refreshInFlight = null;
+        }
+      },
+
+      /**
+       * Refresh the access token if it has fewer than
+       * PROACTIVE_REFRESH_WINDOW_SEC seconds left.  Cheap to call — does
+       * nothing if the token is still fresh.  Used by StoreProvider on tab
+       * focus / network reconnect / post-rehydrate, and by sensitive flows
+       * (e.g. opening /checkout/payment) to avoid mid-action 401s.
+       *
+       * @returns {Promise<string|null>}  Current token after the (possible)
+       *                                  refresh, or null if no session.
+       */
+      async maybeProactiveRefresh() {
+        const { authInfo, refreshAuth } = get();
+        if (!authInfo.isLoggedIn || !authInfo.token) return null;
+
+        const secondsLeft = accessTokenSecondsLeft(authInfo.token);
+        // Unknown exp (malformed token) → safest to refresh once.
+        if (secondsLeft == null) return refreshAuth();
+        if (secondsLeft > PROACTIVE_REFRESH_WINDOW_SEC) return authInfo.token;
+
+        return refreshAuth();
+      },
+
+      /** Read-only helper — seconds until the current access token expires. */
+      getAccessTokenSecondsLeft() {
+        return accessTokenSecondsLeft(get().authInfo.token);
+      },
+
+      // ── Cart actions ───────────────────────────────────────────────────────
+
+      /**
+       * Fetch the live cart from the server and update itemCount.
+       *
+       * Uses graphqlFetchWithRetry so an expired 15-minute access token is
+       * transparently refreshed.  All other errors (offline, server down,
+       * etc.) are swallowed silently — we keep the cached count rather than
+       * blinking it to 0.
+       */
+      async syncCart() {
+        if (!get().authInfo.isLoggedIn) return;
+
+        try {
+          const data = await graphqlFetchWithRetry(
+            "myAppGetCart",
+            {},
+            {
+              getToken: () => get().authInfo.token,
+              refresh: () => get().refreshAuth(),
+              isQuery: true,
+            }
+          );
+          const count = Array.isArray(data?.items)
+            ? data.items.reduce((sum, item) => sum + (item.quantity ?? 1), 0)
+            : 0;
+          set((s) => ({
+            cartInfo: { ...s.cartInfo, itemCount: count, lastSynced: new Date().toISOString() },
+          }));
+        } catch {
+          /* offline or refresh-also-failed — keep cached value */
+        }
+      },
+
+      /** Set exact item count after a full cart fetch outside the store. */
+      setCartCount(count) {
+        set((s) => ({
+          cartInfo: {
+            ...s.cartInfo,
+            itemCount: Math.max(0, count),
+            lastSynced: new Date().toISOString(),
+          },
+        }));
+      },
+
+      /** Optimistic +N immediately after an add-to-cart mutation fires. */
+      incrementCartCount(by = 1) {
+        set((s) => ({
+          cartInfo: { ...s.cartInfo, itemCount: Math.max(0, s.cartInfo.itemCount + by) },
+        }));
+      },
+
+      /** Optimistic −N immediately after a remove-from-cart mutation fires. */
+      decrementCartCount(by = 1) {
+        set((s) => ({
+          cartInfo: { ...s.cartInfo, itemCount: Math.max(0, s.cartInfo.itemCount - by) },
+        }));
+      },
+
+      clearCart() {
+        set({ cartInfo: { ...initialCartInfo } });
+      },
+
+      // ── Wishlist actions ───────────────────────────────────────────────────
+
+      /**
+       * Fetch the live wishlist from the server and update productIds.
+       * Same retry semantics as syncCart.
+       */
+      async syncWishlist() {
+        if (!get().authInfo.isLoggedIn) return;
+
+        try {
+          const data = await graphqlFetchWithRetry(
+            "myAppGetWishlist",
+            {},
+            {
+              getToken: () => get().authInfo.token,
+              refresh: () => get().refreshAuth(),
+              isQuery: true,
+            }
+          );
+          const ids = Array.isArray(data?.items)
+            ? data.items.map((item) => item.product_id).filter((id) => id != null)
+            : [];
+          set({
+            wishlistInfo: { productIds: ids, lastSynced: new Date().toISOString() },
+          });
+        } catch {
+          /* offline or refresh-also-failed — keep cached ids */
+        }
+      },
+
+      /** Overwrite the full product-id list from outside the store. */
+      setWishlistIds(ids) {
+        set({
+          wishlistInfo: {
+            productIds: Array.isArray(ids) ? ids : [],
+            lastSynced: new Date().toISOString(),
+          },
+        });
+      },
+
+      /**
+       * Optimistic heart-toggle. Adds if absent, removes if present.
+       * Always follow this with the actual API mutation; revert on error.
+       */
+      toggleWishlistItem(productId) {
+        set((s) => {
+          const ids = s.wishlistInfo.productIds;
+          const next = ids.includes(productId)
+            ? ids.filter((id) => id !== productId)
+            : [...ids, productId];
+          return { wishlistInfo: { ...s.wishlistInfo, productIds: next } };
+        });
+      },
+
+      clearWishlist() {
+        set({ wishlistInfo: { ...initialWishlistInfo } });
+      },
+
+      // ── Last-order actions (persisted) ─────────────────────────────────────
+
+      /**
+       * Store the result of myAppCheckout: { order_id, order_number, total }.
+       * Persisted so the order-confirmation page survives a refresh.
+       */
+      setLastPlacedOrder(order) {
+        set({ lastOrder: order });
+      },
+
+      clearLastOrder() {
+        set({ lastOrder: initialLastOrder });
+      },
+
+      // ── Checkout actions (in-memory only) ──────────────────────────────────
+
+      /** Store the validated promo result from myAppValidatePromoCode. */
+      applyPromoCode(result) {
+        set((s) => ({
+          checkoutInfo: { ...s.checkoutInfo, appliedPromoCode: result },
+        }));
+      },
+
+      clearPromoCode() {
+        set((s) => ({
+          checkoutInfo: { ...s.checkoutInfo, appliedPromoCode: null },
+        }));
+      },
+
+      setSelectedAddress(id) {
+        set((s) => ({
+          checkoutInfo: { ...s.checkoutInfo, selectedAddressId: id },
+        }));
+      },
+
+      /** "standard" | "express" | "pickup" */
+      setShippingMethod(key) {
+        set((s) => ({
+          checkoutInfo: { ...s.checkoutInfo, selectedShippingMethodKey: key },
+        }));
+      },
+
+      setSelectedPaymentMethod(id) {
+        set((s) => ({
+          checkoutInfo: { ...s.checkoutInfo, selectedPaymentMethodId: id },
+        }));
+      },
+
+      /** Wipe in-progress checkout selections.  Does NOT touch lastOrder. */
+      clearCheckout() {
+        set({ checkoutInfo: { ...initialCheckoutInfo } });
+      },
+
+      // ── Global reset ───────────────────────────────────────────────────────
+
+      /**
+       * Hard reset: clears every slice AND removes the encrypted localStorage
+       * entry.  Use for logout from the UI, or when storage integrity is
+       * suspect (e.g. a decryption failure on rehydrate).
+       */
+      resetStore() {
+        set({
+          authInfo: { ...initialAuthInfo },
+          cartInfo: { ...initialCartInfo },
+          wishlistInfo: { ...initialWishlistInfo },
+          lastOrder: initialLastOrder,
+          checkoutInfo: { ...initialCheckoutInfo },
+        });
+        useRepairStore.persist.clearStorage();
+      },
+
+      // ── Read helpers (usable outside React via getState()) ─────────────────
+
+      getAuthInfo: () => get().authInfo,
+      getToken: () => get().authInfo.token,
+      getCheckoutInfo: () => get().checkoutInfo,
+      getLastOrder: () => get().lastOrder,
+    }),
+
+    // ── Persist config ──────────────────────────────────────────────────────
+    {
+      name: "RepairStore_v1",
+      storage: createJSONStorage(() => secureStorage),
+      // Hydrate manually from StoreProvider (client-only) to avoid SSR mismatch.
+      skipHydration: true,
+      // Persist auth + caches + the last order receipt.  checkoutInfo is
+      // intentionally excluded — stale promo codes / address selections
+      // should not survive a page reload.
+      partialize: (state) => ({
+        authInfo: state.authInfo,
+        cartInfo: state.cartInfo,
+        wishlistInfo: state.wishlistInfo,
+        lastOrder: state.lastOrder,
+      }),
+    }
+  )
+);
+
+// ─── Storage-deletion listener ────────────────────────────────────────────────
+//
+// Detects three scenarios where the persisted key might disappear while the
+// app is open:
+//   1. Another tab calls localStorage.removeItem / localStorage.clear
+//   2. The key was already gone when this tab loaded
+//   3. Same-tab deletion by a third-party script
+//
+// Returns a cleanup function — pass directly to useEffect's return value.
+
+export function initRepairStoreListener() {
+  const STORE_KEY = "RepairStore_v1";
+
+  function checkAndReset() {
+    try {
+      const raw = localStorage.getItem(STORE_KEY);
+      if (!raw && useRepairStore.getState().authInfo.isLoggedIn) {
+        useRepairStore.getState().resetStore();
+      }
+    } catch {
+      /* localStorage blocked (e.g. strict private browsing) */
+    }
+  }
+
+  function onStorageEvent(e) {
+    if (e.key === null || e.key === STORE_KEY) {
+      checkAndReset();
+    }
+  }
+
+  // ─── BroadcastChannel — cross-tab auth sync ──────────────────────────────
+  //
+  // Receive auth updates from sibling tabs and mirror them locally without
+  // re-broadcasting (the applier paths skip the postMessage step).
+  const ch = getAuthChannel();
+  function onChannelMessage(e) {
+    const msg = e?.data;
+    if (!msg || typeof msg !== "object") return;
+    const state = useRepairStore.getState();
+    switch (msg.kind) {
+      case "auth-updated":
+        if (msg.authInfo) state.applyAuthInfoFromBroadcast(msg.authInfo);
+        break;
+      case "auth-cleared":
+        // Another tab clicked Sign Out — wipe everything locally too.
+        useRepairStore.setState({
+          authInfo: { ...initialAuthInfo },
+          cartInfo: { ...initialCartInfo },
+          wishlistInfo: { ...initialWishlistInfo },
+          lastOrder: initialLastOrder,
+          checkoutInfo: { ...initialCheckoutInfo },
+          sessionExpired: false,
+        });
+        break;
+      case "session-expired":
+        state.applySessionExpiredFromBroadcast();
+        break;
+      default:
+        break;
+    }
+  }
+  if (ch) ch.addEventListener("message", onChannelMessage);
+
+  checkAndReset();
+  const interval = setInterval(checkAndReset, 1000);
+  window.addEventListener("storage", onStorageEvent);
+
+  return function cleanup() {
+    window.removeEventListener("storage", onStorageEvent);
+    clearInterval(interval);
+    if (ch) ch.removeEventListener("message", onChannelMessage);
+  };
+}
+
+// ─── Selector helpers ─────────────────────────────────────────────────────────
+//
+// Use these inline-friendly selectors in component code:
+//
+//   const isLoggedIn = useRepairStore(selectIsLoggedIn);
+//   const cartCount  = useRepairStore(selectCartCount);
+//
+// For per-id checks like "is this product wishlisted?", the inline form is
+// just as good and avoids the closure-factory dance:
+//
+//   const isWishlisted = useRepairStore((s) => s.wishlistInfo.productIds.includes(productId));
+
+export const selectIsLoggedIn = (s) => s.authInfo.isLoggedIn;
+export const selectUser = (s) => s.authInfo.user;
+export const selectToken = (s) => s.authInfo.token;
+export const selectCartCount = (s) => s.cartInfo.itemCount;
+export const selectWishlistIds = (s) => s.wishlistInfo.productIds;
+export const selectCheckoutInfo = (s) => s.checkoutInfo;
+export const selectAppliedPromoCode = (s) => s.checkoutInfo.appliedPromoCode;
+export const selectLastPlacedOrder = (s) => s.lastOrder;
+export const selectSessionExpired = (s) => s.sessionExpired;

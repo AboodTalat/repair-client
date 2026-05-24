@@ -17,6 +17,7 @@ const MOCK_PRODUCT = {
   itemsLeft: 2,
   lowStockLimit: 5,
   currency: "JOD",
+  labels: ["Best Seller", "Low Stock"],
   images: [
     "/shop/model-1.png",
     "/shop/model-2.png",

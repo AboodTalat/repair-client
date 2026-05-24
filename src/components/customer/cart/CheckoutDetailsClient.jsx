@@ -786,11 +786,11 @@ function DesktopOrderSummaryCard({ items, totals, appliedPromo, onContinue }) {
         style={condensed}
       >
         By proceeding to payment, you agree to our{" "}
-        <a href="#" className="underline">
+        <a href="/#terms" className="underline">
           Terms of Service
         </a>{" "}
         and{" "}
-        <a href="#" className="underline">
+        <a href="/#privacy" className="underline">
           Privacy Policy
         </a>
         .

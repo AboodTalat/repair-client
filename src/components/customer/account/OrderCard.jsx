@@ -1,6 +1,13 @@
 import Image from "next/image";
+import Link from "next/link";
 import OrderStatusBadge from "./OrderStatusBadge";
 import { badgeFor } from "@/lib/mockOrders";
+
+// (#13) Track Order CTA — primary when the order is still in flight,
+// hidden once the order has terminated (delivered/cancelled/returned).
+function showTrackCta(status) {
+  return status === "processing" || status === "prepared" || status === "handed_to_delivery" || status === "pending" || status === "dispatched";
+}
 
 // Order card — Figma mobile 41:1420 (cards under node 76:2106) +
 // desktop 119:4406 (cards 119:4428 onward).
@@ -89,19 +96,34 @@ function MobileOrderCard({ order }) {
       <div className="h-px w-full bg-[#e5e7eb]" />
 
       {/* CTA row */}
-      <div className="flex w-full items-start gap-2">
-        <button
-          type="button"
-          className="flex h-8 flex-1 items-center justify-center rounded-[2px] border border-[#11191f] p-2 font-display text-[10px] font-bold text-[#11191f] uppercase"
-        >
-          Inquire
-        </button>
-        <button
-          type="button"
-          className="flex h-8 flex-1 items-center justify-center rounded-[2px] border border-[#11191f] bg-[#11191f] p-2 font-display text-[10px] font-bold text-white uppercase"
-        >
-          Buy Again
-        </button>
+      <div className="flex w-full flex-col gap-2">
+        {showTrackCta(order.status) ? (
+          <Link
+            href={`/account/orders/${order.id}`}
+            className="flex h-8 w-full items-center justify-center rounded-[2px] border border-[#11191f] bg-[#11191f] p-2 font-display text-[10px] font-bold text-white uppercase"
+          >
+            Track Order
+          </Link>
+        ) : null}
+        <div className="flex w-full items-start gap-2">
+          <Link
+            href="/contact"
+            className="flex h-8 flex-1 items-center justify-center rounded-[2px] border border-[#11191f] p-2 font-display text-[10px] font-bold text-[#11191f] uppercase"
+          >
+            Inquire
+          </Link>
+          <Link
+            href={`/products/${order.productSlug ?? ""}`}
+            className={
+              "flex h-8 flex-1 items-center justify-center rounded-[2px] border border-[#11191f] p-2 font-display text-[10px] font-bold uppercase " +
+              (showTrackCta(order.status)
+                ? "text-[#11191f]"
+                : "bg-[#11191f] text-white")
+            }
+          >
+            Buy Again
+          </Link>
+        </div>
       </div>
     </article>
   );
@@ -177,21 +199,37 @@ function DesktopOrderCard({ order }) {
       </div>
 
       {/* CTA row */}
-      <div className="flex w-full items-center justify-center gap-3">
-        <button
-          type="button"
-          className="flex h-12 flex-1 items-center justify-center rounded border border-[#11191f] px-[17px] py-[13px] font-display text-[14px] font-bold uppercase text-[#11191f]"
-          style={{ letterSpacing: "0.35px" }}
-        >
-          Inquire
-        </button>
-        <button
-          type="button"
-          className="flex h-12 flex-1 items-center justify-center rounded bg-[#11191f] px-4 py-3 font-display text-[14px] font-bold uppercase text-white"
-          style={{ letterSpacing: "0.35px" }}
-        >
-          Buy Again
-        </button>
+      <div className="flex w-full flex-col gap-3">
+        {showTrackCta(order.status) ? (
+          <Link
+            href={`/account/orders/${order.id}`}
+            className="flex h-12 w-full items-center justify-center rounded bg-[#11191f] px-4 py-3 font-display text-[14px] font-bold uppercase text-white"
+            style={{ letterSpacing: "0.35px" }}
+          >
+            Track Order
+          </Link>
+        ) : null}
+        <div className="flex w-full items-center justify-center gap-3">
+          <Link
+            href="/contact"
+            className="flex h-12 flex-1 items-center justify-center rounded border border-[#11191f] px-[17px] py-[13px] font-display text-[14px] font-bold uppercase text-[#11191f]"
+            style={{ letterSpacing: "0.35px" }}
+          >
+            Inquire
+          </Link>
+          <Link
+            href={`/products/${order.productSlug ?? ""}`}
+            className={
+              "flex h-12 flex-1 items-center justify-center rounded px-4 py-3 font-display text-[14px] font-bold uppercase " +
+              (showTrackCta(order.status)
+                ? "border border-[#11191f] text-[#11191f]"
+                : "bg-[#11191f] text-white")
+            }
+            style={{ letterSpacing: "0.35px" }}
+          >
+            Buy Again
+          </Link>
+        </div>
       </div>
     </article>
   );

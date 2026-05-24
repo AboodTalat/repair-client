@@ -1,4 +1,5 @@
 import AdminShell from "@/components/admin/layout/AdminShell";
+import AuthGuard from "@/components/auth/AuthGuard";
 
 export const metadata = {
   title: "Repair — Console",
@@ -6,5 +7,9 @@ export const metadata = {
 };
 
 export default function AdminLayout({ children }) {
-  return <AdminShell>{children}</AdminShell>;
+  return (
+    <AuthGuard>
+      <AdminShell>{children}</AdminShell>
+    </AuthGuard>
+  );
 }

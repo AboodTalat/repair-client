@@ -1,4 +1,5 @@
 import Image from "next/image";
+import Link from "next/link";
 
 // Wishlist card — Figma mobile 41:1613 (cards under node 77:2248) +
 // desktop 119:4743 (cards 126:3671 / 126:3697 / 119:4809 / 126:3723).
@@ -105,18 +106,18 @@ function MobileWishlistCard({ item }) {
 
       {/* CTA row */}
       <div className="flex w-full items-start gap-2">
-        <button
-          type="button"
+        <Link
+          href="/cart"
           className="flex h-8 flex-1 items-center justify-center rounded-[2px] border border-[#11191f] p-2 font-display text-[10px] font-bold uppercase text-[#11191f]"
         >
           Add to Cart
-        </button>
-        <button
-          type="button"
+        </Link>
+        <Link
+          href={`/products/${item.productSlug ?? ""}`}
           className="flex h-8 flex-1 items-center justify-center rounded-[2px] border border-[#11191f] bg-[#11191f] p-2 font-display text-[10px] font-bold uppercase text-white"
         >
           Buy Now
-        </button>
+        </Link>
       </div>
     </article>
   );
@@ -188,20 +189,20 @@ function DesktopWishlistCard({ item }) {
 
       {/* CTA row */}
       <div className="flex w-full items-start justify-center gap-3 pt-[1px]">
-        <button
-          type="button"
+        <Link
+          href="/cart"
           className="flex flex-1 items-center justify-center rounded border border-[#11191f] px-[9px] py-[13px] font-display text-[11px] leading-[16.5px] font-bold uppercase text-[#11191f]"
           style={{ letterSpacing: "0.55px" }}
         >
           Add to Cart
-        </button>
-        <button
-          type="button"
+        </Link>
+        <Link
+          href={`/products/${item.productSlug ?? ""}`}
           className="flex flex-1 items-center justify-center rounded bg-[#11191f] px-2 pt-[12.5px] pb-[13px] font-display text-[11px] leading-[16.5px] font-bold uppercase text-white"
           style={{ letterSpacing: "0.55px" }}
         >
           Buy Now
-        </button>
+        </Link>
       </div>
     </article>
   );

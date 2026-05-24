@@ -1,0 +1,56 @@
+"use client";
+
+/**
+ * GuestGuard — inverse of AuthGuard.
+ *
+ * Wraps the (auth) layout so a returning, already-logged-in user can never
+ * land on /sign-in, /sign-up, /reset-password, /email-sent, or
+ * /complete-profile.  Instead we push them to the home route for their role:
+ *
+ *   admin       → /r3pr-console
+ *   delivery    → /r3pr-dispatch
+ *   accounting  → /r3pr-ledger
+ *   customer    → /shop
+ *
+ * Hydration handling mirrors AuthGuard — `useRepairStore` is `skipHydration:
+ * true` and rehydrates inside a microtask via StoreProvider, so we wait for
+ * `persist.hasHydrated()` before deciding.  Otherwise every first paint would
+ * see `isLoggedIn === false` and the guard would never fire for returning
+ * users.
+ */
+
+import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
+import { useRepairStore } from "@/lib/useRepairStore";
+import { homeForRole } from "@/lib/authRedirect";
+
+export default function GuestGuard({ children }) {
+  const router = useRouter();
+  const [ready, setReady] = useState(() =>
+    typeof window === "undefined" ? false : useRepairStore.persist.hasHydrated()
+  );
+
+  useEffect(() => {
+    if (ready) return undefined;
+    if (useRepairStore.persist.hasHydrated()) {
+      setReady(true);
+      return undefined;
+    }
+    const unsub = useRepairStore.persist.onFinishHydration(() => setReady(true));
+    return unsub;
+  }, [ready]);
+
+  const isLoggedIn = useRepairStore((s) => s.authInfo.isLoggedIn);
+  const token = useRepairStore((s) => s.authInfo.token);
+  const role = useRepairStore((s) => s.authInfo.user?.role);
+  const loggedIn = isLoggedIn && !!token;
+
+  useEffect(() => {
+    if (!ready) return;
+    if (loggedIn) router.replace(homeForRole(role));
+  }, [ready, loggedIn, role, router]);
+
+  if (!ready) return null;
+  if (loggedIn) return null;
+  return children;
+}

@@ -1,13 +1,11 @@
+import { Suspense } from "react";
 import Link from "next/link";
 import HeroPanel from "@/components/auth/HeroPanel";
 import AuthHeader from "@/components/auth/AuthHeader";
-import AuthInput from "@/components/auth/AuthInput";
-import PasswordInput from "@/components/auth/PasswordInput";
-import PhoneInput from "@/components/auth/PhoneInput";
-import AuthButton from "@/components/auth/AuthButton";
-import GoogleButton from "@/components/auth/GoogleButton";
+import GoogleSignInButton from "@/components/auth/GoogleSignInButton";
 import Divider from "@/components/auth/Divider";
 import TermsFooter from "@/components/auth/TermsFooter";
+import SignUpForm from "@/components/auth/SignUpForm";
 
 export const metadata = { title: "Sign Up — Repair" };
 
@@ -41,31 +39,30 @@ export default function SignUpPage() {
             </div>
 
             <div className="pb-8">
-              <GoogleButton>Sign up with Google</GoogleButton>
+              <GoogleSignInButton>Sign up with Google</GoogleSignInButton>
             </div>
 
             <div className="pb-8">
               <Divider />
             </div>
 
-            <form className="flex w-full flex-col gap-5">
-              <AuthInput label="Email Address" type="email" name="email" autoComplete="email" required />
-              <PhoneInput name="phone" required />
-              <PasswordInput label="Password" name="password" autoComplete="new-password" required />
-              <PasswordInput label="Confirm Password" name="confirmPassword" autoComplete="new-password" required />
-              <AuthButton>Sign Up</AuthButton>
-            </form>
+            {/* useSearchParams inside the form (for ?next= round-trip) needs
+                a Suspense boundary in App Router so the static page shell
+                can prerender. */}
+            <Suspense fallback={null}>
+              <SignUpForm />
+            </Suspense>
           </div>
         </div>
 
         <div className="hidden md:block">
           <TermsFooter>
             By signing up, you agree to our{" "}
-            <Link href="#" className="underline">
+            <Link href="/#terms" className="underline">
               Terms of Service
             </Link>{" "}
             and{" "}
-            <Link href="#" className="underline">
+            <Link href="/#privacy" className="underline">
               Privacy Policy
             </Link>
             .

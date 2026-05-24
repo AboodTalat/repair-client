@@ -251,7 +251,7 @@ export default function Sidebar({
               }}
               className="text-left font-display text-[22px] font-bold uppercase leading-none text-[#a50013]"
             >
-              Sign out
+              Logout
             </button>
           ) : (
             <Link

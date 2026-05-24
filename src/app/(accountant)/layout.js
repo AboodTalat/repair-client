@@ -1,4 +1,5 @@
 import AccountantShell from "@/components/accountant/layout/AccountantShell";
+import AuthGuard from "@/components/auth/AuthGuard";
 
 export const metadata = {
   title: "Repair — Finance Ledger",
@@ -6,5 +7,9 @@ export const metadata = {
 };
 
 export default function AccountantLayout({ children }) {
-  return <AccountantShell>{children}</AccountantShell>;
+  return (
+    <AuthGuard>
+      <AccountantShell>{children}</AccountantShell>
+    </AuthGuard>
+  );
 }
