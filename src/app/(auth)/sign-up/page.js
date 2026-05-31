@@ -9,7 +9,11 @@ import SignUpForm from "@/components/auth/SignUpForm";
 
 export const metadata = { title: "Sign Up — Repair" };
 
-export default function SignUpPage() {
+export default async function SignUpPage({ searchParams }) {
+  const sp = await searchParams;
+  const next = sp?.next;
+  const signInHref = next ? `/sign-in?next=${encodeURIComponent(next)}` : "/sign-in";
+
   return (
     <>
       <HeroPanel image="/auth/reset-password-desktop.png" quote="Define your movement." overlay="rgba(17,25,31,0.1)" />
@@ -17,10 +21,10 @@ export default function SignUpPage() {
       <main className="flex w-full min-w-0 flex-col bg-white md:w-[40%]">
         <AuthHeader
           mobileLinkText="Sign In"
-          mobileLinkHref="/sign-in"
+          mobileLinkHref={signInHref}
           desktopPromptText="Already have an account?"
           desktopLinkText="Sign In"
-          desktopLinkHref="/sign-in"
+          desktopLinkHref={signInHref}
         />
 
         <div className="flex flex-1 flex-col items-center justify-center px-4 py-8 sm:px-6 md:px-8 lg:px-16 xl:px-24">

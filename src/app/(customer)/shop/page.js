@@ -1,4 +1,5 @@
-import { getCategory, listProducts } from "@/lib/mockShop";
+import { listProducts } from "@/lib/mockShop";
+import { fetchShopCategories, findShopCategory, typesFromTree } from "@/lib/storeNav";
 import CategoryPicker from "@/components/customer/shop/CategoryPicker";
 import ShopPageClient from "@/components/customer/shop/ShopPageClient";
 
@@ -24,27 +25,38 @@ export default async function ShopPage({ searchParams }) {
   const category = sp?.category;
   const sub = sp?.sub;
 
+  // Live category tree from the `repair` sub-server (myAppListCategoriesTree,
+  // with includeInactive so inactive categories/subs come back flagged). No
+  // hardcoded fallback — an empty/unreachable backend yields [].
+  const categories = await fetchShopCategories();
+
   if (!category) {
-    return <CategoryPicker />;
+    return <CategoryPicker categories={categories} />;
   }
 
-  const cat = getCategory(category);
+  const cat = findShopCategory(categories, category);
 
-  // Determine whether to show the coming-soon overlay.
+  // Determine whether to show the coming-soon overlay. It fires when the major
+  // category is unknown or INACTIVE, or when the requested sub is unknown or
+  // INACTIVE — inactive rows are present in the tree (active:false) precisely
+  // so they render as "coming soon" teasers rather than a working grid.
   let comingSoon = Boolean(sp?.comingSoon);
   let displayName = cat?.name ?? slugToLabel(category);
 
-  if (!cat) {
-    // Unknown major category — render the overlay over a placeholder grid.
+  if (!cat || cat.active === false) {
+    // Unknown or inactive major category — render the coming-soon overlay.
     comingSoon = true;
   } else if (sub) {
     const subMatch = cat.subs?.find((s) => s.slug === sub);
-    if (!subMatch || subMatch.visible === false) {
+    if (!subMatch || subMatch.active === false) {
       comingSoon = true;
-      // Use the sub label (if we know it) so the breadcrumb stays meaningful.
+      // Keep the breadcrumb meaningful with the sub's name (or slug label).
       displayName = subMatch?.name ?? slugToLabel(sub);
     }
   }
+
+  // ITEM TYPE filter facet = the live sub-categories across the tree.
+  const types = typesFromTree(categories);
 
   const filters = parseFilters(sp);
   // When the overlay is on we still want a grid behind it. If the real
@@ -66,6 +78,7 @@ export default async function ShopPage({ searchParams }) {
       categoryName={displayName}
       products={products}
       filters={filters}
+      typeOptions={types}
       showComingSoon={comingSoon}
     />
   );

@@ -57,8 +57,12 @@ export default function FilterDrawer(props) {
   return <DialogBody {...props} dataState={dataState} />;
 }
 
-function DialogBody({ onClose, value, onApply, dataState }) {
+function DialogBody({ onClose, value, onApply, typeOptions, dataState }) {
   const [draft, setDraft] = useState(() => normalize(value));
+
+  // ITEM TYPE facet is the live sub-category set (passed in from the server);
+  // fall back to the static mock list only when nothing was provided.
+  const types = typeOptions?.length ? typeOptions : FILTER_OPTIONS.types;
 
   useEffect(() => {
     function onKey(e) {
@@ -127,6 +131,7 @@ function DialogBody({ onClose, value, onApply, dataState }) {
     currentMin,
     currentMax,
     setPriceRange,
+    types,
     onClose,
     dataState,
   };
@@ -162,6 +167,7 @@ function MobileCard({
   currentMin,
   currentMax,
   setPriceRange,
+  types,
   onClose,
   dataState,
 }) {
@@ -269,7 +275,7 @@ function MobileCard({
         <section className="flex flex-col" style={{ gap: 8 }}>
           <SectionTitle size={12}>ITEM TYPE</SectionTitle>
           <div className="flex flex-wrap" style={{ gap: 8 }}>
-            {FILTER_OPTIONS.types.map((t) => (
+            {types.map((t) => (
               <PillChip
                 key={t}
                 active={draft.types.includes(t)}
@@ -368,6 +374,7 @@ function DesktopCard({
   currentMin,
   currentMax,
   setPriceRange,
+  types,
   onClose,
   dataState,
 }) {
@@ -479,7 +486,7 @@ function DesktopCard({
         <section className="flex flex-col" style={{ gap: 8 }}>
           <SectionTitle size={12}>ITEM TYPE</SectionTitle>
           <div className="flex flex-wrap" style={{ gap: 12 }}>
-            {FILTER_OPTIONS.types.map((t) => (
+            {types.map((t) => (
               <PillChip
                 key={t}
                 active={draft.types.includes(t)}

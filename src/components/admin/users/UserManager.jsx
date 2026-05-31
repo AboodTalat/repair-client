@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Button from "@/components/admin/shared/Button";
 import DataTable from "@/components/admin/shared/DataTable";
 import Drawer from "@/components/admin/shared/Drawer";
@@ -8,7 +8,10 @@ import Modal from "@/components/admin/shared/Modal";
 import StatusBadge from "@/components/admin/shared/StatusBadge";
 import { Field, TextInput, Select, Toggle, Chip, SearchInput } from "@/components/admin/shared/Form";
 import { IconPlus, IconEdit, IconTrash, IconMail } from "@/components/admin/shared/Icons";
-import { USERS } from "@/lib/mockAdmin";
+import CountryCodePicker from "@/components/customer/contact/CountryCodePicker";
+import { DEFAULT_COUNTRY, phoneLengthFor } from "@/lib/countryCodes";
+import { repairCall } from "@/lib/repairAuthedApi";
+import { useRepairStore, selectUser } from "@/lib/useRepairStore";
 import Link from "next/link";
 
 const ROLES = [
@@ -18,73 +21,159 @@ const ROLES = [
   { value: "customer", label: "Customer" },
 ];
 
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+
+function formatDate(iso) {
+  if (!iso) return "—";
+  return new Date(iso).toLocaleDateString("en-CA");
+}
+
+function initials(email) {
+  if (!email) return "?";
+  const local = email.split("@")[0];
+  const parts = local.split(/[._-]/).filter(Boolean);
+  if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
+  return local.slice(0, 2).toUpperCase();
+}
+
+function stripPhone(localDigits, dialCode) {
+  return localDigits
+    .replace(/\D/g, "")
+    .replace(/^0+/, "")
+    .replace(new RegExp(`^${dialCode}`), "");
+}
+
+function buildPhone(localDigits, dialCode) {
+  if (!localDigits) return null;
+  const stripped = stripPhone(localDigits, dialCode);
+  if (!stripped) return null;
+  return `+${dialCode}${stripped}`;
+}
+
 export default function UserManager() {
-  const [users, setUsers] = useState(USERS);
+  const [users, setUsers] = useState([]);
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
   const [role, setRole] = useState("all");
   const [query, setQuery] = useState("");
-  const [marketingOnly, setMarketingOnly] = useState(false);
   const [editing, setEditing] = useState(null);
   const [confirmDelete, setConfirmDelete] = useState(null);
+  const [saving, setSaving] = useState(false);
 
-  const filtered = useMemo(
-    () =>
-      users.filter((u) => {
-        if (role !== "all" && u.role !== role) return false;
-        if (marketingOnly && !u.marketingOptIn) return false;
-        if (query) {
-          const q = query.toLowerCase();
-          if (!u.name.toLowerCase().includes(q) && !u.email.toLowerCase().includes(q)) return false;
-        }
-        return true;
-      }),
-    [users, role, marketingOnly, query]
-  );
+  const me = useRepairStore(selectUser);
+  const debounceRef = useRef(null);
+  const mountedRef = useRef(false);
 
-  const counts = useMemo(() => {
-    const c = { all: users.length, admin: 0, delivery: 0, accounting: 0, customer: 0 };
-    users.forEach((u) => (c[u.role] = (c[u.role] || 0) + 1));
-    return c;
-  }, [users]);
-
-  function save(values) {
-    if (values.id) {
-      setUsers((prev) => prev.map((u) => (u.id === values.id ? { ...u, ...values } : u)));
-    } else {
-      setUsers((prev) => [
-        ...prev,
-        { ...values, id: `u-${Date.now()}`, joined: new Date().toISOString().slice(0, 10) },
-      ]);
+  const fetchUsers = useCallback(async (filters = {}) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const input = {};
+      if (filters.role && filters.role !== "all") input.role = filters.role;
+      if (filters.search) input.search = filters.search;
+      const data = await repairCall("myAppAdminListUsers", input, { isQuery: true });
+      setUsers(data.users || []);
+      setTotal(data.total ?? 0);
+    } catch (err) {
+      setError(err?.message || "Failed to load users");
+      setUsers([]);
+    } finally {
+      setLoading(false);
     }
-    setEditing(null);
+  }, []);
+
+  useEffect(() => {
+    if (!mountedRef.current) {
+      mountedRef.current = true;
+      fetchUsers({ role, search: query });
+      return;
+    }
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => {
+      fetchUsers({ role, search: query });
+    }, 250);
+    return () => clearTimeout(debounceRef.current);
+  }, [query, role, fetchUsers]);
+
+  async function save(values) {
+    setSaving(true);
+    try {
+      if (values.id) {
+        await repairCall("myAppAdminUpdateUser", {
+          userId: Number(values.id),
+          email: values.email,
+          phone: values.phone || null,
+          role: values.role,
+        }, { isQuery: false });
+      } else {
+        const phone = buildPhone(values.phoneLocal, values.phoneDial);
+        await repairCall("myAppAdminCreateUser", {
+          email: values.email,
+          phone,
+          role: values.role,
+          password: values.password,
+          is_active: values.is_active ?? true,
+        }, { isQuery: false });
+      }
+      setEditing(null);
+      await fetchUsers({ role, search: query });
+    } finally {
+      setSaving(false);
+    }
   }
-  function toggleActive(id) {
-    setUsers((prev) => prev.map((u) => (u.id === id ? { ...u, active: !u.active } : u)));
+
+  async function toggleActive(user) {
+    setError(null);
+    const newActive = !user.is_active;
+    setUsers((prev) => prev.map((u) => (u.id === user.id ? { ...u, is_active: newActive } : u)));
+    try {
+      await repairCall("myAppAdminToggleUserActive", {
+        userId: Number(user.id),
+        isActive: newActive,
+      }, { isQuery: false });
+      await fetchUsers({ role, search: query });
+    } catch (err) {
+      setUsers((prev) => prev.map((u) => (u.id === user.id ? { ...u, is_active: user.is_active } : u)));
+      setError(err?.message || "Failed to update user");
+    }
   }
-  function remove(id) {
-    setUsers((prev) => prev.filter((u) => u.id !== id));
+
+  async function remove(id) {
+    setError(null);
     setConfirmDelete(null);
+    try {
+      await repairCall("myAppAdminDeleteUser", { userId: Number(id) }, { isQuery: false });
+      await fetchUsers({ role, search: query });
+    } catch (err) {
+      setError(err?.message || "Failed to delete user");
+    }
   }
+
+  const isSelf = (u) => me && Number(u.id) === Number(me.id);
 
   return (
     <>
+      {error && (
+        <div className="mb-4 rounded-[4px] border border-[#fecaca] bg-[#fef2f2] px-4 py-3">
+          <p className="font-body text-[13px] text-[#dc2626]">{error}</p>
+        </div>
+      )}
+
       <div className="mb-4 flex flex-wrap items-center gap-2">
         <Chip active={role === "all"} onClick={() => setRole("all")}>
-          All <span className="ml-1 text-[10px] opacity-70">{counts.all}</span>
+          All {role === "all" && <span className="ml-1 text-[10px] opacity-70">{total}</span>}
         </Chip>
         {ROLES.map((r) => (
           <Chip key={r.value} active={role === r.value} onClick={() => setRole(r.value)}>
-            {r.label} <span className="ml-1 text-[10px] opacity-70">{counts[r.value] || 0}</span>
+            {r.label} {role === r.value && <span className="ml-1 text-[10px] opacity-70">{total}</span>}
           </Chip>
         ))}
       </div>
 
       <div className="mb-4 flex flex-col gap-3 rounded-[4px] border border-[#e5e7eb] bg-white p-4 md:flex-row md:items-end">
         <div className="flex-1">
-          <SearchInput value={query} onChange={setQuery} placeholder="Search by name or email..." />
-        </div>
-        <div className="flex items-center gap-3 rounded-[2px] border border-[#e5e7eb] bg-[#fafafa] px-3 py-2">
-          <span className="font-body text-[12px] text-[#6b7280]">Marketing opt-in only</span>
-          <Toggle checked={marketingOnly} onChange={setMarketingOnly} />
+          <SearchInput value={query} onChange={setQuery} placeholder="Search by email or phone..." />
         </div>
         <Link
           href="/r3pr-console/broadcast"
@@ -93,18 +182,22 @@ export default function UserManager() {
           <span className="grid size-3.5 place-items-center">
             <IconMail />
           </span>
-          Email opted-in
+          Broadcast email
         </Link>
         <Button
           icon={<IconPlus />}
           onClick={() =>
             setEditing({
               id: null,
-              name: "",
               email: "",
+              phoneLocal: "",
+              phoneDial: DEFAULT_COUNTRY.dial,
+              phoneIso2: DEFAULT_COUNTRY.iso2,
+              phoneCountry: DEFAULT_COUNTRY,
               role: "delivery",
-              active: true,
-              marketingOptIn: false,
+              is_active: true,
+              password: "",
+              confirmPassword: "",
             })
           }
         >
@@ -112,79 +205,88 @@ export default function UserManager() {
         </Button>
       </div>
 
-      <DataTable
-        columns={[
-          {
-            key: "name",
-            label: "User",
-            render: (u) => (
-              <div className="flex items-center gap-3">
-                <span className="grid size-9 place-items-center rounded-full bg-[#11191f] font-display text-[11px] font-bold uppercase text-white">
-                  {u.name.split(" ").map((w) => w[0]).slice(0, 2).join("")}
-                </span>
-                <div className="min-w-0">
-                  <p className="truncate font-body text-[13px] font-medium text-[#11191f]">{u.name}</p>
-                  <p className="font-body text-[11px] text-[#6b7280]">{u.email}</p>
+      {loading ? (
+        <div className="grid place-items-center rounded-[4px] border border-[#e5e7eb] bg-white px-6 py-16">
+          <div className="flex items-center gap-3">
+            <div className="size-5 animate-spin rounded-full border-2 border-[#e5e7eb] border-t-[#11191f]" />
+            <p className="font-body text-[13px] text-[#6b7280]">Loading users...</p>
+          </div>
+        </div>
+      ) : (
+        <DataTable
+          columns={[
+            {
+              key: "email",
+              label: "User",
+              render: (u) => (
+                <div className="flex items-center gap-3">
+                  <span className="grid size-9 shrink-0 place-items-center rounded-full bg-[#11191f] font-display text-[11px] font-bold uppercase text-white">
+                    {initials(u.email)}
+                  </span>
+                  <div className="min-w-0">
+                    <p className="truncate font-body text-[13px] font-medium text-[#11191f]">{u.email}</p>
+                    {u.phone && <p className="font-body text-[11px] text-[#6b7280]">{u.phone}</p>}
+                  </div>
                 </div>
-              </div>
-            ),
-          },
-          {
-            key: "role",
-            label: "Role",
-            render: (u) => <StatusBadge status={u.role} label={u.role} dot />,
-          },
-          {
-            key: "active",
-            label: "Status",
-            render: (u) => <StatusBadge status={u.active ? "active" : "inactive"} label={u.active ? "Active" : "Disabled"} />,
-          },
-          {
-            key: "marketingOptIn",
-            label: "Marketing",
-            align: "center",
-            render: (u) => u.marketingOptIn ? (
-              <span className="font-body text-[13px] text-[#16a34a]" title="Opted in">✓</span>
-            ) : (
-              <span className="font-body text-[13px] text-[#d1d5db]" title="Not opted in">—</span>
-            ),
-          },
-          { key: "joined", label: "Joined" },
-          {
-            key: "actions",
-            label: "",
-            align: "right",
-            render: (u) => (
-              <div className="inline-flex items-center gap-2">
-                <Toggle checked={u.active} onChange={() => toggleActive(u.id)} />
-                <button
-                  type="button"
-                  aria-label="Edit"
-                  onClick={() => setEditing(u)}
-                  className="grid size-8 place-items-center rounded-[2px] text-[#11191f] hover:bg-[#f3f4f6]"
-                >
-                  <span className="grid size-4 place-items-center">
-                    <IconEdit />
-                  </span>
-                </button>
-                <button
-                  type="button"
-                  aria-label="Delete"
-                  onClick={() => setConfirmDelete(u)}
-                  className="grid size-8 place-items-center rounded-[2px] text-[#dc2626] hover:bg-[#fef2f2]"
-                >
-                  <span className="grid size-4 place-items-center">
-                    <IconTrash />
-                  </span>
-                </button>
-              </div>
-            ),
-          },
-        ]}
-        rows={filtered}
-      />
+              ),
+            },
+            {
+              key: "role",
+              label: "Role",
+              render: (u) => <StatusBadge status={u.role} label={u.role} dot />,
+            },
+            {
+              key: "is_active",
+              label: "Status",
+              render: (u) => <StatusBadge status={u.is_active ? "active" : "inactive"} label={u.is_active ? "Active" : "Disabled"} />,
+            },
+            { key: "created_at", label: "Joined", render: (u) => formatDate(u.created_at) },
+            {
+              key: "actions",
+              label: "",
+              align: "right",
+              render: (u) => (
+                <div className="inline-flex items-center gap-2">
+                  {!isSelf(u) && (
+                    <Toggle checked={u.is_active} onChange={() => toggleActive(u)} />
+                  )}
+                  <button
+                    type="button"
+                    aria-label="Edit"
+                    onClick={() => setEditing(u)}
+                    className="grid size-8 place-items-center rounded-[2px] text-[#11191f] hover:bg-[#f3f4f6]"
+                  >
+                    <span className="grid size-4 place-items-center">
+                      <IconEdit />
+                    </span>
+                  </button>
+                  {!isSelf(u) && (
+                    <button
+                      type="button"
+                      aria-label="Delete"
+                      onClick={() => setConfirmDelete(u)}
+                      className="grid size-8 place-items-center rounded-[2px] text-[#dc2626] hover:bg-[#fef2f2]"
+                    >
+                      <span className="grid size-4 place-items-center">
+                        <IconTrash />
+                      </span>
+                    </button>
+                  )}
+                </div>
+              ),
+            },
+          ]}
+          rows={users}
+        />
+      )}
 
-      <UserDrawer editing={editing} onClose={() => setEditing(null)} onSave={save} />
+      <UserDrawer
+        editing={editing}
+        onClose={() => setEditing(null)}
+        onSave={save}
+        saving={saving}
+        isSelf={editing && me && Number(editing.id) === Number(me.id)}
+      />
 
       <Modal
         open={!!confirmDelete}
@@ -202,74 +304,326 @@ export default function UserManager() {
         }
       >
         <p className="font-body text-[13px] text-[#11191f]">
-          Permanently delete <strong>{confirmDelete?.name}</strong> ({confirmDelete?.email})? This cannot be undone.
+          Permanently delete <strong>{confirmDelete?.email}</strong>? If this user has order history, the account will be deactivated instead.
         </p>
       </Modal>
     </>
   );
 }
 
-function UserDrawer({ editing, onClose, onSave }) {
+function EyeOpen() {
+  return (
+    <svg viewBox="0 0 18 16" fill="none" className="size-4" aria-hidden>
+      <path d="M1.5 8S5 3.5 9 3.5 16.5 8 16.5 8 13 12.5 9 12.5 1.5 8 1.5 8z" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
+      <circle cx="9" cy="8" r="2.3" stroke="currentColor" strokeWidth="1.4" />
+    </svg>
+  );
+}
+function EyeClosed() {
+  return (
+    <svg viewBox="0 0 18 16" fill="none" className="size-4" aria-hidden>
+      <path d="M1 1l16 14M9 3.5c4 0 7.5 4.5 7.5 4.5s-.85 1.1-2.2 2.3M6.5 4.5C4.4 5.6 1.5 8 1.5 8s3.5 4.5 7.5 4.5c1 0 1.95-.2 2.8-.55M7.2 6.2A2.3 2.3 0 009 10.5c.55 0 1.05-.2 1.45-.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function PasswordField({ label, value, onChange, visible, onToggle }) {
+  return (
+    <div className="relative">
+      <TextInput
+        type={visible ? "text" : "password"}
+        value={value}
+        onChange={onChange}
+        autoComplete="new-password"
+        className="pr-10"
+      />
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-label={visible ? "Hide password" : "Show password"}
+        className="absolute right-3 top-1/2 -translate-y-1/2 grid size-5 place-items-center text-[#6b7280] hover:text-[#11191f]"
+      >
+        {visible ? <EyeClosed /> : <EyeOpen />}
+      </button>
+    </div>
+  );
+}
+
+function UserDrawer({ editing, onClose, onSave, saving, isSelf }) {
   const open = !!editing;
+  const isNew = open && !editing?.id;
   const [draft, setDraft] = useState({});
+  const [showPassword, setShowPassword] = useState(false);
+  const [showConfirm, setShowConfirm] = useState(false);
+  const [fieldErrors, setFieldErrors] = useState({});
+  const [drawerError, setDrawerError] = useState(null);
+
   useEffect(() => {
-    if (editing) setDraft({ ...editing });
+    if (editing) {
+      setDraft({
+        ...editing,
+        phoneLocal: editing.phoneLocal ?? "",
+        phoneDial: editing.phoneDial ?? DEFAULT_COUNTRY.dial,
+        phoneIso2: editing.phoneIso2 ?? DEFAULT_COUNTRY.iso2,
+        phoneCountry: editing.phoneCountry ?? DEFAULT_COUNTRY,
+        password: "",
+        confirmPassword: "",
+      });
+      setShowPassword(false);
+      setShowConfirm(false);
+      setFieldErrors({});
+      setDrawerError(null);
+    }
   }, [editing]);
+
+  const phoneLen = phoneLengthFor(draft.phoneIso2 || DEFAULT_COUNTRY.iso2);
+  const phoneInputMax = phoneLen.max + 1;
+
+  function handleCountryChange(c) {
+    const next = phoneLengthFor(c.iso2);
+    setDraft((d) => ({
+      ...d,
+      phoneCountry: c,
+      phoneDial: c.dial,
+      phoneIso2: c.iso2,
+      phoneLocal: (d.phoneLocal || "").slice(0, next.max + 1),
+    }));
+    setFieldErrors((e) => ({ ...e, phone: undefined }));
+  }
+
+  function handlePhoneChange(e) {
+    const digits = e.target.value.replace(/\D/g, "").slice(0, phoneInputMax);
+    setDraft((d) => ({ ...d, phoneLocal: digits }));
+    setFieldErrors((e) => ({ ...e, phone: undefined }));
+  }
+
+  function handlePhoneKeyDown(e) {
+    if (e.key.length === 1 && !/\d/.test(e.key) && !e.ctrlKey && !e.metaKey) {
+      e.preventDefault();
+    }
+  }
+
+  function clearFieldError(field) {
+    setFieldErrors((e) => ({ ...e, [field]: undefined }));
+  }
+
+  function validate() {
+    const errs = {};
+
+    const email = (draft.email || "").trim();
+    if (!email) errs.email = "Email is required.";
+    else if (!EMAIL_RE.test(email)) errs.email = "Please enter a valid email address.";
+
+    if (isNew) {
+      const localDigits = (draft.phoneLocal || "").replace(/\D/g, "");
+      if (!localDigits) {
+        errs.phone = "Phone number is required.";
+      } else {
+        const stripped = stripPhone(localDigits, draft.phoneDial);
+        if (!stripped) {
+          errs.phone = "Phone number is required.";
+        } else {
+          const { min, max } = phoneLengthFor(draft.phoneIso2);
+          if (stripped.length < min || stripped.length > max) {
+            const expected = min === max ? `${min} digits` : `${min}–${max} digits`;
+            errs.phone = `Phone must be ${expected} for the selected country.`;
+          }
+        }
+      }
+
+      const pw = draft.password || "";
+      if (!pw) errs.password = "Password is required.";
+      else if (pw.length < 8) errs.password = "Password must be at least 8 characters.";
+
+      const cpw = draft.confirmPassword || "";
+      if (!cpw) errs.confirmPassword = "Please confirm the password.";
+      else if (pw && cpw !== pw) errs.confirmPassword = "Passwords do not match.";
+    } else {
+      const phone = (draft.phone || "").trim();
+      if (!phone) errs.phone = "Phone number is required.";
+    }
+
+    if (!draft.role) errs.role = "Role is required.";
+
+    return errs;
+  }
+
+  async function handleSave() {
+    setDrawerError(null);
+    const errs = validate();
+    setFieldErrors(errs);
+    if (Object.keys(errs).length > 0) return;
+
+    try {
+      await onSave(draft);
+    } catch (err) {
+      const msg = err?.message || "";
+      const lower = msg.toLowerCase();
+      if (lower.includes("email") && lower.includes("already")) {
+        setFieldErrors((e) => ({ ...e, email: "This email is already registered." }));
+      } else if (lower.includes("phone") && lower.includes("already")) {
+        setFieldErrors((e) => ({ ...e, phone: "This phone number is already registered." }));
+      } else {
+        setDrawerError(msg || "Something went wrong.");
+      }
+    }
+  }
+
   return (
     <Drawer
       open={open}
       onClose={onClose}
-      title={draft.id ? "Edit account" : "New account"}
+      title={isNew ? "New account" : "Edit account"}
       subtitle="Role-based access — pick the right role for the right surface."
       footer={
         <>
           <Button variant="secondary" onClick={onClose}>
             Cancel
           </Button>
-          <Button onClick={() => onSave(draft)}>Save</Button>
+          <Button onClick={handleSave} disabled={saving}>
+            {saving ? "Saving..." : "Save"}
+          </Button>
         </>
       }
     >
       {open ? (
         <div className="flex flex-col gap-4">
-          <Field label="Full name" required>
-            <TextInput value={draft.name || ""} onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))} />
-          </Field>
+          {drawerError && (
+            <div className="rounded-[2px] border border-[#fecaca] bg-[#fef2f2] px-3 py-2">
+              <p className="font-body text-[12px] text-[#dc2626]">{drawerError}</p>
+            </div>
+          )}
+
           <Field label="Email" required>
             <TextInput
               type="email"
               value={draft.email || ""}
-              onChange={(e) => setDraft((d) => ({ ...d, email: e.target.value }))}
+              onChange={(e) => {
+                setDraft((d) => ({ ...d, email: e.target.value }));
+                clearFieldError("email");
+              }}
+              className={fieldErrors.email ? "border-[#dc2626] focus:border-[#dc2626]" : ""}
             />
+            {fieldErrors.email && (
+              <span className="font-body text-[11px] text-[#dc2626]">{fieldErrors.email}</span>
+            )}
           </Field>
+
+          {isNew ? (
+            <Field label="Phone number" required>
+              <div
+                className={`flex h-10 w-full items-center rounded-[2px] border bg-white transition-colors focus-within:border-[#11191f] ${
+                  fieldErrors.phone ? "border-[#dc2626]" : "border-[#e5e7eb]"
+                }`}
+              >
+                <div className="flex shrink-0 items-center pl-3">
+                  <CountryCodePicker
+                    value={draft.phoneCountry || DEFAULT_COUNTRY}
+                    onChange={handleCountryChange}
+                  />
+                  <span aria-hidden className="ml-2 h-4 w-px shrink-0 bg-[#e5e7eb]" />
+                </div>
+                <input
+                  type="tel"
+                  value={draft.phoneLocal || ""}
+                  onChange={handlePhoneChange}
+                  onKeyDown={handlePhoneKeyDown}
+                  inputMode="numeric"
+                  pattern="[0-9]*"
+                  maxLength={phoneInputMax}
+                  placeholder="Phone number"
+                  className="h-full flex-1 bg-transparent px-3 font-body text-[14px] text-[#11191f] placeholder:text-[#9ca3af] outline-none"
+                />
+              </div>
+              {fieldErrors.phone && (
+                <span className="font-body text-[11px] text-[#dc2626]">{fieldErrors.phone}</span>
+              )}
+            </Field>
+          ) : (
+            <Field label="Phone" required>
+              <TextInput
+                type="tel"
+                value={draft.phone || ""}
+                onChange={(e) => {
+                  setDraft((d) => ({ ...d, phone: e.target.value }));
+                  clearFieldError("phone");
+                }}
+                className={fieldErrors.phone ? "border-[#dc2626] focus:border-[#dc2626]" : ""}
+              />
+              {fieldErrors.phone && (
+                <span className="font-body text-[11px] text-[#dc2626]">{fieldErrors.phone}</span>
+              )}
+            </Field>
+          )}
+
           <Field label="Role" required hint="Determines which dashboards and actions are available.">
-            <Select value={draft.role} onChange={(v) => setDraft((d) => ({ ...d, role: v }))} options={ROLES} />
+            <Select
+              value={draft.role}
+              onChange={(v) => {
+                setDraft((d) => ({ ...d, role: v }));
+                clearFieldError("role");
+              }}
+              options={ROLES}
+              disabled={isSelf}
+            />
+            {fieldErrors.role && (
+              <span className="font-body text-[11px] text-[#dc2626]">{fieldErrors.role}</span>
+            )}
           </Field>
-          {!draft.id ? (
-            <div className="rounded-[2px] border border-[#dbeafe] bg-[#eff6ff] p-3">
-              <p className="font-body text-[12px] text-[#1e40af]">
-                A welcome email with a temporary password will be sent to this address on save.
+          {isSelf && (
+            <div className="rounded-[2px] border border-[#fef3c7] bg-[#fffbeb] p-3">
+              <p className="font-body text-[12px] text-[#92400e]">
+                You cannot change your own role.
               </p>
             </div>
+          )}
+
+          {isNew ? (
+            <>
+              <Field label="Password" required>
+                <PasswordField
+                  value={draft.password || ""}
+                  onChange={(e) => {
+                    setDraft((d) => ({ ...d, password: e.target.value }));
+                    clearFieldError("password");
+                  }}
+                  visible={showPassword}
+                  onToggle={() => setShowPassword((v) => !v)}
+                />
+                {fieldErrors.password && (
+                  <span className="font-body text-[11px] text-[#dc2626]">{fieldErrors.password}</span>
+                )}
+              </Field>
+              <Field label="Confirm password" required>
+                <PasswordField
+                  value={draft.confirmPassword || ""}
+                  onChange={(e) => {
+                    setDraft((d) => ({ ...d, confirmPassword: e.target.value }));
+                    clearFieldError("confirmPassword");
+                  }}
+                  visible={showConfirm}
+                  onToggle={() => setShowConfirm((v) => !v)}
+                />
+                {fieldErrors.confirmPassword && (
+                  <span className="font-body text-[11px] text-[#dc2626]">{fieldErrors.confirmPassword}</span>
+                )}
+              </Field>
+              <div className="flex items-center justify-between rounded-[2px] border border-[#e5e7eb] bg-[#fafafa] p-3">
+                <div>
+                  <p className="font-body text-[13px] font-medium text-[#11191f]">Active</p>
+                  <p className="font-body text-[11px] text-[#6b7280]">
+                    Disabled accounts cannot sign in.
+                  </p>
+                </div>
+                <Toggle checked={!!draft.is_active} onChange={(v) => setDraft((d) => ({ ...d, is_active: v }))} />
+              </div>
+              <div className="rounded-[2px] border border-[#dbeafe] bg-[#eff6ff] p-3">
+                <p className="font-body text-[12px] text-[#1e40af]">
+                  A welcome email with the password will be sent to this address on save.
+                </p>
+              </div>
+            </>
           ) : null}
-          <div className="flex items-center justify-between rounded-[2px] border border-[#e5e7eb] bg-[#fafafa] p-3">
-            <div>
-              <p className="font-body text-[13px] font-medium text-[#11191f]">Active</p>
-              <p className="font-body text-[11px] text-[#6b7280]">
-                Disabled accounts cannot sign in.
-              </p>
-            </div>
-            <Toggle checked={!!draft.active} onChange={(v) => setDraft((d) => ({ ...d, active: v }))} />
-          </div>
-          <div className="flex items-center justify-between rounded-[2px] border border-[#e5e7eb] bg-[#fafafa] p-3">
-            <div>
-              <p className="font-body text-[13px] font-medium text-[#11191f]">Marketing opt-in</p>
-              <p className="font-body text-[11px] text-[#6b7280]">
-                Receives news and offers emails.
-              </p>
-            </div>
-            <Toggle checked={!!draft.marketingOptIn} onChange={(v) => setDraft((d) => ({ ...d, marketingOptIn: v }))} />
-          </div>
         </div>
       ) : null}
     </Drawer>

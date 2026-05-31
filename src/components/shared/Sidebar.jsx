@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import Image from "next/image";
+import ComingSoonTag from "@/components/shared/ComingSoonTag";
 
 function CloseIcon({ className = "size-6" }) {
   return (
@@ -181,16 +182,28 @@ export default function Sidebar({
               >
                 All items
               </Link>
-              {(drilldown.children ?? []).map((child) => (
-                <Link
-                  key={child.label}
-                  href={child.href}
-                  onClick={handleNavigate}
-                  className="pl-6 font-display text-[22px] font-bold uppercase leading-none text-[#11191f]/50"
-                >
-                  {child.label}
-                </Link>
-              ))}
+              {(drilldown.children ?? []).map((child) =>
+                child.comingSoon ? (
+                  <div
+                    key={child.label}
+                    className="flex items-center justify-between gap-3 pl-6"
+                  >
+                    <span className="font-display text-[22px] font-bold uppercase leading-none text-[#11191f]/40">
+                      {child.label}
+                    </span>
+                    <ComingSoonTag />
+                  </div>
+                ) : (
+                  <Link
+                    key={child.label}
+                    href={child.href}
+                    onClick={handleNavigate}
+                    className="pl-6 font-display text-[22px] font-bold uppercase leading-none text-[#11191f]/50"
+                  >
+                    {child.label}
+                  </Link>
+                )
+              )}
             </div>
           ) : (
             <ul
@@ -202,6 +215,18 @@ export default function Sidebar({
                 const isActive = Boolean(activeHref) && item.href === activeHref;
                 const hasChildren =
                   Array.isArray(item.children) && item.children.length > 0;
+
+                // A coming-soon major is a teaser — not navigable, no drilldown.
+                if (item.comingSoon) {
+                  return (
+                    <li key={item.label}>
+                      <div className="flex w-full items-center justify-between gap-3">
+                        <ItemLabel active={false}>{item.label}</ItemLabel>
+                        <ComingSoonTag />
+                      </div>
+                    </li>
+                  );
+                }
 
                 if (hasChildren) {
                   return (

@@ -11,6 +11,8 @@ import {
   calcTotals,
   formatJOD,
 } from "@/lib/mockCart";
+import { useRepairStore, selectIsLoggedIn } from "@/lib/useRepairStore";
+import { buildSignInRedirect } from "@/lib/authRedirect";
 
 // Figma 119:5392 renders the Order Total card with SUMMER25 already
 // applied — the discount row, total, and chip "active" state all rely on
@@ -698,7 +700,7 @@ function TotalsRow({ label, value, valueAccent, variant }) {
   );
 }
 
-export function OrderTotalsBlock({ totals, appliedPromo, variant, onContinue }) {
+export function OrderTotalsBlock({ totals, appliedPromo, variant, onContinue, isGuest = false }) {
   const desktop = variant === "desktop";
   const { subtotal, discount, shipping, tax, total, itemCount } = totals;
 
@@ -837,16 +839,37 @@ export function OrderTotalsBlock({ totals, appliedPromo, variant, onContinue }) 
       </div>
       {desktop ? (
         <>
-          <button
-            type="button"
-            onClick={onContinue}
-            className="mt-2 flex h-14 w-full items-center justify-center rounded-[4px] text-white shadow-[0_10px_15px_-3px_rgba(0,0,0,0.10),0_4px_6px_-4px_rgba(0,0,0,0.10)]"
-            style={{ backgroundColor: "#11191f" }}
-          >
-            <span className="font-display text-[14px] font-bold uppercase leading-6 tracking-[0.8px]">
-              Continue to Next Step
-            </span>
-          </button>
+          {isGuest ? (
+            <>
+              <Link
+                href={buildSignInRedirect("/cart")}
+                className="mt-2 flex h-14 w-full items-center justify-center rounded-[4px] text-white shadow-[0_10px_15px_-3px_rgba(0,0,0,0.10),0_4px_6px_-4px_rgba(0,0,0,0.10)]"
+                style={{ backgroundColor: "#11191f" }}
+              >
+                <span className="font-display text-[14px] font-semibold uppercase leading-6 tracking-[0.8px]">
+                  Sign in to Continue
+                </span>
+              </Link>
+              <button
+                type="button"
+                onClick={onContinue}
+                className="font-display text-[14px] font-semibold leading-6 text-[#11191f]"
+              >
+                CONTINUE AS A GUEST
+              </button>
+            </>
+          ) : (
+            <button
+              type="button"
+              onClick={onContinue}
+              className="mt-2 flex h-14 w-full items-center justify-center rounded-[4px] text-white shadow-[0_10px_15px_-3px_rgba(0,0,0,0.10),0_4px_6px_-4px_rgba(0,0,0,0.10)]"
+              style={{ backgroundColor: "#11191f" }}
+            >
+              <span className="font-display text-[14px] font-bold uppercase leading-6 tracking-[0.8px]">
+                Continue to Next Step
+              </span>
+            </button>
+          )}
           <p className="text-center font-body text-[10px] leading-[15px] text-[#9ca3af]" style={condensed}>
             By proceeding to payment, you agree to our{" "}
             <a href="/#terms" className="underline">Terms of Service</a>
@@ -1071,10 +1094,10 @@ export function PoliciesFootnote() {
   );
 }
 
-export function StickyCheckoutBar({ total, onContinue, ctaText = "Continue to Next Step" }) {
+export function StickyCheckoutBar({ total, onContinue, ctaText = "Continue to Next Step", isGuest = false }) {
   return (
     <div
-      className="fixed inset-x-0 bottom-0 z-20 border-t border-[#e5e7eb] px-5 pb-4 pt-[17px] shadow-[0_-4px_20px_-2px_rgba(0,0,0,0.05)] md:hidden"
+      className="fixed inset-x-0 bottom-0 z-20 border-t border-[#e5e7eb] px-5 pb-4 pt-[17px] shadow-[0_-4px_20px_-2px_rgba(0,0,0,0.1)] md:hidden"
       style={{
         backgroundColor: "rgba(255,255,255,0.8)",
         backdropFilter: "blur(12px)",
@@ -1088,14 +1111,33 @@ export function StickyCheckoutBar({ total, onContinue, ctaText = "Continue to Ne
             {formatJOD(total)}
           </span>
         </div>
-        <button
-          type="button"
-          onClick={onContinue}
-          className="flex h-14 w-full items-center justify-center rounded-[4px] text-white shadow-[0_10px_15px_-3px_rgba(0,0,0,0.10),0_4px_6px_-4px_rgba(0,0,0,0.10)]"
-          style={{ backgroundColor: "#11191f" }}
-        >
-          <span className="font-display text-[16px] font-semibold leading-6">{ctaText}</span>
-        </button>
+        {isGuest ? (
+          <>
+            <Link
+              href={buildSignInRedirect("/cart")}
+              className="flex h-14 w-full items-center justify-center rounded-[4px] text-white shadow-[0_10px_15px_-3px_rgba(0,0,0,0.10),0_4px_6px_-4px_rgba(0,0,0,0.10)]"
+              style={{ backgroundColor: "#11191f" }}
+            >
+              <span className="font-display text-[14px] font-semibold leading-6">SIGN IN TO CONTINUE</span>
+            </Link>
+            <button
+              type="button"
+              onClick={onContinue}
+              className="font-display text-[14px] font-semibold leading-6 text-[#11191f]"
+            >
+              CONTINUE AS A GUEST
+            </button>
+          </>
+        ) : (
+          <button
+            type="button"
+            onClick={onContinue}
+            className="flex h-14 w-full items-center justify-center rounded-[4px] text-white shadow-[0_10px_15px_-3px_rgba(0,0,0,0.10),0_4px_6px_-4px_rgba(0,0,0,0.10)]"
+            style={{ backgroundColor: "#11191f" }}
+          >
+            <span className="font-display text-[16px] font-semibold leading-6">{ctaText}</span>
+          </button>
+        )}
       </div>
     </div>
   );
@@ -1126,6 +1168,8 @@ function EmptyCart() {
 
 export default function CartPageClient() {
   const router = useRouter();
+  const isLoggedIn = useRepairStore(selectIsLoggedIn);
+  const isGuest = !isLoggedIn;
   const [items, setItems] = useState(CART_ITEMS);
   const [appliedPromo, setAppliedPromo] = useState(DEFAULT_APPLIED_PROMO);
 
@@ -1190,7 +1234,7 @@ export default function CartPageClient() {
         {/* Bottom padding so the sticky CTA doesn't cover content */}
         <div className="h-32" />
 
-        <StickyCheckoutBar total={totals.total} onContinue={handleContinue} />
+        <StickyCheckoutBar total={totals.total} onContinue={handleContinue} isGuest={isGuest} />
       </div>
 
       {/* ============== DESKTOP LAYOUT ============== */}
@@ -1227,6 +1271,7 @@ export default function CartPageClient() {
               appliedPromo={appliedPromo}
               variant="desktop"
               onContinue={handleContinue}
+              isGuest={isGuest}
             />
             <TrustBadgesRow variant="desktop" />
             <PaymentMethodsRow variant="desktop" />

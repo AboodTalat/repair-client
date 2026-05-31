@@ -22,6 +22,7 @@ export default function ShopPageClient({
   categoryName,
   products,
   filters,
+  typeOptions,
   showComingSoon,
 }) {
   const router = useRouter();
@@ -81,6 +82,7 @@ export default function ShopPageClient({
         open={filterOpen}
         onClose={() => setFilterOpen(false)}
         value={filters}
+        typeOptions={typeOptions}
         onApply={applyFilters}
       />
 
