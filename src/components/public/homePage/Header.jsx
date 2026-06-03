@@ -7,14 +7,18 @@ import { usePathname, useRouter } from "next/navigation";
 import Sidebar from "@/components/shared/Sidebar";
 import ComingSoonTag from "@/components/shared/ComingSoonTag";
 import { sidebarItems as buildSidebarItems } from "@/lib/storeNav";
-import { useRepairStore, selectIsLoggedIn } from "@/lib/useRepairStore";
+import { useRepairStore, selectIsLoggedIn, selectUser } from "@/lib/useRepairStore";
 import { repairCall } from "@/lib/repairAuthedApi";
+import { accountHrefForRole } from "@/lib/authRedirect";
 
 export default function Header({ categories = [] }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const pathname = usePathname();
   const router = useRouter();
   const isAuthenticated = useRepairStore(selectIsLoggedIn);
+  const user = useRepairStore(selectUser);
+  // Stakeholders get their console home; customers + guests get /account.
+  const accountHref = accountHrefForRole(user?.role);
 
   const sidebarItems = buildSidebarItems(categories, isAuthenticated);
 
@@ -79,10 +83,16 @@ export default function Header({ categories = [] }) {
             <button type="button" aria-label="Search" className="grid size-6 place-items-center">
               <Image src="/home/icon-search.svg" alt="" width={24} height={24} />
             </button>
-            {isAuthenticated && (
+
+            {/* Cart — open to guests, so it always shows */}
+            <Link href="/cart" aria-label="Bag" className="grid size-6 place-items-center">
+              <Image src="/home/icon-bag.svg" alt="" width={24} height={24} />
+            </Link>
+
+            {isAuthenticated ? (
               <>
                 <Link
-                  href="/account"
+                  href={accountHref}
                   aria-label="Account"
                   className="hidden size-6 place-items-center md:grid"
                 >
@@ -98,10 +108,47 @@ export default function Header({ categories = [] }) {
                     <path d="M4 21c0-4 4-7 8-7s8 3 8 7" strokeLinecap="round" />
                   </svg>
                 </Link>
-                <Link href="/cart" aria-label="Bag" className="grid size-6 place-items-center">
-                  <Image src="/home/icon-bag.svg" alt="" width={24} height={24} />
-                </Link>
+                {/* Large-screen logout shortcut */}
+                <button
+                  type="button"
+                  onClick={handleSignOut}
+                  aria-label="Log out"
+                  className="hidden size-6 place-items-center md:grid"
+                >
+                  <svg
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.6"
+                    className="size-6 text-white"
+                    aria-hidden
+                  >
+                    <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" strokeLinecap="round" strokeLinejoin="round" />
+                    <path d="M16 17l5-5-5-5" strokeLinecap="round" strokeLinejoin="round" />
+                    <path d="M21 12H9" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                </button>
               </>
+            ) : (
+              /* Large-screen sign-in shortcut for guests */
+              <Link
+                href="/sign-in"
+                aria-label="Sign in"
+                className="hidden size-6 place-items-center md:grid"
+              >
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.6"
+                  className="size-6 text-white"
+                  aria-hidden
+                >
+                  <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4" strokeLinecap="round" strokeLinejoin="round" />
+                  <path d="M10 17l5-5-5-5" strokeLinecap="round" strokeLinejoin="round" />
+                  <path d="M15 12H3" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              </Link>
             )}
           </div>
         </div>
@@ -182,6 +229,19 @@ function DesktopNavItem({ item }) {
         className="invisible absolute left-1/2 top-full z-40 mt-3 min-w-[200px] -translate-x-1/2 rounded-md bg-white text-[#11191f] opacity-0 shadow-xl ring-1 ring-black/5 transition-opacity duration-150 group-hover:visible group-hover:opacity-100 group-focus-within:visible group-focus-within:opacity-100"
       >
         <ul className="flex flex-col py-2">
+          {/* "All items" → the major category itself (shows every product in
+              it). Shown only because this dropdown only renders when the major
+              has sub-categories. */}
+          <li>
+            <Link
+              href={item.href ?? "#"}
+              role="menuitem"
+              className="block px-4 py-2 font-body text-[14px] uppercase tracking-[0.15em] text-[#11191f] transition-colors hover:bg-black/5"
+              style={{ fontStretch: "75%" }}
+            >
+              All items
+            </Link>
+          </li>
           {item.children.map((child) =>
             child.comingSoon ? (
               <li key={child.id ?? child.label}>

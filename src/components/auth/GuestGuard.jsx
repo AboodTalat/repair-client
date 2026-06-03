@@ -22,7 +22,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useRepairStore } from "@/lib/useRepairStore";
-import { homeForRole } from "@/lib/authRedirect";
+import { postAuthDestination } from "@/lib/authRedirect";
 
 export default function GuestGuard({ children }) {
   const router = useRouter();
@@ -47,7 +47,20 @@ export default function GuestGuard({ children }) {
 
   useEffect(() => {
     if (!ready) return;
-    if (loggedIn) router.replace(homeForRole(role));
+    if (!loggedIn) return;
+    // Honor the same `?next=` round-trip the auth forms use. A guest bounced to
+    // /sign-in?next=<page> (e.g. the product page's "Notify when available"
+    // flow) must return to <page> after auth, not the role's home. GuestGuard's
+    // redirect fires when sign-in flips isLoggedIn true and would otherwise race
+    // the form's push and win with homeForRole — landing the user on /shop. Use
+    // postAuthDestination so it falls back to the role home only when there's no
+    // safe next. searchParams comes from window (no useSearchParams → no extra
+    // Suspense boundary on the auth layout), matching AuthGuard's approach.
+    const searchParams =
+      typeof window !== "undefined"
+        ? new URLSearchParams(window.location.search)
+        : null;
+    router.replace(postAuthDestination({ searchParams, role }));
   }, [ready, loggedIn, role, router]);
 
   if (!ready) return null;

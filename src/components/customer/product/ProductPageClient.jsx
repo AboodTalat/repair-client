@@ -2,7 +2,12 @@
 
 import Image from "next/image";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useRef, useState } from "react";
+import { useRepairStore, selectIsLoggedIn } from "@/lib/useRepairStore";
+import { repairCall } from "@/lib/repairAuthedApi";
+import { buildSignInRedirect } from "@/lib/authRedirect";
+import ProductGrid from "@/components/customer/shop/ProductGrid";
 
 // Inline SVGs — Figma asset URLs expire in 7 days; these approximate the icons.
 
@@ -116,12 +121,27 @@ function MinusIcon() {
 // ------------------------------------------------------------------
 // Static data — plain objects only (no JSX), icons rendered inline.
 
-const COLORWAYS = [
-  { hex: "#11191f", name: "Midnight Black", desc: "Timeless. Versatile. Essential." },
-  { hex: "#9d8085", name: "Dusty Pink", desc: "Bold. Modern. Dynamic." },
-  { hex: "#a8c0b2", name: "Fresh Green", desc: "Sleek. Sophisticated. Powerful." },
-  { hex: "#566486", name: "Iris Blue", desc: "Pure. Clean. Confident." },
+// Fallbacks used to pad the three feature bands (Stays Dry / Move / Sculpted)
+// up to 3 images when the product has fewer photos of its own. One per slot so
+// the padded bands never repeat the same image.
+const FEATURE_FALLBACK_IMAGES = [
+  "/shop/model-1.png",
+  "/shop/model-3.png",
+  "/shop/model-5.png",
 ];
+
+// "{N} Colorways. One Vision." — the colorway count is now derived from the
+// product's real colors, so the headline number tracks the actual palette
+// (singular "One Colorway" for a single-color product). Spelled out up to
+// twelve, then falls back to the digit.
+const COUNT_WORDS = [
+  "Zero", "One", "Two", "Three", "Four", "Five", "Six",
+  "Seven", "Eight", "Nine", "Ten", "Eleven", "Twelve",
+];
+function colorwaysHeadline(n) {
+  const word = COUNT_WORDS[n] ?? String(n);
+  return `${word} Colorway${n === 1 ? "" : "s"}.`;
+}
 
 // Component references (not JSX elements) so React Compiler can analyse the
 // module without encountering JSX outside a component or hook body.
@@ -146,13 +166,169 @@ const DETAIL_ITEMS = [
 // ------------------------------------------------------------------
 
 export default function ProductPageClient({ product }) {
+  // Wishlist is a user-scoped feature — the heart button only shows to
+  // signed-in shoppers; guests don't see it (same rule applied wherever the
+  // wishlist affordance appears).
+  const isLoggedIn = useRepairStore(selectIsLoggedIn);
+  const router = useRouter();
   const [activeImage, setActiveImage] = useState(0);
   const [selectedColor, setSelectedColor] = useState(0);
   const [selectedSize, setSelectedSize] = useState(null);
   const [qty, setQty] = useState(1);
+  // "Notify when available" stock-alert state. status: idle | loading | done | error.
+  const [notify, setNotify] = useState({ status: "idle", message: "" });
   const [dragOffset, setDragOffset] = useState(0);
   const touchStartX = useRef(null);
   const trackWidthRef = useRef(0);
+
+  // Color-aware gallery. The selected swatch picks that color's images; a color
+  // with no own photos falls back to the shared (null-color) set, then to the
+  // full flat list — the same `own → shared → all` chain the storefront card
+  // uses, so a shared-image product shows its one set under every swatch and a
+  // per-color product shows the active color's set. `product.images` always has
+  // ≥1 entry (placeholder), so galleryImages is never empty.
+  const activeColorId = product.colors?.[selectedColor]?.id;
+  const ownColorImages =
+    activeColorId != null ? product.imagesByColor?.[activeColorId] || [] : [];
+  const sharedImages = product.sharedImages || [];
+  const galleryImages = ownColorImages.length
+    ? ownColorImages
+    : sharedImages.length
+      ? sharedImages
+      : product.images;
+  // Clamp in case a color switch lands on a shorter set before the reset takes
+  // effect (the color pickers also reset activeImage to 0 on change).
+  const activeIdx = Math.min(activeImage, Math.max(0, galleryImages.length - 1));
+
+  // The three feature bands below (Stays Dry / Move Without Limits / Sculpted
+  // Support) show the product's own photos — image 1, 2, 3 from the full flat
+  // list. Pad to exactly 3 with a fallback so every band has an image even when
+  // the product has only one or two photos.
+  const featureImages = Array.from(
+    { length: 3 },
+    (_, i) => product.images?.[i] || FEATURE_FALLBACK_IMAGES[i]
+  );
+
+  // "Four Colorways. One Vision." section — now driven by the product's real
+  // colors instead of a hardcoded palette. Each color carries its first
+  // per-color photo (admin's per-color image mode). The image grid mirrors the
+  // admin's two image methodologies (see ProductManager Media tab):
+  //   • per-color  → one representative photo per color (positions align with
+  //                  the swatch list; admin validation guarantees every selected
+  //                  color has ≥1 photo, so `.filter(Boolean)` drops nothing).
+  //   • shared     → the admin uploaded one global set (null color_id) meant to
+  //                  represent every colorway — show that set as-is.
+  const colorways = (product.colors || []).map((c) => ({
+    id: c.id,
+    name: c.name,
+    hex: c.hex,
+    image: product.imagesByColor?.[c.id]?.[0] || null,
+  }));
+  const hasPerColorImages = colorways.some((c) => c.image);
+  const colorwayImages = hasPerColorImages
+    ? colorways.map((c) => c.image).filter(Boolean)
+    : sharedImages.length
+      ? sharedImages
+      : product.images || [];
+
+  // Switch swatch → show that color's images from the first frame.
+  function selectColor(i) {
+    setSelectedColor(i);
+    setActiveImage(0);
+    // Stock-alert feedback is per-variant; clear it when the variant changes.
+    setNotify({ status: "idle", message: "" });
+  }
+
+  function chooseSize(s) {
+    setSelectedSize(s);
+    setNotify({ status: "idle", message: "" });
+  }
+
+  // Low-stock banner (store-wide rule). Reflects the SELECTED size's variant
+  // for the selected color, so it only appears once a size is picked. Threshold
+  // 0 = banner disabled store-wide. `outOfStock`/Buy-Now stay product-total —
+  // only this banner is per-variant.
+  const lowStockThreshold = product.lowStockThreshold || 0;
+  const selectedStock =
+    selectedSize != null && activeColorId != null
+      ? product.stockByColorSize?.[activeColorId]?.[selectedSize]
+      : null;
+  const showLowStock =
+    lowStockThreshold > 0 &&
+    typeof selectedStock === "number" &&
+    selectedStock > 0 &&
+    selectedStock <= lowStockThreshold;
+
+  // Out-of-stock is per-variant, not global:
+  //  • If the WHOLE product has zero inventory (`product.outOfStock` =
+  //    totalStock <= 0), show the out-of-stock state immediately — no size
+  //    choice needed.
+  //  • Otherwise it only appears once the user picks a size whose selected-color
+  //    variant is empty (quantity 0 or no such variant).
+  const outOfStock =
+    product.outOfStock ||
+    (selectedSize != null && activeColorId != null && !(selectedStock > 0));
+
+  // Stock-alert subscribe ("Notify when available"). The server keys alerts per
+  // VARIANT (product_variant_id), so we resolve the selected color+size to its
+  // variant id. Flow:
+  //   • Guest  → bounce to /sign-in?next=<this page>; the ?next= round-trip
+  //              returns them here after auth, and they click again to subscribe.
+  //   • Signed → must have picked a size (variant is per color+size); then call
+  //              myAppRequestStockAlert. The button reflects loading/done/error.
+  const selectedVariantId =
+    selectedSize != null && activeColorId != null
+      ? product.variantIdByColorSize?.[activeColorId]?.[selectedSize]
+      : null;
+
+  async function handleNotify() {
+    if (notify.status === "loading") return;
+    if (!isLoggedIn) {
+      const here =
+        typeof window !== "undefined"
+          ? window.location.pathname + window.location.search
+          : `/products/${product.slug}`;
+      router.push(buildSignInRedirect(here));
+      return;
+    }
+    if (selectedSize == null) {
+      setNotify({ status: "error", message: "Select a size first." });
+      return;
+    }
+    if (selectedVariantId == null) {
+      setNotify({ status: "error", message: "That option isn't available." });
+      return;
+    }
+    setNotify({ status: "loading", message: "" });
+    try {
+      const res = await repairCall(
+        "myAppRequestStockAlert",
+        { productVariantId: selectedVariantId },
+        { isQuery: false }
+      );
+      setNotify({
+        status: "done",
+        message: res?.message || "We'll notify you when it's back.",
+      });
+    } catch (err) {
+      // repairCall throws Error("repairClientApi <op>: <serverMsg>") — surface
+      // just the human-friendly server message when present.
+      const raw = err?.message || "";
+      const clean = raw.includes(": ") ? raw.slice(raw.indexOf(": ") + 2) : raw;
+      setNotify({
+        status: "error",
+        message: clean || "Couldn't sign you up. Please try again.",
+      });
+    }
+  }
+
+  // Label for the out-of-stock secondary CTA, reflecting the subscribe state.
+  const notifyLabel =
+    notify.status === "loading"
+      ? "Submitting…"
+      : notify.status === "done"
+        ? "You're on the list"
+        : "Notify When Available";
 
   // Swipe threshold: 15% of carousel width OR 50px, whichever is smaller.
   function onTouchStart(e) {
@@ -163,25 +339,34 @@ export default function ProductPageClient({ product }) {
     if (touchStartX.current === null) return;
     const dx = e.touches[0].clientX - touchStartX.current;
     // Resist over-scroll at the edges so the user feels the boundary.
-    const atStart = activeImage === 0 && dx > 0;
-    const atEnd = activeImage === product.images.length - 1 && dx < 0;
+    const atStart = activeIdx === 0 && dx > 0;
+    const atEnd = activeIdx === galleryImages.length - 1 && dx < 0;
     setDragOffset(atStart || atEnd ? dx / 3 : dx);
   }
   function onTouchEnd() {
     if (touchStartX.current === null) return;
     const w = trackWidthRef.current || 1;
     const threshold = Math.min(50, w * 0.15);
-    if (dragOffset <= -threshold && activeImage < product.images.length - 1) {
-      setActiveImage((i) => i + 1);
-    } else if (dragOffset >= threshold && activeImage > 0) {
-      setActiveImage((i) => i - 1);
+    if (dragOffset <= -threshold && activeIdx < galleryImages.length - 1) {
+      setActiveImage(activeIdx + 1);
+    } else if (dragOffset >= threshold && activeIdx > 0) {
+      setActiveImage(activeIdx - 1);
     }
     setDragOffset(0);
     touchStartX.current = null;
   }
 
+  // Track width is cached in a ref at gesture start so it's available
+  // synchronously while scaling the drag transform (using state would leave the
+  // first touch-move frame with a stale width). Read here drives the live
+  // `dragPct` for the carousel translate; intentional ref-during-render.
+  // eslint-disable-next-line react-hooks/refs
   const trackWidth = trackWidthRef.current || 1;
   const dragPct = (dragOffset / trackWidth) * 100;
+
+  // Only the admin-provided description — no fallback blurb. When empty, the
+  // Description section is omitted entirely (see the desktop hero block below).
+  const description = product.description?.trim() ?? "";
 
   return (
     <div className="flex flex-col bg-white">
@@ -198,10 +383,10 @@ export default function ProductPageClient({ product }) {
           <div
             className={`flex ${dragOffset === 0 ? "transition-transform duration-300" : ""}`}
             style={{
-              transform: `translateX(calc(-${activeImage * 100}% + ${dragPct}%))`,
+              transform: `translateX(calc(-${activeIdx * 100}% + ${dragPct}%))`,
             }}
           >
-            {product.images.map((src, i) => (
+            {galleryImages.map((src, i) => (
               <div
                 key={i}
                 className="relative shrink-0 w-full"
@@ -222,7 +407,7 @@ export default function ProductPageClient({ product }) {
 
           {/* Dots — overlay image bottom-left, per Figma */}
           <div className="absolute left-3 bottom-3 flex items-center gap-1">
-            {product.images.map((_, i) => (
+            {galleryImages.map((_, i) => (
               <button
                 key={i}
                 type="button"
@@ -230,31 +415,34 @@ export default function ProductPageClient({ product }) {
                 onClick={() => setActiveImage(i)}
                 className="rounded-[8px] transition-all duration-200 cursor-pointer"
                 style={{
-                  width: i === activeImage ? 24 : 6,
+                  width: i === activeIdx ? 24 : 6,
                   height: 6,
-                  backgroundColor: i === activeImage ? "#11191f" : "#a1a1aa",
+                  backgroundColor: i === activeIdx ? "#11191f" : "#a1a1aa",
                 }}
               />
             ))}
           </div>
 
-          {/* Wishlist button — overlay image bottom-right, per Figma */}
-          <button
-            type="button"
-            aria-label="Add to wishlist"
-            className="absolute bottom-3 right-3 grid place-items-center text-[#11191f] rounded-[2.667px]"
-            style={{
-              width: 32,
-              height: 32,
-              backgroundColor: "rgba(255,255,255,0.3)",
-              backdropFilter: "blur(2px)",
-              WebkitBackdropFilter: "blur(2px)",
-              outline: "0.4px solid rgba(255,255,255,0.7)",
-              outlineOffset: "-0.4px",
-            }}
-          >
-            <HeartIcon />
-          </button>
+          {/* Wishlist button — overlay image bottom-right, per Figma.
+              Only shown to signed-in users (wishlist is user-scoped). */}
+          {isLoggedIn && (
+            <button
+              type="button"
+              aria-label="Add to wishlist"
+              className="absolute bottom-3 right-3 grid place-items-center text-[#11191f] rounded-[2.667px]"
+              style={{
+                width: 32,
+                height: 32,
+                backgroundColor: "rgba(255,255,255,0.3)",
+                backdropFilter: "blur(2px)",
+                WebkitBackdropFilter: "blur(2px)",
+                outline: "0.4px solid rgba(255,255,255,0.7)",
+                outlineOffset: "-0.4px",
+              }}
+            >
+              <HeartIcon />
+            </button>
+          )}
         </div>
       </section>
 
@@ -277,7 +465,7 @@ export default function ProductPageClient({ product }) {
         <div className="flex min-w-0 flex-1 items-center gap-4">
           {/* Thumbnail strip — hidden below lg; w-24 h-40 each, gap-4, rounded-lg. */}
           <div className="hidden flex-col gap-4 lg:flex">
-            {product.images.map((src, i) => (
+            {galleryImages.map((src, i) => (
               <button
                 key={i}
                 type="button"
@@ -285,9 +473,9 @@ export default function ProductPageClient({ product }) {
                 aria-label={`View image ${i + 1}`}
                 className="relative h-40 w-24 cursor-pointer overflow-hidden rounded-lg bg-neutral-100 transition-opacity"
                 style={{
-                  opacity: i === activeImage ? 1 : 0.6,
+                  opacity: i === activeIdx ? 1 : 0.6,
                   outline:
-                    i === activeImage ? "2px solid #11191f" : "1px solid rgba(17,25,31,0.1)",
+                    i === activeIdx ? "2px solid #11191f" : "1px solid rgba(17,25,31,0.1)",
                   outlineOffset: "-1px",
                 }}
               >
@@ -313,10 +501,10 @@ export default function ProductPageClient({ product }) {
             <div
               className={`flex h-full w-full ${dragOffset === 0 ? "transition-transform duration-300" : ""}`}
               style={{
-                transform: `translateX(calc(-${activeImage * 100}% + ${dragPct}%))`,
+                transform: `translateX(calc(-${activeIdx * 100}% + ${dragPct}%))`,
               }}
             >
-              {product.images.map((src, i) => (
+              {galleryImages.map((src, i) => (
                 <div key={i} className="relative h-full w-full shrink-0">
                   <Image
                     src={src}
@@ -333,7 +521,7 @@ export default function ProductPageClient({ product }) {
 
             {/* Dots — visible only below lg where the thumb strip is hidden. */}
             <div className="absolute left-3 bottom-3 flex items-center gap-1 lg:hidden">
-              {product.images.map((_, i) => (
+              {galleryImages.map((_, i) => (
                 <button
                   key={i}
                   type="button"
@@ -341,9 +529,9 @@ export default function ProductPageClient({ product }) {
                   onClick={() => setActiveImage(i)}
                   className="rounded-[8px] transition-all duration-200 cursor-pointer"
                   style={{
-                    width: i === activeImage ? 24 : 6,
+                    width: i === activeIdx ? 24 : 6,
                     height: 6,
-                    backgroundColor: i === activeImage ? "#11191f" : "#a1a1aa",
+                    backgroundColor: i === activeIdx ? "#11191f" : "#a1a1aa",
                   }}
                 />
               ))}
@@ -359,11 +547,7 @@ export default function ProductPageClient({ product }) {
           {/* Block 1: info — scrolls naturally with the rest of the right
               column so the description flows with the page content. */}
           <div className="flex w-full flex-col items-start gap-6">
-            {!product.outOfStock &&
-              product.itemsLeft > 0 &&
-              product.itemsLeft <= (product.lowStockLimit ?? 5) && (
-                <LowStockBanner itemsLeft={product.itemsLeft} />
-              )}
+            {showLowStock && <LowStockBanner itemsLeft={selectedStock} />}
 
             {/* Name + subtitle  ▸  strikethrough price + sale chip */}
             <div className="flex w-full items-start justify-between">
@@ -394,7 +578,7 @@ export default function ProductPageClient({ product }) {
                     key={c.name}
                     type="button"
                     aria-label={c.name}
-                    onClick={() => setSelectedColor(i)}
+                    onClick={() => selectColor(i)}
                     className="size-8 shrink-0 cursor-pointer rounded-[2px]"
                     style={{
                       backgroundColor: c.hex,
@@ -420,7 +604,7 @@ export default function ProductPageClient({ product }) {
                   <button
                     key={s}
                     type="button"
-                    onClick={() => setSelectedSize(s)}
+                    onClick={() => chooseSize(s)}
                     className="flex h-10 flex-1 cursor-pointer flex-col items-center justify-center px-2 transition-colors"
                     style={{
                       backgroundColor: selectedSize === s ? "#11191f" : "transparent",
@@ -439,15 +623,15 @@ export default function ProductPageClient({ product }) {
             <div className="flex w-full flex-col items-start gap-3 pt-2">
               <div className="flex w-full items-start gap-3">
                 <div
-                  className={`flex h-12 w-32 items-center justify-between px-3 ${product.outOfStock ? "opacity-50" : ""}`}
+                  className={`flex h-12 w-32 items-center justify-between px-3 ${outOfStock ? "opacity-50" : ""}`}
                   style={{ outline: "1px solid #11191f", outlineOffset: "-1px" }}
                 >
                   <button
                     type="button"
                     aria-label="Decrease quantity"
-                    disabled={product.outOfStock}
+                    disabled={outOfStock}
                     onClick={() => setQty((q) => Math.max(1, q - 1))}
-                    className={`flex w-8 self-stretch items-center justify-center ${product.outOfStock ? "cursor-not-allowed" : "cursor-pointer"}`}
+                    className={`flex w-8 self-stretch items-center justify-center ${outOfStock ? "cursor-not-allowed" : "cursor-pointer"}`}
                   >
                     <MinusIcon />
                   </button>
@@ -457,55 +641,64 @@ export default function ProductPageClient({ product }) {
                   <button
                     type="button"
                     aria-label="Increase quantity"
-                    disabled={product.outOfStock}
+                    disabled={outOfStock}
                     onClick={() => setQty((q) => q + 1)}
-                    className={`flex w-8 self-stretch items-center justify-center ${product.outOfStock ? "cursor-not-allowed" : "cursor-pointer"}`}
+                    className={`flex w-8 self-stretch items-center justify-center ${outOfStock ? "cursor-not-allowed" : "cursor-pointer"}`}
                   >
                     <PlusIcon color="#11191f" />
                   </button>
                 </div>
                 <button
                   type="button"
-                  disabled={product.outOfStock}
-                  aria-disabled={product.outOfStock || undefined}
-                  className={`flex h-12 flex-1 flex-col items-center justify-center bg-[#11191f] py-3.5 ${product.outOfStock ? "opacity-50 cursor-not-allowed" : "cursor-pointer"}`}
+                  disabled={outOfStock}
+                  aria-disabled={outOfStock || undefined}
+                  className={`flex h-12 flex-1 flex-col items-center justify-center bg-[#11191f] py-3.5 ${outOfStock ? "opacity-50 cursor-not-allowed" : "cursor-pointer"}`}
                 >
                   <span className="font-display text-[14px] font-bold uppercase leading-5 tracking-wide text-white">
-                    {product.outOfStock ? "Out of Stock" : "Buy Now"}
+                    {outOfStock ? "Out of Stock" : "Buy Now"}
                   </span>
                 </button>
               </div>
               <button
                 type="button"
-                className="flex h-12 w-full cursor-pointer flex-col items-center justify-center py-3"
+                onClick={outOfStock ? handleNotify : undefined}
+                disabled={outOfStock && notify.status === "loading"}
+                className={`flex h-12 w-full flex-col items-center justify-center py-3 ${outOfStock && notify.status === "loading" ? "cursor-wait opacity-60" : "cursor-pointer"}`}
                 style={{ outline: "1px solid #11191f", outlineOffset: "-1px" }}
               >
                 <span className="font-display text-[14px] font-bold uppercase leading-5 tracking-wide text-[#11191f]">
-                  {product.outOfStock ? "Notify When Available" : "Add to Cart"}
+                  {outOfStock ? notifyLabel : "Add to Cart"}
                 </span>
               </button>
+              {outOfStock && notify.message ? (
+                <p
+                  className="font-display text-[12px] leading-4"
+                  style={{ color: notify.status === "error" ? "#dc2626" : "#16a34a" }}
+                  role="status"
+                >
+                  {notify.message}
+                </p>
+              ) : null}
             </div>
           </div>
 
-          {/* Block 2: Description */}
-          <div className="flex w-full flex-col items-start gap-4">
-            <h2 className="font-display text-[18px] font-bold text-[#11191f]">
-              Description
-            </h2>
-            <p className="w-full font-display text-[12px] leading-4 text-[#6b7280]">
-              Experience the pinnacle of athletic performance with our {product.name}. These leggings offer a superior blend of support and flexibility, empowering you to conquer any workout. The high-performance fabric gently hugs your body, providing targeted compression to enhance your natural shape and reduce muscle fatigue. Whether you&apos;re crushing a high-intensity interval training session, flowing through a yoga class, or running errands, these leggings will keep you comfortable and confident. The wide, high-rise waistband stays securely in place, offering a flattering silhouette and preventing distractions. With their exceptional breathability and moisture-wicking properties, these leggings keep you cool and dry, even during the most intense workouts. Available in a range of vibrant colors, our {product.name} are the perfect fusion of style and performance.
-            </p>
-          </div>
+          {/* Block 2: Description — only when the admin provided one. */}
+          {description ? (
+            <div className="flex w-full flex-col items-start gap-4">
+              <h2 className="font-display text-[18px] font-bold text-[#11191f]">
+                Description
+              </h2>
+              <p className="w-full whitespace-pre-line font-display text-[12px] leading-4 text-[#6b7280]">
+                {description}
+              </p>
+            </div>
+          ) : null}
         </div>
       </section>
 
       {/* ── Mobile: product info ────────────────────────────────────── */}
       <div className="flex flex-col gap-8 px-4 pt-4 pb-10 md:hidden">
-        {!product.outOfStock &&
-          product.itemsLeft > 0 &&
-          product.itemsLeft <= (product.lowStockLimit ?? 5) && (
-            <LowStockBanner itemsLeft={product.itemsLeft} />
-          )}
+        {showLowStock && <LowStockBanner itemsLeft={selectedStock} />}
         {/* Name / price */}
         <div className="flex items-start justify-between px-2">
           <div className="flex flex-col gap-0.5">
@@ -548,7 +741,7 @@ export default function ProductPageClient({ product }) {
                   key={c.name}
                   type="button"
                   aria-label={c.name}
-                  onClick={() => setSelectedColor(i)}
+                  onClick={() => selectColor(i)}
                   className="size-6 rounded-[2px] shrink-0 cursor-pointer"
                   style={{
                     backgroundColor: c.hex,
@@ -574,7 +767,7 @@ export default function ProductPageClient({ product }) {
                 <button
                   key={s}
                   type="button"
-                  onClick={() => setSelectedSize(s)}
+                  onClick={() => chooseSize(s)}
                   className="grid size-6 place-items-center rounded-[2px] border cursor-pointer transition-colors"
                   style={{
                     backgroundColor: selectedSize === s ? "#11191f" : "#ffffff",
@@ -594,7 +787,30 @@ export default function ProductPageClient({ product }) {
           </div>
         </div>
 
-        <CtaRow qty={qty} setQty={setQty} outOfStock={product.outOfStock} />
+        <CtaRow
+          qty={qty}
+          setQty={setQty}
+          outOfStock={outOfStock}
+          onNotify={handleNotify}
+          notify={notify}
+          notifyLabel={notifyLabel}
+        />
+
+        {/* Description — only when the admin provided one (mirrors the desktop
+            info column's Description block). */}
+        {description ? (
+          <div className="flex flex-col gap-2 px-2">
+            <h2 className="font-display text-[16px] font-bold leading-normal text-[#11191f]">
+              Description
+            </h2>
+            <p
+              className="whitespace-pre-line font-body text-[12px] leading-normal text-[rgba(17,25,31,0.5)]"
+              style={{ fontStretch: "75%" }}
+            >
+              {description}
+            </p>
+          </div>
+        ) : null}
       </div>
 
       {/* ── Crafted to Last ─────────────────────────────────────────── */}
@@ -616,14 +832,13 @@ export default function ProductPageClient({ product }) {
           </p>
         </div>
         <div className="flex w-full flex-col gap-6 md:mx-auto md:max-w-[1120px] md:grid md:grid-cols-3 md:gap-6 lg:gap-10 xl:gap-12">
-          {[
-            { value: "78%", label: "Recycled Polyester" },
-            { value: "22%", label: "Premium Elastane" },
-            { value: "100%", label: "Performance Guaranteed" },
-          ].map(({ value, label }) => (
-            <div key={value} className="flex min-w-0 flex-col items-center gap-2">
+          {/* Admin-managed per product (percentages + labels). `craftedToLast`
+              is always populated — shopCatalog defaults a never-edited product
+              to the canonical three rows. */}
+          {(product.craftedToLast || []).map(({ pct, label }, i) => (
+            <div key={`${label}-${i}`} className="flex min-w-0 flex-col items-center gap-2">
               <span className="font-display text-[36px] font-bold leading-[40px] text-white md:text-[44px] md:leading-[48px] lg:text-[56px] lg:leading-[60px] xl:text-[72px] xl:leading-[72px]">
-                {value}
+                {pct}%
               </span>
               <span
                 className="font-body text-[12px] uppercase leading-4 tracking-wider text-[#9ca3af] md:text-[13px] md:leading-[18px] lg:text-[14px] lg:leading-5"
@@ -642,8 +857,8 @@ export default function ProductPageClient({ product }) {
       <section className="flex flex-col md:flex-row md:h-[700px]">
         <div className="relative h-full w-full md:h-full md:w-1/2">
           <Image
-            src="/shop/model-2.png"
-            alt=""
+            src={featureImages[0]}
+            alt={product.name}
             fill
             sizes="(min-width: 768px) 50vw, 100vw"
             className="object-cover"
@@ -675,8 +890,8 @@ export default function ProductPageClient({ product }) {
       <section className="flex flex-col md:h-[700px] md:flex-row-reverse">
         <div className="relative h-[551px] w-full md:h-full md:w-1/2">
           <Image
-            src="/shop/model-3.png"
-            alt=""
+            src={featureImages[1]}
+            alt={product.name}
             fill
             sizes="(min-width: 768px) 50vw, 100vw"
             className="object-cover"
@@ -705,8 +920,8 @@ export default function ProductPageClient({ product }) {
       <section className="flex flex-col md:flex-row md:h-[700px]">
         <div className="relative h-[551px] w-full md:h-full md:w-1/2">
           <Image
-            src="/shop/model-4.png"
-            alt=""
+            src={featureImages[2]}
+            alt={product.name}
             fill
             sizes="(min-width: 768px) 50vw, 100vw"
             className="object-cover"
@@ -735,92 +950,85 @@ export default function ProductPageClient({ product }) {
           (4 rows, each 424x176 with 112-square swatch + heading/desc).
           RIGHT = 2x2 lifestyle grid (296x371 each, 16px gap).
           Mobile: stacked list + horizontal-scroll lifestyle row. */}
-      <section className="flex flex-col gap-4 bg-[#fafafa] px-4 py-12 md:gap-12 md:px-8 md:py-24">
-        <div className="flex flex-col items-center text-center md:gap-1">
-          <h2 className="font-display text-[20px] font-bold leading-7 text-[#11191f] md:text-[36px] md:leading-[44px]">
-            Four Colorways.
-          </h2>
-          <h2 className="font-display text-[20px] font-bold leading-7 text-[#6b7280] md:text-[36px] md:leading-[44px]">
-            One Vision.
-          </h2>
-        </div>
-        <div className="grid w-full gap-8 md:mx-auto md:max-w-[1280px] md:grid-cols-2 md:gap-16">
-          {/* Color list */}
-          <div className="flex flex-col gap-4 md:gap-0">
-            {COLORWAYS.map((cw) => (
-              <div key={cw.name} className="flex items-center gap-4 md:gap-6 md:py-6">
-                <div
-                  className="size-24 shrink-0 rounded-[8px] md:size-28"
-                  style={{ backgroundColor: cw.hex }}
-                />
-                <div className="flex flex-col gap-1 md:gap-2">
+      {colorways.length > 0 ? (
+        <section className="flex flex-col gap-4 bg-[#fafafa] px-4 py-12 md:gap-12 md:px-8 md:py-24">
+          <div className="flex flex-col items-center text-center md:gap-1">
+            <h2 className="font-display text-[20px] font-bold leading-7 text-[#11191f] md:text-[36px] md:leading-[44px]">
+              {colorwaysHeadline(colorways.length)}
+            </h2>
+            <h2 className="font-display text-[20px] font-bold leading-7 text-[#6b7280] md:text-[36px] md:leading-[44px]">
+              One Vision.
+            </h2>
+          </div>
+          <div className="grid w-full gap-8 md:mx-auto md:max-w-[1280px] md:grid-cols-2 md:gap-16">
+            {/* Color list — the product's real colors (swatch + name). */}
+            <div className="flex flex-col gap-4 md:gap-0">
+              {colorways.map((cw) => (
+                <div key={cw.id} className="flex items-center gap-4 md:gap-6 md:py-6">
+                  <div
+                    className="size-24 shrink-0 rounded-[8px] md:size-28"
+                    style={{ backgroundColor: cw.hex }}
+                  />
                   <span className="font-display text-[14px] font-bold leading-5 text-[#11191f] md:text-[20px] md:leading-7">
                     {cw.name}
                   </span>
-                  <span
-                    className="font-body text-[12px] leading-4 text-[#6b7280] md:text-[14px] md:leading-5"
-                    style={{ fontStretch: "75%" }}
-                  >
-                    {cw.desc}
-                  </span>
                 </div>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
 
-          {/* Lifestyle 2x2 grid — desktop only (mobile has horizontal scroll below). */}
-          <div className="hidden gap-4 md:grid md:grid-cols-2">
-            {[
-              "/shop/model-1.png",
-              "/shop/model-2.png",
-              "/shop/model-3.png",
-              "/shop/model-4.png",
-            ].map((src, i) => (
+            {/* Lifestyle grid — desktop only (mobile has horizontal scroll below).
+                One photo per color in per-color mode, else the shared/global set. */}
+            <div className="hidden gap-4 md:grid md:grid-cols-2">
+              {colorwayImages.map((src, i) => (
+                <div
+                  key={i}
+                  className="relative overflow-hidden rounded-[8px]"
+                  style={{ aspectRatio: "361 / 541" }}
+                >
+                  <Image
+                    src={src}
+                    alt={product.name}
+                    fill
+                    sizes="(min-width: 768px) 25vw, 100vw"
+                    className="object-cover"
+                    draggable={false}
+                  />
+                </div>
+              ))}
+            </div>
+          </div>
+        </section>
+      ) : null}
+
+      {/* ── Gallery Carousel (mobile only) ──────────────────────────── */}
+      {/* Figma node 35:2449 — lifestyle cards 280x350, rounded-lg, 12px gap, first card 16px from edge.
+          Hidden on desktop because the colorway lifestyle grid above takes over.
+          Same images as the desktop grid (per-color photos, else the shared set). */}
+      {colorways.length > 0 ? (
+        <section
+          className="no-scrollbar overflow-x-auto pl-4 mb-12 md:hidden"
+          style={{ height: 350 }}
+        >
+          <div className="flex h-full gap-3 pr-4">
+            {colorwayImages.map((src, i) => (
               <div
                 key={i}
-                className="relative overflow-hidden rounded-[8px] bg-[#e5e5e5]"
-                style={{ aspectRatio: "296 / 371" }}
+                className="relative h-full shrink-0 overflow-hidden rounded-[8px]"
+                style={{ width: 234 }}
               >
                 <Image
                   src={src}
-                  alt=""
+                  alt={product.name}
                   fill
-                  sizes="(min-width: 768px) 25vw, 100vw"
+                  sizes="234px"
                   className="object-cover"
                   draggable={false}
                 />
               </div>
             ))}
           </div>
-        </div>
-      </section>
-
-      {/* ── Gallery Carousel (mobile only) ──────────────────────────── */}
-      {/* Figma node 35:2449 — 3 lifestyle cards 280x350, rounded-lg, 12px gap, first card 16px from edge.
-          Hidden on desktop because the 2x2 lifestyle grid above takes over. */}
-      <section
-        className="no-scrollbar overflow-x-auto pl-4 mb-12 md:hidden"
-        style={{ height: 350 }}
-      >
-        <div className="flex h-full gap-3 pr-4">
-          {["/shop/model-1.png", "/shop/model-3.png", "/shop/model-4.png"].map((src, i) => (
-            <div
-              key={i}
-              className="relative h-full shrink-0 overflow-hidden rounded-[8px] bg-[#e5e5e5]"
-              style={{ width: 280 }}
-            >
-              <Image
-                src={src}
-                alt=""
-                fill
-                sizes="280px"
-                className="object-cover"
-                draggable={false}
-              />
-            </div>
-          ))}
-        </div>
-      </section>
+        </section>
+      ) : null}
 
       {/* ── The Details ─────────────────────────────────────────────── */}
       {/* Figma 2119:2706 — desktop: centered 704-wide column, 3 detail rows
@@ -858,7 +1066,9 @@ export default function ProductPageClient({ product }) {
       {/* ── Complete Your Set ───────────────────────────────────────── */}
       {/* Figma 2119:2741 — desktop: 1376-wide section, title 36px + subtitle
           24px centered, then row of larger product cards (326x489 image +
-          label row). Mobile keeps the horizontal-scroll 176-wide cards. */}
+          label row). Mobile keeps the horizontal-scroll 176-wide cards.
+          Hidden entirely when there are no related products to show. */}
+      {product.relatedProducts?.length > 0 ? (
       <section className="flex flex-col gap-4 px-4 py-8 md:gap-12 md:px-8 md:py-24">
         <div className="flex flex-col items-center gap-2 text-center md:gap-3">
           <h2 className="font-display text-[20px] font-bold leading-7 text-[#11191f] md:text-[36px] md:leading-[44px]">
@@ -872,189 +1082,18 @@ export default function ProductPageClient({ product }) {
           </p>
         </div>
 
-        {/* Mobile: horizontal scroll */}
-        <div className="no-scrollbar overflow-x-auto md:hidden">
-          <div className="flex gap-2">
-            {product.relatedProducts.map((rp) => (
-              <article
-                key={rp.id}
-                className="flex shrink-0 flex-col gap-2"
-                style={{ width: 176 }}
-              >
-                <div
-                  className="relative w-full bg-[#f5f5f5] shadow-[0_0_10px_0_rgba(0,0,0,0.05)]"
-                  style={{ aspectRatio: "176 / 264" }}
-                >
-                  <Link
-                    href={`/products/${rp.id}`}
-                    className="absolute inset-0"
-                    aria-label={rp.name}
-                  >
-                    <Image
-                      src={rp.image}
-                      alt={rp.name}
-                      fill
-                      sizes="176px"
-                      className="object-cover"
-                    />
-                  </Link>
-
-                  {rp.colors?.length > 0 && (
-                    <div
-                      className="absolute flex pointer-events-none"
-                      style={{ left: 8, bottom: 8, gap: 2 }}
-                      aria-hidden="true"
-                    >
-                      {rp.colors.slice(0, 4).map((hex, ci) => (
-                        <span
-                          key={ci}
-                          className="rounded-[2px]"
-                          style={{
-                            width: 8,
-                            height: 8,
-                            backgroundColor: hex,
-                            border: "0.3px solid rgba(17,25,31,0.1)",
-                          }}
-                        />
-                      ))}
-                    </div>
-                  )}
-
-                  <button
-                    type="button"
-                    aria-label={`Quick add ${rp.name}`}
-                    className="absolute grid place-items-center rounded-[2px] cursor-pointer hover:bg-white/50"
-                    style={{
-                      right: 8,
-                      bottom: 8,
-                      width: 24,
-                      height: 24,
-                      backgroundColor: "rgba(255,255,255,0.3)",
-                      backdropFilter: "blur(1.5px)",
-                      WebkitBackdropFilter: "blur(1.5px)",
-                      outline: "0.3px solid rgba(255,255,255,0.7)",
-                      outlineOffset: "-0.3px",
-                    }}
-                  >
-                    <PlusIcon />
-                  </button>
-                </div>
-
-                <div className="flex items-start justify-between px-1">
-                  <div className="flex flex-col gap-0.5" style={{ width: 87 }}>
-                    <span
-                      className="font-body truncate text-[12px] font-medium leading-[14px] text-[#11191f]"
-                      style={{ fontStretch: "75%" }}
-                    >
-                      {rp.name}
-                    </span>
-                    <span
-                      className="font-body truncate text-[10px] leading-3 text-[rgba(17,25,31,0.5)]"
-                      style={{ fontStretch: "75%" }}
-                    >
-                      {rp.subtitle}
-                    </span>
-                  </div>
-                  <PriceBlock
-                    currency={rp.currency}
-                    price={rp.price}
-                    salePrice={rp.salePrice}
-                    plainSize="sm"
-                  />
-                </div>
-              </article>
-            ))}
-          </div>
-        </div>
-
-        {/* Desktop: 4-col grid per Figma at lg+ (4 related cards across 1376px).
-            Below lg, drop to 2 columns so 326px cards aren't squeezed. */}
-        <div className="mx-auto hidden w-full max-w-[1376px] md:grid md:grid-cols-2 md:gap-6 lg:grid-cols-4">
-          {product.relatedProducts.map((rp) => (
-            <article key={rp.id} className="flex flex-col gap-4">
-              <div
-                className="relative w-full overflow-hidden bg-[#f5f5f5] shadow-[0_0_18.523px_0_rgba(0,0,0,0.05)]"
-                style={{ aspectRatio: "326 / 489" }}
-              >
-                <Link
-                  href={`/products/${rp.id}`}
-                  className="absolute inset-0"
-                  aria-label={rp.name}
-                >
-                  <Image
-                    src={rp.image}
-                    alt={rp.name}
-                    fill
-                    sizes="(min-width: 768px) 326px, 100vw"
-                    className="object-cover"
-                  />
-                </Link>
-
-                {rp.colors?.length > 0 && (
-                  <div
-                    className="pointer-events-none absolute flex"
-                    style={{ left: 16, bottom: 16, gap: 8 }}
-                    aria-hidden="true"
-                  >
-                    {rp.colors.slice(0, 3).map((hex, ci) => (
-                      <span
-                        key={ci}
-                        className="rounded-[2px] shadow-[0_1px_2px_0_rgba(0,0,0,0.05)]"
-                        style={{
-                          width: 12,
-                          height: 12,
-                          backgroundColor: hex,
-                          border: "1px solid rgba(17,25,31,0.1)",
-                        }}
-                      />
-                    ))}
-                  </div>
-                )}
-
-                <button
-                  type="button"
-                  aria-label={`Quick add ${rp.name}`}
-                  className="absolute grid cursor-pointer place-items-center hover:bg-white/50"
-                  style={{
-                    right: 16,
-                    bottom: 16,
-                    width: 40,
-                    height: 40,
-                    backgroundColor: "rgba(255,255,255,0.3)",
-                    borderRadius: 2,
-                    outline: "0.3px solid rgba(255,255,255,0.7)",
-                    outlineOffset: "-0.3px",
-                    backdropFilter: "blur(1.5px)",
-                    WebkitBackdropFilter: "blur(1.5px)",
-                  }}
-                >
-                  <PlusIcon />
-                </button>
-              </div>
-
-              <div className="flex items-start justify-between">
-                <div className="flex flex-col gap-1">
-                  <h3 className="font-display text-[16px] font-medium leading-6 text-[#11191f]">
-                    {rp.name}
-                  </h3>
-                  <p
-                    className="font-body text-[16px] leading-5 text-[#78716c]"
-                    style={{ fontStretch: "75%" }}
-                  >
-                    {rp.subtitle}
-                  </p>
-                </div>
-                <PriceBlock
-                  currency={rp.currency}
-                  price={rp.price}
-                  salePrice={rp.salePrice}
-                  plainSize="md"
-                />
-              </div>
-            </article>
-          ))}
+        {/* Related products reuse the storefront ProductCard grid (same as
+            /shop) so the color-swatch switcher, per-color swipe carousel, label
+            badges, and sale-chip treatment all match the shop. Mobile 2-col /
+            desktop 4-col, identical to ShopPageClient's ProductGrid. The card
+            items already arrive in ProductCard shape (mapListItemToCard in
+            shopCatalog.js). Quick-add is left unwired here — the product page
+            has no add-to-cart sheet — so the "+" button is a no-op for now. */}
+        <div className="mx-auto w-full max-w-[1376px]">
+          <ProductGrid products={product.relatedProducts} />
         </div>
       </section>
+      ) : null}
     </div>
   );
 }
@@ -1144,7 +1183,7 @@ function PriceBlock({ currency, price, salePrice, plainSize = "md" }) {
         className="font-body text-[16px] font-medium leading-normal text-white whitespace-nowrap"
         style={{
           fontStretch: "75%",
-          backgroundColor: "#1e40af",
+          backgroundColor: "#1C5BBA",
           paddingLeft: 4,
           paddingRight: 4,
           paddingTop: 2,
@@ -1158,7 +1197,7 @@ function PriceBlock({ currency, price, salePrice, plainSize = "md" }) {
 }
 
 // Desktop hero price — Figma 2119:2536. Stacked vertical: 14px strikethrough
-// gray-400 above, 14px white-on-#0066B2 chip below (px-2 py-1 rounded-[2px]).
+// gray-400 above, 14px white-on-#1C5BBA chip below (px-2 py-1 rounded-[2px]).
 // When there is no salePrice, render a single 16px JOD label in #11191f.
 function DesktopPriceBlock({ currency, price, salePrice }) {
   const hasDiscount = salePrice != null && salePrice < price;
@@ -1177,7 +1216,7 @@ function DesktopPriceBlock({ currency, price, salePrice }) {
       <span
         className="font-display text-[14px] font-bold leading-4 text-white whitespace-nowrap"
         style={{
-          backgroundColor: "#1e40af",
+          backgroundColor: "#1C5BBA",
           paddingLeft: 8,
           paddingRight: 8,
           paddingTop: 4,
@@ -1261,7 +1300,15 @@ function DangerIcon() {
 // the dark primary button are wrapped in `opacity-50` and disabled. The dark
 // button label switches to "OUT OF STOCK", and the secondary row swaps
 // "ADD TO CART" for a full-opacity "NOTIFY WHEN AVAILABLE" outlined button.
-function CtaRow({ qty, setQty, outOfStock = false, size = "sm" }) {
+function CtaRow({
+  qty,
+  setQty,
+  outOfStock = false,
+  size = "sm",
+  onNotify,
+  notify = { status: "idle", message: "" },
+  notifyLabel = "Notify When Available",
+}) {
   // `size="lg"` matches Figma desktop hero (2119:2567): 48px-tall stepper +
   // 48px-tall buttons, 128px-wide stepper, 16px button text. Default "sm"
   // preserves the original mobile/compact layout (32px tall, 12px text).
@@ -1317,12 +1364,23 @@ function CtaRow({ qty, setQty, outOfStock = false, size = "sm" }) {
       </div>
       <button
         type="button"
-        className={`flex ${rowH} w-full items-center justify-center rounded-[2px] border border-[#11191f] cursor-pointer`}
+        onClick={outOfStock ? onNotify : undefined}
+        disabled={outOfStock && notify.status === "loading"}
+        className={`flex ${rowH} w-full items-center justify-center rounded-[2px] border border-[#11191f] ${outOfStock && notify.status === "loading" ? "cursor-wait opacity-60" : "cursor-pointer"}`}
       >
-        <span className={`font-display ${cartText} font-bold leading-none text-[#11191f]`}>
-          {outOfStock ? "NOTIFY WHEN AVAILABLE" : "ADD TO CART"}
+        <span className={`font-display ${cartText} font-bold uppercase leading-none text-[#11191f]`}>
+          {outOfStock ? notifyLabel : "ADD TO CART"}
         </span>
       </button>
+      {outOfStock && notify.message ? (
+        <p
+          className="font-display text-[10px] leading-3"
+          style={{ color: notify.status === "error" ? "#dc2626" : "#16a34a" }}
+          role="status"
+        >
+          {notify.message}
+        </p>
+      ) : null}
     </div>
   );
 }

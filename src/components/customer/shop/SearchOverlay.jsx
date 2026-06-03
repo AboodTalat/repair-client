@@ -1,10 +1,41 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
-import { listProducts } from "@/lib/mockShop";
+import { repairCall } from "@/lib/repairAuthedApi";
 import ProductCard from "@/components/customer/shop/ProductCard";
+
+// myAppListProducts item → ProductCard prop shape (client-side counterpart of
+// shopCatalog.js's server mapper; kept inline so this client component doesn't
+// pull in the server-only repairApi module). primary_image is an object
+// { url, color_id } — read `.url` (see reference_repair_listproducts_shape).
+const PLACEHOLDER_IMAGE = "/shop/model-1.png";
+function toCard(item) {
+  const price = Number(item.base_price);
+  const effective = Number(item.effective_price);
+  const salePrice = Number.isFinite(effective) && effective < price ? effective : null;
+  return {
+    id: item.id,
+    name: item.name,
+    subtitle: item.material || "",
+    price,
+    salePrice,
+    currency: "JOD",
+    colors: Array.isArray(item.colors) ? item.colors : [],
+    colorImages: (Array.isArray(item.color_images) ? item.color_images : [])
+      .map((c) => ({
+        hex: c.hex,
+        colorId: c.color_id,
+        images: (Array.isArray(c.images) ? c.images : []).filter(Boolean),
+      }))
+      .filter((c) => c.images.length > 0),
+    image: item.primary_image?.url || PLACEHOLDER_IMAGE,
+    labels: Array.isArray(item.labels) ? item.labels : [],
+  };
+}
+
+const SEARCH_DEBOUNCE_MS = 250;
 
 // Search overlay — opens when the user taps the search icon in ShopHeader.
 //
@@ -63,24 +94,63 @@ function Body({ onClose, dataState }) {
   const desktopInputRef = useRef(null);
   const [query, setQuery] = useState("");
 
-  // Source: all products from the mock catalog. The Figma shows 4 cards
-  // under "MOST POPULAR" — we take the first 4 when there's no query.
-  const all = useMemo(() => listProducts({ category: "discover-all" }), []);
+  // Live data from the `repair` sub-server (myAppListProducts — public, works
+  // logged-out). `popular` (empty-query default) is fetched once; `results` is
+  // the debounced server-side search. No mock fallback.
+  const [popular, setPopular] = useState([]);
+  const [results, setResults] = useState([]);
+  const [loading, setLoading] = useState(false);
 
-  const trimmed = query.trim().toLowerCase();
-  const results = trimmed
-    ? all.filter(
-        (p) =>
-          p.name.toLowerCase().includes(trimmed) ||
-          p.subtitle.toLowerCase().includes(trimmed),
-      )
-    : all.slice(0, 4);
+  const trimmed = query.trim();
 
-  // Desktop "no query" state shows 4 popular cards (matches Figma 120:5217
-  // which renders the grid with a sample query in the input). Whether the
-  // query is empty or not, on desktop we cap at 8 cards (2 rows × 4 cols)
-  // so the layout doesn't grow unbounded.
-  const desktopGrid = trimmed ? results.slice(0, 12) : all.slice(0, 8);
+  // Most-popular slice — newest products (the list resolver orders by created_at
+  // DESC). Fetched once on open; backs the empty-query state + "YOU MIGHT LIKE".
+  useEffect(() => {
+    let active = true;
+    repairCall("myAppListProducts", { limit: 8 }, { isQuery: true })
+      .then((d) => {
+        if (active) setPopular((Array.isArray(d?.items) ? d.items : []).map(toCard));
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  // Debounced server search — one request per pause in typing, not per keystroke.
+  // `active` drops a stale response if the query changed before it resolved.
+  useEffect(() => {
+    if (!trimmed) {
+      setResults([]);
+      setLoading(false);
+      return undefined;
+    }
+    setLoading(true);
+    let active = true;
+    const t = setTimeout(() => {
+      repairCall("myAppListProducts", { search: trimmed, limit: 12 }, { isQuery: true })
+        .then((d) => {
+          if (!active) return;
+          setResults((Array.isArray(d?.items) ? d.items : []).map(toCard));
+          setLoading(false);
+        })
+        .catch(() => {
+          if (!active) return;
+          setResults([]);
+          setLoading(false);
+        });
+    }, SEARCH_DEBOUNCE_MS);
+    return () => {
+      active = false;
+      clearTimeout(t);
+    };
+  }, [trimmed]);
+
+  // What each surface renders: search results when querying, else the popular
+  // slice. Suggestions for the no-results state come from the popular pool.
+  const mobileProducts = trimmed ? results : popular;
+  const desktopGrid = trimmed ? results.slice(0, 12) : popular.slice(0, 8);
+  const suggestions = popular.slice(0, 4);
 
   // Autofocus the input on mount + lock body scroll for the lifetime of the
   // overlay so the page underneath doesn't move. Pick which input to focus
@@ -114,8 +184,9 @@ function Body({ onClose, dataState }) {
         setQuery={setQuery}
         inputRef={mobileInputRef}
         trimmed={trimmed}
-        results={results}
-        all={all}
+        loading={loading}
+        results={mobileProducts}
+        suggestions={suggestions}
       />
       <DesktopBody
         dataState={dataState}
@@ -124,8 +195,9 @@ function Body({ onClose, dataState }) {
         setQuery={setQuery}
         inputRef={desktopInputRef}
         trimmed={trimmed}
+        loading={loading}
         grid={desktopGrid}
-        all={all}
+        suggestions={suggestions}
       />
     </>
   );
@@ -138,8 +210,9 @@ function MobileBody({
   setQuery,
   inputRef,
   trimmed,
+  loading,
   results,
-  all,
+  suggestions,
 }) {
   return (
     <div
@@ -243,7 +316,11 @@ function MobileBody({
         style={{ paddingTop: 24, paddingLeft: 16, paddingRight: 16 }}
       >
         {trimmed && results.length === 0 ? (
-          <NoResultsBody suggestions={all.slice(0, 4)} onClose={onClose} />
+          loading ? (
+            <SearchingHint />
+          ) : (
+            <NoResultsBody suggestions={suggestions} onClose={onClose} />
+          )
         ) : (
           <ResultsBody
             title={trimmed ? "RESULTS" : "MOST POPULAR"}
@@ -263,12 +340,13 @@ function DesktopBody({
   setQuery,
   inputRef,
   trimmed,
+  loading,
   grid,
-  all,
+  suggestions,
 }) {
-  const noResults = trimmed && grid.length === 0;
-  // Empty-state suggestions match the mobile pattern — first 4 of the pool.
-  const suggestions = all.slice(0, 4);
+  // Only treat as "no results" once the request has settled, so the empty-state
+  // copy doesn't flash mid-search.
+  const noResults = trimmed && !loading && grid.length === 0;
 
   return (
     <div
@@ -361,11 +439,33 @@ function DesktopBody({
 
           {noResults ? (
             <DesktopNoResults suggestions={suggestions} onClose={onClose} />
+          ) : trimmed && loading && grid.length === 0 ? (
+            <SearchingHint />
           ) : (
             <DesktopGrid products={grid} onClose={onClose} />
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+// Brief in-flight state while a search request is pending — keeps the
+// no-results copy from flashing before the response lands.
+function SearchingHint() {
+  return (
+    <div className="flex items-center justify-center" style={{ paddingTop: 24, paddingBottom: 24 }}>
+      <span
+        style={{
+          fontFamily: "var(--font-zalando-expanded)",
+          fontWeight: 500,
+          fontSize: 12,
+          color: "rgba(17,25,31,0.5)",
+          letterSpacing: "0.02em",
+        }}
+      >
+        Searching…
+      </span>
     </div>
   );
 }

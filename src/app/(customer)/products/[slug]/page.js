@@ -1,84 +1,48 @@
+import Link from "next/link";
 import ProductPageClient from "@/components/customer/product/ProductPageClient";
+import { fetchProductDetail } from "@/lib/shopCatalog";
 
-const MOCK_PRODUCT = {
-  id: "legging-78",
-  slug: "legging-78",
-  name: "Legging ⅞",
-  subtitle: "80% nylon · 20% spandex",
-  price: 30,
-  salePrice: 15.99,
-  // Stock state for the currently-selected variant. When the page is wired to
-  // myAppGetProductDetail, derive these from the variants array (each variant
-  // returns `quantity` + `low_stock_threshold` from catalog.ts):
-  //   outOfStock      ← Number(variant.quantity) <= 0
-  //   itemsLeft       ← Number(variant.quantity)
-  //   lowStockLimit   ← Number(variant.low_stock_threshold)
-  outOfStock: false,
-  itemsLeft: 2,
-  lowStockLimit: 5,
-  currency: "JOD",
-  labels: ["Best Seller", "Low Stock"],
-  images: [
-    "/shop/model-1.png",
-    "/shop/model-2.png",
-    "/shop/model-3.png",
-    "/shop/model-4.png",
-  ],
-  colors: [
-    { name: "White", hex: "#ffffff" },
-    { name: "Linen", hex: "#ede9dd" },
-    { name: "Charcoal", hex: "#232323" },
-    { name: "Navy", hex: "#12013f" },
-    { name: "Burgundy", hex: "#3e0000" },
-  ],
-  sizes: ["36", "38", "40", "42", "44", "46", "48"],
-  relatedProducts: [
-    {
-      id: "sweat-pants-1",
-      name: "Sweat Pants",
-      subtitle: "Soft Cotton",
-      price: 30,
-      currency: "JOD",
-      image: "/shop/model-4.png",
-      colors: ["#ede9dd", "#232323", "#12013f", "#3e0000"],
-    },
-    {
-      id: "sweat-pants-2",
-      name: "Sweat Pants",
-      subtitle: "Soft Cotton",
-      price: 30,
-      salePrice: 19.99,
-      currency: "JOD",
-      image: "/shop/model-5.png",
-      colors: ["#ede9dd", "#232323", "#12013f", "#3e0000"],
-    },
-    {
-      id: "sweat-pants-3",
-      name: "Training Shorts",
-      subtitle: "Lightweight",
-      price: 30,
-      currency: "JOD",
-      image: "/shop/model-4.png",
-      colors: ["#9ca3af", "#11191f", "#7f1d1d"],
-    },
-    {
-      id: "sweat-pants-4",
-      name: "Core Tee",
-      subtitle: "Breathable",
-      price: 30,
-      currency: "JOD",
-      image: "/shop/model-1.png",
-      colors: ["#374151", "#11191f", "#991b1b"],
-    },
-  ],
-};
+// Product detail route. The `[slug]` segment is the numeric product id
+// (storefront links are `/products/<id>`). Data comes live from the `repair`
+// sub-server's myAppGetProductDetail resolver, shaped by `fetchProductDetail`
+// into the `product` prop ProductPageClient consumes. A non-numeric slug, a
+// missing/hidden product, or a fetch failure all resolve to `null` and render
+// the inline not-found state below (no crash, no 500).
 
-export const metadata = {
-  title: "Legging ⅞ | Repair",
-  description:
-    "80% recycled polyester, 20% elastane. Compression fit with four-way stretch for every workout.",
-};
+export async function generateMetadata({ params }) {
+  const { slug } = await params;
+  const product = await fetchProductDetail(slug);
+  if (!product) return { title: "Product not found | Repair" };
+  return {
+    title: `${product.name} | Repair`,
+    description: product.description
+      ? product.description.slice(0, 160)
+      : `${product.name} — shop the latest from Repair.`,
+  };
+}
 
-export default function ProductPage() {
-  return <ProductPageClient product={MOCK_PRODUCT} />;
+export default async function ProductPage({ params }) {
+  const { slug } = await params;
+  const product = await fetchProductDetail(slug);
+
+  if (!product) {
+    return (
+      <section className="mx-auto flex w-full max-w-[1440px] flex-1 flex-col items-center justify-center gap-4 px-4 py-24 text-center">
+        <h1 className="font-display text-[22px] font-medium text-[#11191f] md:text-[28px]">
+          PRODUCT NOT FOUND
+        </h1>
+        <p className="font-body text-[14px] text-[#666] md:text-[16px]" style={{ fontStretch: "75%" }}>
+          This product may have been removed or is no longer available.
+        </p>
+        <Link
+          href="/shop"
+          className="mt-2 inline-flex h-11 items-center justify-center bg-[#11191f] px-6 font-display text-[13px] font-bold uppercase tracking-wide text-white"
+        >
+          Back to Shop
+        </Link>
+      </section>
+    );
+  }
+
+  return <ProductPageClient product={product} />;
 }

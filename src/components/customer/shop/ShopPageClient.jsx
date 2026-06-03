@@ -9,6 +9,7 @@ import EmptyState from "./EmptyState";
 import ComingSoonOverlay from "./ComingSoonOverlay";
 import AddToCartDrawer from "./AddToCartDrawer";
 import AddedToCartBanner from "./AddedToCartBanner";
+import Pagination from "./Pagination";
 import { ACTIVE_FILTER_COUNT } from "@/lib/mockShop";
 
 // Single client island that owns:
@@ -20,9 +21,17 @@ import { ACTIVE_FILTER_COUNT } from "@/lib/mockShop";
 
 export default function ShopPageClient({
   categoryName,
+  subCategoryName,
   products,
+  total,
+  page,
+  pageSize,
   filters,
   typeOptions,
+  colorOptions,
+  sizeOptions,
+  materialOptions,
+  priceRange,
   showComingSoon,
 }) {
   const router = useRouter();
@@ -31,10 +40,10 @@ export default function ShopPageClient({
 
   const [filterOpen, setFilterOpen] = useState(false);
   const [cartProduct, setCartProduct] = useState(null);
-  const [cartCount, setCartCount] = useState(0);
   const [showBanner, setShowBanner] = useState(false);
 
   const activeFilterCount = useMemo(() => ACTIVE_FILTER_COUNT(filters), [filters]);
+  const pageCount = pageSize ? Math.ceil((total || 0) / pageSize) : 0;
 
   function applyFilters(next) {
     const sp = new URLSearchParams(params);
@@ -44,11 +53,23 @@ export default function ShopPageClient({
     if (next.types.length) sp.set("types", next.types.join(",")); else sp.delete("types");
     if (next.priceMin != null) sp.set("min", String(next.priceMin)); else sp.delete("min");
     if (next.priceMax != null) sp.set("max", String(next.priceMax)); else sp.delete("max");
+    // A new filter set changes the result count, so the current page number may
+    // no longer exist — always return to page 1.
+    sp.delete("page");
     router.push(`${pathname}?${sp.toString()}`);
   }
 
-  function handleAdd(_payload) {
-    setCartCount((n) => n + 1);
+  function goToPage(n) {
+    const sp = new URLSearchParams(params);
+    if (n > 1) sp.set("page", String(n));
+    else sp.delete("page");
+    const qs = sp.toString();
+    router.push(qs ? `${pathname}?${qs}` : pathname);
+  }
+
+  // The drawer performs the actual add (store.addToCart) and only calls this on
+  // success — the badge count is owned by the store, so this just shows the toast.
+  function handleAdd() {
     setShowBanner(true);
   }
 
@@ -56,14 +77,15 @@ export default function ShopPageClient({
     <>
       <AddedToCartBanner visible={showBanner} onDismiss={() => setShowBanner(false)} />
 
-      <main className="mx-auto flex w-full max-w-[1440px] flex-1 flex-col gap-4 px-4 pb-16 pt-3 md:gap-8 md:px-8 md:pt-24">
+      <main className="mx-auto flex w-full max-w-[1440px] flex-1 flex-col gap-4 px-4 pb-16 pt-3 md:gap-8 md:px-8 md:pt-8">
         {/* FilterBar is hidden when the coming-soon overlay is active so the
             blurred grid covers the whole content area below the header
             (Figma 198:5080). */}
         {!showComingSoon && (
           <FilterBar
             categoryName={categoryName}
-            productCount={products.length}
+            subCategoryName={subCategoryName}
+            productCount={total ?? products.length}
             activeFilterCount={activeFilterCount}
             onOpenFilter={() => setFilterOpen(true)}
           />
@@ -74,7 +96,10 @@ export default function ShopPageClient({
         ) : products.length === 0 ? (
           <EmptyState />
         ) : (
-          <ProductGrid products={products} onQuickAdd={setCartProduct} />
+          <>
+            <ProductGrid products={products} onQuickAdd={setCartProduct} />
+            <Pagination page={page} pageCount={pageCount} onPage={goToPage} />
+          </>
         )}
       </main>
 
@@ -83,6 +108,10 @@ export default function ShopPageClient({
         onClose={() => setFilterOpen(false)}
         value={filters}
         typeOptions={typeOptions}
+        colorOptions={colorOptions}
+        sizeOptions={sizeOptions}
+        materialOptions={materialOptions}
+        priceRange={priceRange}
         onApply={applyFilters}
       />
 

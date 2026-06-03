@@ -57,12 +57,35 @@ export default function FilterDrawer(props) {
   return <DialogBody {...props} dataState={dataState} />;
 }
 
-function DialogBody({ onClose, value, onApply, typeOptions, dataState }) {
+function DialogBody({
+  onClose,
+  value,
+  onApply,
+  typeOptions,
+  colorOptions,
+  sizeOptions,
+  materialOptions,
+  priceRange,
+  dataState,
+}) {
   const [draft, setDraft] = useState(() => normalize(value));
 
-  // ITEM TYPE facet is the live sub-category set (passed in from the server);
-  // fall back to the static mock list only when nothing was provided.
+  // Facet option sources: live values from the server (passed in as props),
+  // each falling back to the static mock list only when nothing was provided —
+  // so the drawer never renders an empty section if a facet fetch failed.
+  // ITEM TYPE = the live sub-category set; COLORS / SIZES / MATERIAL = the live
+  // catalogue reference data (myAppListColors / Sizes / Materials).
   const types = typeOptions?.length ? typeOptions : FILTER_OPTIONS.types;
+  const colors = colorOptions?.length ? colorOptions : FILTER_OPTIONS.colors;
+  const materials = materialOptions?.length ? materialOptions : FILTER_OPTIONS.materials;
+  // SIZE renders as two rows (numeric 36–48, then alpha S–XXL). Split the live
+  // flat size list by digits-only name; fall back to the two mock arrays.
+  const numericSizes = sizeOptions?.length
+    ? sizeOptions.filter((s) => /^\d+$/.test(String(s)))
+    : FILTER_OPTIONS.numericSizes;
+  const alphaSizes = sizeOptions?.length
+    ? sizeOptions.filter((s) => !/^\d+$/.test(String(s)))
+    : FILTER_OPTIONS.sizes;
 
   useEffect(() => {
     function onKey(e) {
@@ -107,8 +130,12 @@ function DialogBody({ onClose, value, onApply, typeOptions, dataState }) {
     draft.types.length +
     (draft.priceMin != null || draft.priceMax != null ? 1 : 0);
 
-  const minPrice = FILTER_OPTIONS.priceRange[0];
-  const maxPrice = FILTER_OPTIONS.priceRange[1];
+  // Live price bounds from the catalogue (myAppGetPriceRange), falling back to
+  // the static mock range when the server didn't supply a usable one.
+  const hasLiveRange =
+    priceRange && Number.isFinite(priceRange.min) && Number.isFinite(priceRange.max) && priceRange.max > priceRange.min;
+  const minPrice = hasLiveRange ? priceRange.min : FILTER_OPTIONS.priceRange[0];
+  const maxPrice = hasLiveRange ? priceRange.max : FILTER_OPTIONS.priceRange[1];
   const currentMin = draft.priceMin ?? minPrice;
   const currentMax = draft.priceMax ?? maxPrice;
 
@@ -132,6 +159,10 @@ function DialogBody({ onClose, value, onApply, typeOptions, dataState }) {
     currentMax,
     setPriceRange,
     types,
+    colors,
+    materials,
+    numericSizes,
+    alphaSizes,
     onClose,
     dataState,
   };
@@ -168,6 +199,10 @@ function MobileCard({
   currentMax,
   setPriceRange,
   types,
+  colors,
+  materials,
+  numericSizes,
+  alphaSizes,
   onClose,
   dataState,
 }) {
@@ -204,7 +239,7 @@ function MobileCard({
           <SectionTitle size={12}>SIZE</SectionTitle>
           <div className="flex flex-col" style={{ gap: 8 }}>
             <div className="flex flex-wrap" style={{ gap: 8 }}>
-              {FILTER_OPTIONS.numericSizes.map((s) => (
+              {numericSizes.map((s) => (
                 <SquareChip
                   key={s}
                   active={draft.sizes.includes(s)}
@@ -219,7 +254,7 @@ function MobileCard({
               ))}
             </div>
             <div className="flex flex-wrap" style={{ gap: 8 }}>
-              {FILTER_OPTIONS.sizes.map((s) => (
+              {alphaSizes.map((s) => (
                 <SquareChip
                   key={s}
                   active={draft.sizes.includes(s)}
@@ -240,7 +275,7 @@ function MobileCard({
         <section className="flex flex-col" style={{ gap: 8 }}>
           <SectionTitle size={12}>COLORS</SectionTitle>
           <div className="flex flex-wrap items-center" style={{ gap: 8 }}>
-            {FILTER_OPTIONS.colors.map((c) => (
+            {colors.map((c) => (
               <ColorSwatch
                 key={c.hex}
                 hex={c.hex}
@@ -259,7 +294,7 @@ function MobileCard({
         <section className="flex flex-col" style={{ gap: 8 }}>
           <SectionTitle size={12}>MATERIAL</SectionTitle>
           <div className="flex flex-wrap" style={{ gap: 8 }}>
-            {FILTER_OPTIONS.materials.map((m) => (
+            {materials.map((m) => (
               <PillChip
                 key={m}
                 active={draft.materials.includes(m)}
@@ -375,6 +410,10 @@ function DesktopCard({
   currentMax,
   setPriceRange,
   types,
+  colors,
+  materials,
+  numericSizes,
+  alphaSizes,
   onClose,
   dataState,
 }) {
@@ -412,7 +451,7 @@ function DesktopCard({
           <SectionTitle size={12}>SIZE</SectionTitle>
           <div className="flex flex-col" style={{ gap: 12 }}>
             <div className="flex flex-wrap" style={{ gap: 12 }}>
-              {FILTER_OPTIONS.numericSizes.map((s) => (
+              {numericSizes.map((s) => (
                 <SquareChip
                   key={s}
                   active={draft.sizes.includes(s)}
@@ -427,7 +466,7 @@ function DesktopCard({
               ))}
             </div>
             <div className="flex flex-wrap" style={{ gap: 12 }}>
-              {FILTER_OPTIONS.sizes.map((s) => (
+              {alphaSizes.map((s) => (
                 <SquareChip
                   key={s}
                   active={draft.sizes.includes(s)}
@@ -449,7 +488,7 @@ function DesktopCard({
         <section className="flex flex-col" style={{ gap: 8 }}>
           <SectionTitle size={12}>COLORS</SectionTitle>
           <div className="flex flex-wrap items-center" style={{ gap: 12 }}>
-            {FILTER_OPTIONS.colors.map((c) => (
+            {colors.map((c) => (
               <ColorSwatch
                 key={c.hex}
                 hex={c.hex}
@@ -469,7 +508,7 @@ function DesktopCard({
         <section className="flex flex-col" style={{ gap: 8 }}>
           <SectionTitle size={12}>MATERIAL</SectionTitle>
           <div className="flex flex-wrap" style={{ gap: 12 }}>
-            {FILTER_OPTIONS.materials.map((m) => (
+            {materials.map((m) => (
               <PillChip
                 key={m}
                 active={draft.materials.includes(m)}

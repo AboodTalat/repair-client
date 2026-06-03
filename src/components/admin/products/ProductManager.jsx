@@ -36,6 +36,10 @@ import {
   IconChevronDown,
 } from "@/components/admin/shared/Icons";
 import { formatCurrency, formatNumber } from "@/lib/mockAdmin";
+import {
+  DEFAULT_CRAFTED_TO_LAST,
+  normalizeCraftedToLast,
+} from "@/lib/craftedToLast";
 import { repairCall } from "@/lib/repairAuthedApi";
 import { useUploadThing } from "@/lib/uploadthing";
 import { useRepairStore, selectToken } from "@/lib/useRepairStore";
@@ -56,6 +60,14 @@ const LABEL_OPTIONS = [
   "Low Stock",
   "Limited",
 ];
+
+// Storefront badges lose meaning when there are too many — cap selection.
+const MAX_LABELS = 2;
+
+// Photo bucket key for "one shared photo set for all colors" mode. Stored as a
+// string key in the same `photos` map the per-color buckets use (which key by
+// numeric color id), so the photo handlers work for both without branching.
+const SHARED_PHOTO_KEY = "shared";
 
 function formatComposition(rows) {
   return (rows || [])
@@ -109,8 +121,15 @@ function CategoryCell({
   onRemoveSub,
   onRemoveMajor,
 }) {
-  const primarySub = subById.get(product.sub_category_id);
-  const primaryMajor = primarySub ? majorById.get(primarySub.majorId) : null;
+  // The primary is EITHER a sub (with an implied major) OR a major directly.
+  const primarySub = product.sub_category_id ? subById.get(product.sub_category_id) : null;
+  const primaryMajorDirect = product.major_category_id ? majorById.get(product.major_category_id) : null;
+  const primaryMajor = primaryMajorDirect || (primarySub ? majorById.get(primarySub.majorId) : null);
+  const primaryLabel = primarySub
+    ? `${primaryMajor?.name ? `${primaryMajor.name} › ` : ""}${primarySub.name}`
+    : primaryMajorDirect
+      ? primaryMajorDirect.name
+      : "—";
   const extraSubs = product.extraSubCategoryIds || [];
   const extraMajors = product.extraMajorCategoryIds || [];
 
@@ -122,7 +141,12 @@ function CategoryCell({
         label: `Sub · ${majorById.get(s.majorId)?.name || ""} › ${s.name}`,
       })),
     ...majorCategories
-      .filter((m) => m.id !== primarySub?.majorId && !extraMajors.includes(m.id))
+      .filter(
+        (m) =>
+          m.id !== primarySub?.majorId &&
+          m.id !== product.major_category_id &&
+          !extraMajors.includes(m.id)
+      )
       .map((m) => ({ value: `major:${m.id}`, label: `Major · ${m.name}` })),
   ];
 
@@ -133,8 +157,7 @@ function CategoryCell({
           title="Primary category — change it in the product editor"
           className="inline-flex items-center rounded-[2px] bg-[#11191f] px-1.5 py-0.5 font-body text-[11px] text-white"
         >
-          {primaryMajor?.name ? `${primaryMajor.name} › ` : ""}
-          {primarySub?.name || "—"}
+          {primaryLabel}
         </span>
         {extraSubs.map((sid) => {
           const s = subById.get(sid);
@@ -180,7 +203,6 @@ export default function ProductManager() {
   const [sizes, setSizes] = useState([]);
   const [categoryTree, setCategoryTree] = useState([]);
   const [materials, setMaterials] = useState([]);
-  const [collections, setCollections] = useState([]);
   const [refLoading, setRefLoading] = useState(true);
 
   // ── Product list ──
@@ -225,12 +247,11 @@ export default function ProductManager() {
     async function load() {
       setRefLoading(true);
       try {
-        const [colorsRes, sizesRes, treeRes, matsRes, collRes] = await Promise.all([
+        const [colorsRes, sizesRes, treeRes, matsRes] = await Promise.all([
           repairCall("myAppAdminListColors", {}).catch(() => ({ items: [] })),
           repairCall("myAppAdminListSizes", {}).catch(() => ({ items: [] })),
           repairCall("myAppListCategoriesTree", { includeHidden: true }).catch(() => []),
           repairCall("myAppListMaterials", {}).catch(() => ({ items: [] })),
-          repairCall("myAppListCollections", {}).catch(() => ({ items: [] })),
         ]);
         if (cancelled) return;
         setColors(
@@ -252,13 +273,6 @@ export default function ProductManager() {
           (matsRes.items || matsRes || []).map((m) => ({
             id: N(m.id),
             name: m.name,
-          }))
-        );
-        setCollections(
-          (collRes.items || collRes || []).map((col) => ({
-            id: N(col.id),
-            slug: col.slug,
-            name: col.name,
           }))
         );
       } catch {
@@ -286,7 +300,8 @@ export default function ProductManager() {
           id: N(p.id),
           name: p.name,
           description: p.description,
-          sub_category_id: N(p.sub_category_id),
+          sub_category_id: p.sub_category_id != null ? N(p.sub_category_id) : null,
+          major_category_id: p.major_category_id != null ? N(p.major_category_id) : null,
           material: p.material,
           labels: p.labels || [],
           base_price: Number(p.base_price) || 0,
@@ -395,7 +410,7 @@ export default function ProductManager() {
       if (id === product.sub_category_id || subs.includes(id)) return;
       applyCategoryChange(product, [...subs, id], majors);
     } else if (type === "major") {
-      if (majors.includes(id)) return;
+      if (id === product.major_category_id || majors.includes(id)) return;
       applyCategoryChange(product, subs, [...majors, id]);
     }
   }
@@ -429,7 +444,8 @@ export default function ProductManager() {
         id: N(p.id),
         name: p.name || "",
         description: p.description || "",
-        sub_category_id: N(p.sub_category_id),
+        sub_category_id: p.sub_category_id != null ? N(p.sub_category_id) : null,
+        major_category_id: p.major_category_id != null ? N(p.major_category_id) : null,
         base_price: Number(p.base_price) || 0,
         is_visible: !!p.is_visible,
         labels: p.labels || [],
@@ -438,6 +454,15 @@ export default function ProductManager() {
         subtitleMode: comp.length > 0 ? "composition" : "text",
         subtitle: p.material || "",
         composition: comp.length > 0 ? comp : [],
+        // "Crafted to Last" stats — the server defaults a never-edited product
+        // to the canonical rows, so this is normally populated; fall back
+        // defensively for the pre-migration window.
+        craftedToLast: (() => {
+          const rows = normalizeCraftedToLast(p.crafted_to_last);
+          return rows.length
+            ? rows
+            : DEFAULT_CRAFTED_TO_LAST.map((r) => ({ ...r }));
+        })(),
         // Colors / sizes for this product
         productColors: (p.colors || []).map((c) => N(c.id)),
         productSizes: (p.sizes || []).map((s) => N(s.id)),
@@ -484,6 +509,7 @@ export default function ProductManager() {
       name: "",
       description: "",
       sub_category_id: firstSub,
+      major_category_id: null,
       base_price: "",
       is_visible: true,
       labels: [],
@@ -505,6 +531,8 @@ export default function ProductManager() {
       subtitleMode: "text",
       subtitle: "",
       composition: [],
+      // Defaults to the same three stats the product page shipped with.
+      craftedToLast: DEFAULT_CRAFTED_TO_LAST.map((r) => ({ ...r })),
       productColors: [],
       productSizes: [],
       variants: [],
@@ -817,7 +845,6 @@ export default function ProductManager() {
         subCategories={subCategories}
         majorCategories={majorCategories}
         materials={materials}
-        collections={collections}
         onClose={() => setEditing(null)}
         onSave={handleSaveComplete}
       />
@@ -1570,7 +1597,6 @@ function ProductDrawer({
   subCategories,
   majorCategories,
   materials,
-  collections,
   onClose,
   onSave,
 }) {
@@ -1592,13 +1618,19 @@ function ProductDrawer({
   useEffect(() => {
     if (!editing || editing._loading) return;
     if (editing.id) {
-      // Edit mode: detail already fetched
-      // Build photos map from images grouped by color_id
+      // Edit mode: detail already fetched.
+      // Build photos map from images grouped by color_id. Color-less images
+      // (color_id === null) land in a single SHARED_PHOTO_KEY bucket — those
+      // are products whose admin chose "one photo set for all colors".
       const photoMap = {};
+      let hasColorKeyed = false;
+      let hasShared = false;
       (editing.images || []).forEach((img) => {
-        const cid = img.color_id;
-        if (!photoMap[cid]) photoMap[cid] = [];
-        photoMap[cid].push({
+        const key = img.color_id == null ? SHARED_PHOTO_KEY : img.color_id;
+        if (key === SHARED_PHOTO_KEY) hasShared = true;
+        else hasColorKeyed = true;
+        if (!photoMap[key]) photoMap[key] = [];
+        photoMap[key].push({
           id: img.id,
           url: img.url,
           name: `Image ${img.id}`,
@@ -1607,39 +1639,37 @@ function ProductDrawer({
           _backendId: img.id,
         });
       });
-      // Sort each color's photos by sort_order
-      Object.keys(photoMap).forEach((cid) => {
-        photoMap[cid].sort((a, b) => a.sort_order - b.sort_order);
+      // Sort each bucket's photos by sort_order
+      Object.keys(photoMap).forEach((key) => {
+        photoMap[key].sort((a, b) => a.sort_order - b.sort_order);
       });
+
+      // A product authored through this UI is either all-shared or all-per-color.
+      // Mixed (legacy) data can't be produced here; default it to per-color.
+      const imageMode = hasShared && !hasColorKeyed ? "shared" : "perColor";
 
       setDraft({
         ...editing,
         photos: photoMap,
+        imageMode,
         materialTags: editing.material_ids || [],
         collectionIds: editing.collection_ids || [],
       });
     } else {
       // New product
-      setDraft({ ...editing, photos: {}, materialTags: [], collectionIds: [] });
+      setDraft({
+        ...editing,
+        photos: {},
+        imageMode: "perColor",
+        materialTags: [],
+        collectionIds: [],
+      });
     }
     setTab("details");
     setErrors({});
     setSaveError("");
   }, [editing]);
   /* eslint-enable react-hooks/set-state-in-effect */
-
-  // ── Collection toggle ──
-  function toggleCollection(id) {
-    setDraft((d) => {
-      const has = (d.collectionIds || []).includes(id);
-      return {
-        ...d,
-        collectionIds: has
-          ? d.collectionIds.filter((x) => x !== id)
-          : [...(d.collectionIds || []), id],
-      };
-    });
-  }
 
   // ── Material tag toggle ──
   function toggleMaterialTag(id) {
@@ -1747,15 +1777,24 @@ function ProductDrawer({
     });
   }
 
+  // ── Image mode (per-color vs one shared photo set) ──
+  function setImageMode(mode) {
+    setDraft((d) => (d.imageMode === mode ? d : { ...d, imageMode: mode }));
+    clearError("photos");
+  }
+
   // ── Label toggle ──
   function toggleLabel(label) {
     setDraft((d) => {
-      const has = (d.labels || []).includes(label);
+      const current = d.labels || [];
+      const has = current.includes(label);
+      // Removing is always allowed; adding is capped at MAX_LABELS.
+      if (!has && current.length >= MAX_LABELS) return d;
       return {
         ...d,
         labels: has
-          ? d.labels.filter((l) => l !== label)
-          : [...(d.labels || []), label],
+          ? current.filter((l) => l !== label)
+          : [...current, label],
       };
     });
   }
@@ -1794,7 +1833,13 @@ function ProductDrawer({
   }
 
   // ── Variant qty ──
-  function setVariantQty(colorId, sizeId, qty) {
+  // The grid cell accepts the raw input string so we can tell apart two
+  // distinct states the admin needs:
+  //   - blank ("")  → no SKU for this color × size (combination not offered).
+  //   - a number ≥0 → an offered SKU; 0 means in the catalogue but OUT OF STOCK
+  //                    (still a real variant, so "notify me when available"
+  //                    works). Previously 0 silently pruned the variant.
+  function setVariantQty(colorId, sizeId, rawValue) {
     setDraft((d) => {
       const variants = (d.variants || []).filter(
         (v) => !(v.color_id === colorId && v.size_id === sizeId)
@@ -1803,29 +1848,35 @@ function ProductDrawer({
       const existing = (d.variants || []).find(
         (v) => v.color_id === colorId && v.size_id === sizeId
       );
-      const total =
-        qty > 0
-          ? [
-              ...variants,
-              {
-                id: existing?.id || null,
-                color_id: colorId,
-                size_id: sizeId,
-                qty,
-                low_stock_threshold: existing?.low_stock_threshold ?? d.lowStockThreshold ?? 10,
-              },
-            ]
-          : variants;
+      const blank = rawValue === "" || rawValue == null;
+      let total;
+      if (blank) {
+        total = variants; // not offered → drop the SKU
+      } else {
+        const n = Number(rawValue);
+        const qty = Number.isFinite(n) && n > 0 ? Math.floor(n) : 0; // 0 stays 0
+        total = [
+          ...variants,
+          {
+            id: existing?.id || null,
+            color_id: colorId,
+            size_id: sizeId,
+            qty,
+            low_stock_threshold: existing?.low_stock_threshold ?? d.lowStockThreshold ?? 10,
+          },
+        ];
+      }
       const totalStock = total.reduce((s, v) => s + v.qty, 0);
       return { ...d, variants: total, totalStock };
     });
   }
 
-  function getQty(colorId, sizeId) {
-    return (
-      (draft.variants || []).find(
-        (v) => v.color_id === colorId && v.size_id === sizeId
-      )?.qty ?? 0
+  // The variant for a cell, or undefined when the combination isn't offered.
+  // Callers use presence (offered vs not) and `.qty` (which may legitimately
+  // be 0) separately, so this can't collapse to a number.
+  function getVariant(colorId, sizeId) {
+    return (draft.variants || []).find(
+      (v) => v.color_id === colorId && v.size_id === sizeId
     );
   }
 
@@ -1837,8 +1888,8 @@ function ProductDrawer({
     if (!draft.name?.trim()) errs.name = "Product name is required.";
     if (draft.subtitleMode !== "composition" && !draft.subtitle?.trim())
       errs.subtitle = "Subtitle is required.";
-    if (!draft.sub_category_id)
-      errs.subCategory = "Sub-category is required.";
+    if (!draft.sub_category_id && !draft.major_category_id)
+      errs.subCategory = "A primary category is required.";
     if (!draft.base_price || draft.base_price <= 0)
       errs.price = "Price must be greater than 0.";
 
@@ -1862,6 +1913,11 @@ function ProductDrawer({
       errs.details = "Each detail entry needs a title.";
     }
 
+    const crafted = draft.craftedToLast || [];
+    if (crafted.some((r) => !r.label?.trim())) {
+      errs.craftedToLast = "Each Crafted to Last stat needs a label.";
+    }
+
     // Media tab
     if ((draft.productColors || []).length === 0)
       errs.productColors = "Select at least one color.";
@@ -1869,11 +1925,17 @@ function ProductDrawer({
       errs.productSizes = "Select at least one size.";
 
     const photos = draft.photos || {};
-    const colorsWithoutImages = (draft.productColors || []).filter(
-      (id) => !((photos[id] || []).length > 0)
-    );
-    if (colorsWithoutImages.length > 0)
-      errs.photos = "Upload at least one photo for every selected color.";
+    if (draft.imageMode === "shared") {
+      // One shared photo set for all colors — require at least one photo.
+      if ((photos[SHARED_PHOTO_KEY] || []).length === 0)
+        errs.photos = "Upload at least one product photo.";
+    } else {
+      const colorsWithoutImages = (draft.productColors || []).filter(
+        (id) => !((photos[id] || []).length > 0)
+      );
+      if (colorsWithoutImages.length > 0)
+        errs.photos = "Upload at least one photo for every selected color.";
+    }
 
     // Inventory tab
     const selectedColors = (draft.productColors || [])
@@ -1883,12 +1945,15 @@ function ProductDrawer({
       .map((id) => sizes.find((s) => s.id === id))
       .filter(Boolean);
     if (selectedColors.length > 0 && selectedSizes.length > 0) {
-      const hasEmpty = selectedColors.some((c) =>
-        selectedSizes.some((s) => getQty(c.id, s.id) < 1)
+      // Every selected color × size must be an offered SKU (a quantity entered),
+      // but that quantity may be 0 for out-of-stock sizes. A blank cell = not
+      // offered; to leave a size off entirely, deselect it above.
+      const hasBlank = selectedColors.some((c) =>
+        selectedSizes.some((s) => !getVariant(c.id, s.id))
       );
-      if (hasEmpty)
+      if (hasBlank)
         errs.inventory =
-          "Every color ?� size combination must have a quantity of at least 1.";
+          "Enter a quantity for every color × size. Use 0 for sizes that are out of stock.";
     }
 
     return errs;
@@ -1914,7 +1979,8 @@ function ProductDrawer({
         errs.price ||
         errs.subCategory ||
         errs.composition ||
-        errs.details
+        errs.details ||
+        errs.craftedToLast
       ) {
         setTab("details");
       } else if (errs.productColors || errs.productSizes || errs.photos) {
@@ -1937,6 +2003,12 @@ function ProductDrawer({
 
       let productId = draft.id;
 
+      // The primary category is EITHER a sub OR a major (migration 0010) —
+      // send exactly the chosen one; the backend clears the other column.
+      const primaryCategoryFields = draft.major_category_id
+        ? { major_category_id: Number(draft.major_category_id) }
+        : { sub_category_id: Number(draft.sub_category_id) };
+
       // Step 1: Create or update the product itself
       if (productId) {
         await repairCall(
@@ -1944,12 +2016,13 @@ function ProductDrawer({
           {
             id: productId,
             name: draft.name,
-            sub_category_id: Number(draft.sub_category_id),
+            ...primaryCategoryFields,
             base_price: Number(draft.base_price),
             description: draft.description || "",
             is_visible: !!draft.is_visible,
             labels: draft.labels || [],
             details: draft.details || [],
+            crafted_to_last: normalizeCraftedToLast(draft.craftedToLast),
             material: materialStr,
           },
           { isQuery: false }
@@ -1959,12 +2032,13 @@ function ProductDrawer({
           "myAppAdminCreateProduct",
           {
             name: draft.name,
-            sub_category_id: Number(draft.sub_category_id),
+            ...primaryCategoryFields,
             base_price: Number(draft.base_price),
             description: draft.description || "",
             is_visible: !!draft.is_visible,
             labels: draft.labels || [],
             details: draft.details || [],
+            crafted_to_last: normalizeCraftedToLast(draft.craftedToLast),
             material: materialStr,
           },
           { isQuery: false }
@@ -2066,18 +2140,30 @@ function ProductDrawer({
       }));
       const serverImageIds = new Set(serverImages.map((img) => img.id));
 
-      // Flatten draft photos into a list
+      // Flatten draft photos into a list. The active image mode decides which
+      // buckets persist: "shared" → only the SHARED_PHOTO_KEY bucket, saved
+      // with color_id null; "perColor" → only the numeric color-keyed buckets.
+      // Buckets for the inactive mode are intentionally excluded, so switching
+      // modes deletes the previous mode's images on save (by design).
       const draftPhotos = [];
       const photos = draft.photos || {};
-      Object.entries(photos).forEach(([colorId, photoList]) => {
-        (photoList || []).forEach((photo, idx) => {
-          draftPhotos.push({
-            ...photo,
-            color_id: Number(colorId),
-            sort_order: idx,
+      if (draft.imageMode === "shared") {
+        (photos[SHARED_PHOTO_KEY] || []).forEach((photo, idx) => {
+          draftPhotos.push({ ...photo, color_id: null, sort_order: idx });
+        });
+      } else {
+        Object.entries(photos).forEach(([colorId, photoList]) => {
+          // Skip any non-numeric bucket (e.g. a stray shared bucket).
+          if (Number.isNaN(Number(colorId))) return;
+          (photoList || []).forEach((photo, idx) => {
+            draftPhotos.push({
+              ...photo,
+              color_id: Number(colorId),
+              sort_order: idx,
+            });
           });
         });
-      });
+      }
 
       const draftPhotoBackendIds = new Set(
         draftPhotos.filter((p) => p._backendId).map((p) => p._backendId)
@@ -2143,21 +2229,15 @@ function ProductDrawer({
         { isQuery: false }
       );
 
-      // Step 5: Set collections
-      await repairCall(
-        "myAppAdminSetProductCollections",
-        {
-          productId,
-          collectionIds: draft.collectionIds || [],
-        },
-        { isQuery: false }
-      );
-
-      // Step 6: Set additional category memberships (multi sub + multi major).
+      // Step 5: Set additional category memberships (multi sub + multi major).
       // The primary sub (and its implied major) are stripped — the backend
       // excludes them from the join tables and unions them back on read.
-      const primarySub = Number(draft.sub_category_id);
-      const primaryMajor = subCategories.find((s) => s.id === primarySub)?.majorId;
+      const primarySub = draft.sub_category_id ? Number(draft.sub_category_id) : null;
+      const primaryMajor = draft.major_category_id
+        ? Number(draft.major_category_id)
+        : primarySub != null
+          ? subCategories.find((s) => s.id === primarySub)?.majorId
+          : null;
       await repairCall(
         "myAppAdminSetProductCategories",
         {
@@ -2256,7 +2336,8 @@ function ProductDrawer({
                     errors.price ||
                     errors.subCategory ||
                     errors.composition ||
-                    errors.details
+                    errors.details ||
+                    errors.craftedToLast
                   ),
                 },
                 {
@@ -2552,20 +2633,45 @@ function ProductDrawer({
               </div>
 
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                <Field label="Sub-category" required>
+                <Field label="Primary category" required>
                   <Select
-                    value={draft.sub_category_id ?? ""}
-                    onChange={(v) =>
+                    value={
+                      draft.major_category_id
+                        ? `major:${draft.major_category_id}`
+                        : draft.sub_category_id
+                          ? `sub:${draft.sub_category_id}`
+                          : ""
+                    }
+                    onChange={(v) => {
+                      const [type, idStr] = String(v).split(":");
+                      const id = Number(idStr) || null;
                       setDraft((d) => ({
                         ...d,
-                        sub_category_id: Number(v) || null,
-                      }))
-                    }
-                    options={subCategories.map((s) => ({
-                      value: String(s.id),
-                      label: `${majorNameForSub(s.id) || majorCategories.find((m) => m.id === s.majorId)?.name || ""} › ${s.name}`,
-                    }))}
+                        sub_category_id: type === "sub" ? id : null,
+                        major_category_id: type === "major" ? id : null,
+                        // Drop any extra membership that now collides with the
+                        // newly-chosen primary so the chips below stay coherent.
+                        extraSubCategoryIds: (d.extraSubCategoryIds || []).filter(
+                          (x) => !(type === "sub" && x === id)
+                        ),
+                        extraMajorCategoryIds: (d.extraMajorCategoryIds || []).filter(
+                          (x) => !(type === "major" && x === id)
+                        ),
+                      }));
+                      clearError("subCategory");
+                    }}
+                    options={majorCategories.flatMap((m) => [
+                      { value: `major:${m.id}`, label: `${m.name} (entire category)` },
+                      ...subCategories
+                        .filter((s) => s.majorId === m.id)
+                        .map((s) => ({ value: `sub:${s.id}`, label: `${m.name} › ${s.name}` })),
+                    ])}
                   />
+                  {errors.subCategory ? (
+                    <p className="font-body text-[11px] text-[#dc2626]">
+                      {errors.subCategory}
+                    </p>
+                  ) : null}
                 </Field>
                 <Field label="Price (JOD)" required>
                   <NumberInput
@@ -2635,7 +2741,8 @@ function ProductDrawer({
                       .filter(
                         (m) =>
                           m.id !==
-                          subCategories.find((s) => s.id === Number(draft.sub_category_id))?.majorId
+                          (draft.major_category_id ||
+                            subCategories.find((s) => s.id === Number(draft.sub_category_id))?.majorId)
                       )
                       .map((m) => (
                         <Chip
@@ -2805,6 +2912,77 @@ function ProductDrawer({
                 )}
               </div>
 
+              {/* Crafted to Last — the three product-page stats. Both the
+                  percentage and the label of each are admin-editable. Fixed at
+                  3 rows to match the storefront's grid-cols-3 band. */}
+              <div className="flex flex-col gap-3">
+                <div>
+                  <p className="font-body text-[11px] font-medium uppercase tracking-[1px] text-[#6b7280]">
+                    Crafted to Last
+                  </p>
+                  <p className="mt-0.5 font-body text-[11px] text-[#6b7280]">
+                    The three stats in the product page&apos;s &ldquo;Crafted to
+                    Last&rdquo; band. Edit each percentage and its label.
+                  </p>
+                </div>
+                {errors.craftedToLast ? (
+                  <p className="font-body text-[11px] text-[#dc2626]">
+                    {errors.craftedToLast}
+                  </p>
+                ) : null}
+                <ul className="flex flex-col gap-2">
+                  {(draft.craftedToLast || []).map((stat, i) => (
+                    <li
+                      key={i}
+                      className="flex items-center gap-2 rounded-[2px] border border-[#e5e7eb] bg-white p-3"
+                    >
+                      <div className="flex w-[92px] shrink-0 items-center gap-1">
+                        <NumberInput
+                          min="0"
+                          max="100"
+                          step="1"
+                          value={stat.pct ?? ""}
+                          onChange={(e) => {
+                            const v = e.target.value;
+                            setDraft((d) => {
+                              const next = [...(d.craftedToLast || [])];
+                              next[i] = {
+                                ...next[i],
+                                pct:
+                                  v === ""
+                                    ? ""
+                                    : Math.max(0, Math.min(100, Number(v))),
+                              };
+                              return { ...d, craftedToLast: next };
+                            });
+                          }}
+                        />
+                        <span className="font-body text-[13px] text-[#6b7280]">
+                          %
+                        </span>
+                      </div>
+                      <TextInput
+                        placeholder="Label (e.g. Recycled Polyester)"
+                        value={stat.label}
+                        style={
+                          errors.craftedToLast && !stat.label?.trim()
+                            ? { borderColor: "#dc2626" }
+                            : undefined
+                        }
+                        onChange={(e) => {
+                          setDraft((d) => {
+                            const next = [...(d.craftedToLast || [])];
+                            next[i] = { ...next[i], label: e.target.value };
+                            return { ...d, craftedToLast: next };
+                          });
+                          clearError("craftedToLast");
+                        }}
+                      />
+                    </li>
+                  ))}
+                </ul>
+              </div>
+
               <div className="flex items-center justify-between rounded-[2px] border border-[#e5e7eb] bg-white p-3">
                 <div>
                   <p className="font-body text-[13px] font-medium text-[#11191f]">
@@ -2831,8 +3009,10 @@ function ProductDrawer({
                   Available Colors
                 </span>
                 <p className="font-body text-[11px] text-[#6b7280]">
-                  Colors shown on the storefront. Each selected color gets its
-                  own photo set below.
+                  Colors shown on the storefront.
+                  {draft.imageMode === "shared"
+                    ? " All selected colors share the one photo set below."
+                    : " Each selected color gets its own photo set below."}
                 </p>
                 <div className="flex flex-wrap gap-2">
                   {colors.map((c) => {
@@ -2905,6 +3085,60 @@ function ProductDrawer({
 
               <div className="h-px bg-[#e5e7eb]" />
 
+              {/* Photo mode: one shared set vs. a set per color. */}
+              <div className="flex flex-col gap-2">
+                <span className="font-body text-[11px] font-medium uppercase tracking-[1px] text-[#6b7280]">
+                  Photos
+                </span>
+                <div className="flex flex-col gap-2 sm:flex-row">
+                  {[
+                    {
+                      mode: "perColor",
+                      title: "A photo set per color",
+                      hint: "Upload separate photos for each selected color.",
+                    },
+                    {
+                      mode: "shared",
+                      title: "One shared photo set",
+                      hint: "Use the same photos for every color.",
+                    },
+                  ].map((opt) => {
+                    const active =
+                      (draft.imageMode || "perColor") === opt.mode;
+                    return (
+                      <button
+                        key={opt.mode}
+                        type="button"
+                        onClick={() => setImageMode(opt.mode)}
+                        className="flex flex-1 flex-col gap-1 rounded-[2px] border p-3 text-left transition-colors"
+                        style={{
+                          borderColor: active ? "#11191f" : "#e5e7eb",
+                          backgroundColor: active ? "#f9fafb" : "#ffffff",
+                          borderWidth: active ? 2 : 1,
+                        }}
+                      >
+                        <span className="flex items-center gap-2 font-body text-[13px] font-medium text-[#11191f]">
+                          <span
+                            className="grid size-4 place-items-center rounded-full border"
+                            style={{
+                              borderColor: active ? "#11191f" : "#d1d5db",
+                            }}
+                          >
+                            {active ? (
+                              <span className="size-2 rounded-full bg-[#11191f]" />
+                            ) : null}
+                          </span>
+                          {opt.title}
+                        </span>
+                        <span className="pl-6 font-body text-[11px] text-[#6b7280]">
+                          {opt.hint}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
               {errors.photos ? (
                 <p className="-mt-2 font-body text-[11px] text-[#dc2626]">
                   {errors.photos}
@@ -2930,6 +3164,26 @@ function ProductDrawer({
                     Select at least one color above to add photos.
                   </p>
                 </div>
+              ) : (draft.imageMode || "perColor") === "shared" ? (
+                <PhotoColorBlock
+                  color={{ name: "Shared photo set", hex: "#e5e7eb" }}
+                  photos={(draft.photos || {})[SHARED_PHOTO_KEY] || []}
+                  missing={
+                    errors.photos &&
+                    ((draft.photos || {})[SHARED_PHOTO_KEY] || []).length === 0
+                  }
+                  isUploading={isUploading}
+                  onAdd={(files) => addPhotos(SHARED_PHOTO_KEY, files)}
+                  onRemove={(photoId) =>
+                    removePhoto(SHARED_PHOTO_KEY, photoId)
+                  }
+                  onSetPrimary={(photoId) =>
+                    setPrimaryPhoto(SHARED_PHOTO_KEY, photoId)
+                  }
+                  onMove={(photoId, dir) =>
+                    movePhoto(SHARED_PHOTO_KEY, photoId, dir)
+                  }
+                />
               ) : (
                 <div className="flex flex-col gap-6">
                   {(draft.productColors || []).map((colorId) => {
@@ -3039,6 +3293,12 @@ function ProductDrawer({
                 </div>
               ) : (
                 <>
+                  <p className="-mt-2 font-body text-[11px] text-[#6b7280]">
+                    Enter a quantity for every color × size. Use{" "}
+                    <span className="font-medium text-[#11191f]">0</span> for
+                    sizes that are out of stock (still listed, shoppers can ask
+                    to be notified). To drop a size entirely, deselect it above.
+                  </p>
                   <div className="overflow-x-auto rounded-[2px] border border-[#e5e7eb] bg-white">
                     <table className="min-w-full border-collapse">
                       <thead className="bg-[#fafafa]">
@@ -3082,27 +3342,26 @@ function ProductDrawer({
                                 const s = sizes.find(
                                   (sz) => sz.id === sizeId
                                 );
+                                const variant = getVariant(c?.id, s?.id);
                                 return (
                                   <td key={sizeId} className="px-2 py-2">
                                     <input
                                       type="number"
-                                      min="1"
-                                      value={
-                                        getQty(c?.id, s?.id) || ""
-                                      }
+                                      min="0"
+                                      placeholder="—"
+                                      value={variant ? String(variant.qty) : ""}
                                       onChange={(e) => {
                                         setVariantQty(
                                           c?.id,
                                           s?.id,
-                                          Number(e.target.value) || 0
+                                          e.target.value
                                         );
                                         clearError("inventory");
                                       }}
                                       className="h-9 w-full rounded-[2px] border bg-white px-2 text-center font-body text-[12px] outline-none focus:border-[#11191f]"
                                       style={{
                                         borderColor:
-                                          errors.inventory &&
-                                          !getQty(c?.id, s?.id)
+                                          errors.inventory && !variant
                                             ? "#dc2626"
                                             : "#e5e7eb",
                                       }}
@@ -3137,55 +3396,30 @@ function ProductDrawer({
               <div className="flex flex-col gap-2">
                 <span className="font-body text-[11px] font-medium uppercase tracking-[1px] text-[#11191f]">
                   Storefront labels
+                  <span className="ml-1.5 font-normal text-[#6b7280]">
+                    {(draft.labels || []).length}/{MAX_LABELS}
+                  </span>
                 </span>
                 <p className="font-body text-[12px] text-[#6b7280]">
-                  Labels appear as badges on the storefront. Use sparingly
-                  — too many badges and they lose meaning.
+                  Labels appear as badges on the storefront. Choose up to{" "}
+                  {MAX_LABELS} — too many badges and they lose meaning.
                 </p>
                 <div className="flex flex-wrap gap-2">
-                  {LABEL_OPTIONS.map((lab) => (
-                    <Chip
-                      key={lab}
-                      active={(draft.labels || []).includes(lab)}
-                      onClick={() => toggleLabel(lab)}
-                    >
-                      {lab}
-                    </Chip>
-                  ))}
-                </div>
-              </div>
-
-              {/* Curated collections */}
-              <div className="flex flex-col gap-2">
-                <span className="font-body text-[11px] font-medium uppercase tracking-[1px] text-[#11191f]">
-                  Featured in collections
-                </span>
-                <p className="font-body text-[12px] text-[#6b7280]">
-                  Choose which curated tabs this product appears in.
-                </p>
-                <div className="flex flex-col gap-2">
-                  {collections.map((col) => {
-                    const active = (draft.collectionIds || []).includes(col.id);
+                  {LABEL_OPTIONS.map((lab) => {
+                    const active = (draft.labels || []).includes(lab);
+                    const atCap =
+                      !active && (draft.labels || []).length >= MAX_LABELS;
                     return (
-                      <label
-                        key={col.id}
-                        className="flex cursor-pointer items-start gap-3 rounded-[2px] border border-[#e5e7eb] bg-white p-3 hover:bg-[#fafafa]"
+                      <Chip
+                        key={lab}
+                        active={active}
+                        onClick={() => toggleLabel(lab)}
+                        className={
+                          atCap ? "cursor-not-allowed opacity-40" : ""
+                        }
                       >
-                        <input
-                          type="checkbox"
-                          checked={active}
-                          onChange={() => toggleCollection(col.id)}
-                          className="mt-0.5 size-4 accent-[#11191f]"
-                        />
-                        <div className="min-w-0">
-                          <p className="font-body text-[13px] font-semibold text-[#11191f]">
-                            {col.name}
-                          </p>
-                          <p className="font-body text-[11px] text-[#6b7280]">
-                            {col.slug}
-                          </p>
-                        </div>
-                      </label>
+                        {lab}
+                      </Chip>
                     );
                   })}
                 </div>

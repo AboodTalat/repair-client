@@ -4,6 +4,11 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import Image from "next/image";
 import ComingSoonTag from "@/components/shared/ComingSoonTag";
+import {
+  isCategoryActive,
+  isSubCategoryActive,
+  isAllItemsActive,
+} from "@/lib/storeNav";
 
 function CloseIcon({ className = "size-6" }) {
   return (
@@ -72,6 +77,8 @@ function ItemLabel({ active, children }) {
 export default function Sidebar({
   items = [],
   activeHref,
+  activeCategory = null,
+  activeSub = null,
   open = false,
   onClose,
   isAuthenticated = false,
@@ -178,7 +185,11 @@ export default function Sidebar({
               <Link
                 href={drilldown.href ?? "#"}
                 onClick={handleNavigate}
-                className="pl-6 font-display text-[22px] font-bold uppercase leading-none text-[#11191f]/50"
+                className={`pl-6 font-display text-[22px] font-bold uppercase leading-none ${
+                  isAllItemsActive(drilldown.href, activeCategory, activeSub)
+                    ? "text-[#11191f]"
+                    : "text-[#11191f]/50"
+                }`}
               >
                 All items
               </Link>
@@ -198,7 +209,11 @@ export default function Sidebar({
                     key={child.label}
                     href={child.href}
                     onClick={handleNavigate}
-                    className="pl-6 font-display text-[22px] font-bold uppercase leading-none text-[#11191f]/50"
+                    className={`pl-6 font-display text-[22px] font-bold uppercase leading-none ${
+                      isSubCategoryActive(child.href, activeCategory, activeSub)
+                        ? "text-[#11191f]"
+                        : "text-[#11191f]/50"
+                    }`}
                   >
                     {child.label}
                   </Link>
@@ -212,7 +227,9 @@ export default function Sidebar({
               style={{ animation: viewAnimation }}
             >
               {items.map((item, idx) => {
-                const isActive = Boolean(activeHref) && item.href === activeHref;
+                const isActive =
+                  (Boolean(activeHref) && item.href === activeHref) ||
+                  isCategoryActive(item.href, activeCategory);
                 const hasChildren =
                   Array.isArray(item.children) && item.children.length > 0;
 

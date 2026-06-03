@@ -1,5 +1,5 @@
 import DeliveryShell from "@/components/delivery/layout/DeliveryShell";
-import AuthGuard from "@/components/auth/AuthGuard";
+import RoleGuard from "@/components/auth/RoleGuard";
 
 export const metadata = {
   title: "Repair — Dispatch",
@@ -8,8 +8,8 @@ export const metadata = {
 
 export default function DeliveryLayout({ children }) {
   return (
-    <AuthGuard>
+    <RoleGuard allow={["delivery"]} requireAuth>
       <DeliveryShell>{children}</DeliveryShell>
-    </AuthGuard>
+    </RoleGuard>
   );
 }

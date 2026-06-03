@@ -32,6 +32,17 @@ export function homeForRole(role) {
   return ROLE_HOMES[role] ?? ROLE_HOMES.customer;
 }
 
+/**
+ * Where the header "account" icon should point for a given role.
+ * Customers (and guests — role undefined) go to the customer account hub;
+ * every stakeholder role (admin / delivery / accounting) goes to its own
+ * console home, so the account icon never drops a stakeholder onto the
+ * customer-only `/account` page (which RoleGuard would bounce anyway).
+ */
+export function accountHrefForRole(role) {
+  return role && role !== "customer" ? homeForRole(role) : "/account";
+}
+
 /** True iff `p` is a same-origin path safe to navigate to. */
 export function isSameOriginPath(p) {
   if (typeof p !== "string" || p.length === 0) return false;

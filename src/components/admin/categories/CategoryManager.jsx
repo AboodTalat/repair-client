@@ -29,6 +29,15 @@ function bustStorefrontNav() {
   Promise.resolve(revalidateStorefrontCategories()).catch(() => {});
 }
 
+// repairCall throws on blnRequestSuccessful:false with a message shaped like
+// "repairClientApi <op>: <server message>". Strip the prefix so the admin sees
+// the human-readable server reason (e.g. "Cannot delete: sub-category contains
+// products. Move or delete them first.").
+function cleanErr(e, fallback) {
+  const m = (e?.message || "").replace(/^repairClientApi \S+:\s*/, "");
+  return m || fallback;
+}
+
 const blankMajor = { id: null, name: "", visible: true, comingSoon: false };
 const blankSub = { id: null, majorId: null, name: "", visible: true, comingSoon: false };
 
@@ -78,6 +87,8 @@ export default function CategoryManager() {
   const [expanded, setExpanded] = useState(() => new Set());
   const [editing, setEditing] = useState(null);
   const [confirm, setConfirm] = useState(null);
+  const [confirmError, setConfirmError] = useState(null);
+  const [deleting, setDeleting] = useState(false);
   const [drag, setDrag] = useState(null);
   const dragRef = useRef(null);
 
@@ -96,7 +107,10 @@ export default function CategoryManager() {
     }
   }, []);
 
+  const mountedRef = useRef(false);
   useEffect(() => {
+    if (mountedRef.current) return;
+    mountedRef.current = true;
     fetchTree();
   }, [fetchTree]);
 
@@ -317,19 +331,29 @@ export default function CategoryManager() {
     }
   }
 
+  function closeConfirm() {
+    setConfirm(null);
+    setConfirmError(null);
+  }
+
   async function removeRow(kind, id) {
+    setDeleting(true);
+    setConfirmError(null);
     try {
       if (kind === "major") {
         await repairCall("myAppAdminDeleteMajorCategory", { id: Number(id) }, { isQuery: false });
       } else {
         await repairCall("myAppAdminDeleteSubCategory", { id: Number(id) }, { isQuery: false });
       }
-      setConfirm(null);
+      closeConfirm();
       bustStorefrontNav();
       await fetchTree();
     } catch (err) {
-      setConfirm(null);
-      setError(err?.message || "Failed to delete");
+      // Keep the modal open and surface the descriptive server reason in-context
+      // (most commonly: the category still has products assigned to it).
+      setConfirmError(cleanErr(err, "Failed to delete this category."));
+    } finally {
+      setDeleting(false);
     }
   }
 
@@ -477,7 +501,7 @@ export default function CategoryManager() {
                     <RowIconBtn variant="blue" label="Edit" onClick={() => setEditing({ kind: "major", row: m })}>
                       <IconEdit />
                     </RowIconBtn>
-                    <RowIconBtn variant="danger" label="Delete" onClick={() => setConfirm({ kind: "major", id: m.id, name: m.name, subCount: subList.length })}>
+                    <RowIconBtn variant="danger" label="Delete" onClick={() => setConfirm({ kind: "major", id: m.id, name: m.name, subCount: subList.length, productCount: m.productCount })}>
                       <IconTrash />
                     </RowIconBtn>
                   </div>
@@ -573,7 +597,7 @@ export default function CategoryManager() {
                                 <RowIconBtn variant="blue" label="Edit" onClick={() => setEditing({ kind: "sub", row: s })}>
                                   <IconEdit />
                                 </RowIconBtn>
-                                <RowIconBtn variant="danger" label="Delete" onClick={() => setConfirm({ kind: "sub", id: s.id, name: s.name, subCount: 0 })}>
+                                <RowIconBtn variant="danger" label="Delete" onClick={() => setConfirm({ kind: "sub", id: s.id, name: s.name, subCount: 0, productCount: s.productCount })}>
                                   <IconTrash />
                                 </RowIconBtn>
                               </div>
@@ -599,39 +623,63 @@ export default function CategoryManager() {
 
       <Modal
         open={!!confirm}
-        onClose={() => setConfirm(null)}
+        onClose={closeConfirm}
         title="Delete category"
         width={440}
         footer={
           <>
-            <Button variant="secondary" onClick={() => setConfirm(null)}>
+            <Button variant="secondary" onClick={closeConfirm} disabled={deleting}>
               Cancel
             </Button>
             <Button
               variant="dangerSolid"
+              disabled={deleting || confirm?.productCount > 0}
               onClick={() => {
                 if (!confirm) return;
                 removeRow(confirm.kind, confirm.id);
               }}
             >
-              Delete
+              {deleting ? "Deleting..." : "Delete"}
             </Button>
           </>
         }
       >
         {confirm ? (
           <div className="flex flex-col gap-2">
-            <p className="font-body text-[13px] text-[#11191f]">
-              Are you sure you want to delete{" "}
-              <span className="font-semibold">{confirm?.name}</span>?
-              {confirm?.kind === "major" && confirm?.subCount > 0 ? (
-                <span className="text-[#dc2626]">
-                  {" "}
-                  This will also remove {confirm.subCount} sub-categor{confirm.subCount === 1 ? "y" : "ies"}.
-                </span>
-              ) : null}
-            </p>
-            <p className="font-body text-[11px] text-[#6b7280]">This action cannot be undone.</p>
+            {confirmError ? (
+              <div className="rounded-[2px] border border-[#fecaca] bg-[#fef2f2] px-3 py-2">
+                <p className="font-body text-[12px] text-[#dc2626]">{confirmError}</p>
+              </div>
+            ) : null}
+
+            {confirm?.productCount > 0 ? (
+              <div className="rounded-[2px] border border-[#fde68a] bg-[#fffbeb] px-3 py-2.5">
+                <p className="font-body text-[12px] font-semibold text-[#92400e]">
+                  {confirm?.kind === "major"
+                    ? `This category and its sub-categories have ${confirm.productCount} product${confirm.productCount === 1 ? "" : "s"} assigned.`
+                    : `This sub-category has ${confirm.productCount} product${confirm.productCount === 1 ? "" : "s"} assigned.`}
+                </p>
+                <p className="mt-1 font-body text-[11px] text-[#92400e]">
+                  A category can&rsquo;t be deleted while products are assigned to it. Move or
+                  reassign {confirm.productCount === 1 ? "it" : "them"} to another category first,
+                  then delete.
+                </p>
+              </div>
+            ) : (
+              <>
+                <p className="font-body text-[13px] text-[#11191f]">
+                  Are you sure you want to delete{" "}
+                  <span className="font-semibold">{confirm?.name}</span>?
+                  {confirm?.kind === "major" && confirm?.subCount > 0 ? (
+                    <span className="text-[#dc2626]">
+                      {" "}
+                      This will also remove {confirm.subCount} sub-categor{confirm.subCount === 1 ? "y" : "ies"}.
+                    </span>
+                  ) : null}
+                </p>
+                <p className="font-body text-[11px] text-[#6b7280]">This action cannot be undone.</p>
+              </>
+            )}
           </div>
         ) : null}
       </Modal>
@@ -673,14 +721,17 @@ function CategoryDrawer({ editing, majors, onClose, onSave }) {
   const [errors, setErrors] = useState({});
   const [drawerError, setDrawerError] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [syncedEditing, setSyncedEditing] = useState(null);
 
-  useEffect(() => {
-    if (editing) {
-      setDraft({ ...editing.row });
-      setErrors({});
-      setDrawerError(null);
-    }
-  }, [editing]);
+  // Initialise the form draft from the incoming `editing` row during render —
+  // the React-idiomatic alternative to a setState-in-effect, and it avoids a
+  // stale-frame flash when a freshly opened drawer first paints.
+  if (editing && editing !== syncedEditing) {
+    setSyncedEditing(editing);
+    setDraft({ ...editing.row });
+    setErrors({});
+    setDrawerError(null);
+  }
 
   async function handleSave() {
     const errs = validateDraft(draft, editing?.kind);

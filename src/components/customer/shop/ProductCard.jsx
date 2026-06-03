@@ -2,6 +2,7 @@
 
 import Image from "next/image";
 import Link from "next/link";
+import { useRef, useState } from "react";
 
 // Card layout, per Figma:
 //   Mobile (2:12 + sale 7:244):
@@ -17,12 +18,177 @@ import Link from "next/link";
 //     - Below image:
 //         Row 1: stacked name + subtitle  |  price right
 //
+// Colour switcher + per-colour swipe: each swatch is now a button. Selecting a
+// swatch shows that colour's image set; when a colour has more than one image
+// the shopper can swipe left/right (touch) or use the hover chevrons (desktop)
+// to move through them. The swipe mechanics mirror the product-detail carousel
+// (ProductPageClient). When the product carries no per-colour images
+// (`colorImages` empty — e.g. mock data in SearchOverlay / coming-soon), the
+// card falls back to the original single image + decorative swatches.
+//
 // `onQuickAdd(product)` is called when the plus button is clicked — the
 // parent opens the Add-to-Cart sheet.
 
 export default function ProductCard({ product, onQuickAdd, compact = false }) {
   if (compact) return <MobileCard product={product} onQuickAdd={onQuickAdd} />;
   return <DesktopCard product={product} onQuickAdd={onQuickAdd} />;
+}
+
+function ChevronIcon({ dir = "right" }) {
+  return (
+    <svg viewBox="0 0 24 24" width={16} height={16} fill="none" aria-hidden="true">
+      <path
+        d={dir === "left" ? "M15 6l-6 6 6 6" : "M9 6l6 6-6 6"}
+        stroke="#11191f"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+// Swipeable, color-scoped image viewer. `images` is the selected color's image
+// list (always ≥1). A transparent <Link> overlay handles tap-to-navigate; a
+// real swipe (tracked via movedRef) suppresses that navigation so the gesture
+// doesn't open the product. Remounted by the parent (`key={selectedColor}`) on
+// color change so the index resets to the first image.
+function ColorImageViewer({
+  images,
+  name,
+  href,
+  aspectRatio,
+  sizes,
+  showArrows = false,
+  priority = false,
+}) {
+  const [index, setIndex] = useState(0);
+  const [drag, setDrag] = useState(0);
+  const startX = useRef(null);
+  const widthRef = useRef(0);
+  const movedRef = useRef(false);
+
+  const count = images.length;
+  const idx = index < count ? index : 0;
+  const multi = count > 1;
+
+  function onTouchStart(e) {
+    startX.current = e.touches[0].clientX;
+    widthRef.current = e.currentTarget.offsetWidth;
+    movedRef.current = false;
+  }
+  function onTouchMove(e) {
+    if (startX.current === null) return;
+    const dx = e.touches[0].clientX - startX.current;
+    if (Math.abs(dx) > 6) movedRef.current = true;
+    const atStart = idx === 0 && dx > 0;
+    const atEnd = idx === count - 1 && dx < 0;
+    setDrag(atStart || atEnd ? dx / 3 : dx);
+  }
+  function onTouchEnd() {
+    if (startX.current === null) return;
+    const w = widthRef.current || 1;
+    const threshold = Math.min(50, w * 0.15);
+    if (drag <= -threshold && idx < count - 1) setIndex(idx + 1);
+    else if (drag >= threshold && idx > 0) setIndex(idx - 1);
+    setDrag(0);
+    startX.current = null;
+  }
+
+  const w = widthRef.current || 1;
+  const dragPct = (drag / w) * 100;
+
+  function go(e, dir) {
+    e.preventDefault();
+    e.stopPropagation();
+    setIndex((i) => Math.min(count - 1, Math.max(0, i + dir)));
+  }
+
+  return (
+    <div
+      className="relative block w-full overflow-hidden touch-pan-y select-none"
+      style={{ aspectRatio }}
+      onTouchStart={multi ? onTouchStart : undefined}
+      onTouchMove={multi ? onTouchMove : undefined}
+      onTouchEnd={multi ? onTouchEnd : undefined}
+      onTouchCancel={multi ? onTouchEnd : undefined}
+    >
+      <div
+        className={`flex h-full w-full ${drag === 0 ? "transition-transform duration-300" : ""}`}
+        style={{ transform: `translateX(calc(-${idx * 100}% + ${dragPct}%))` }}
+      >
+        {images.map((src, i) => (
+          <div key={i} className="relative h-full w-full shrink-0">
+            <Image
+              src={src}
+              alt={name}
+              fill
+              sizes={sizes}
+              className="object-cover pointer-events-none"
+              priority={priority && i === 0}
+              draggable={false}
+            />
+          </div>
+        ))}
+      </div>
+
+      {/* Tap → product detail; a swipe sets movedRef so navigation is suppressed. */}
+      <Link
+        href={href}
+        aria-label={name}
+        className="absolute inset-0 z-10"
+        onClick={(e) => {
+          if (movedRef.current) e.preventDefault();
+        }}
+      />
+
+      {/* Desktop hover chevrons — mouse has no swipe gesture. */}
+      {showArrows && multi && (
+        <>
+          {idx > 0 && (
+            <button
+              type="button"
+              aria-label="Previous image"
+              onClick={(e) => go(e, -1)}
+              className="absolute left-2 top-1/2 z-20 hidden size-7 -translate-y-1/2 place-items-center rounded-full bg-white/70 opacity-0 transition-opacity hover:bg-white group-hover:opacity-100 md:grid"
+              style={{ backdropFilter: "blur(2px)", WebkitBackdropFilter: "blur(2px)" }}
+            >
+              <ChevronIcon dir="left" />
+            </button>
+          )}
+          {idx < count - 1 && (
+            <button
+              type="button"
+              aria-label="Next image"
+              onClick={(e) => go(e, 1)}
+              className="absolute right-2 top-1/2 z-20 hidden size-7 -translate-y-1/2 place-items-center rounded-full bg-white/70 opacity-0 transition-opacity hover:bg-white group-hover:opacity-100 md:grid"
+              style={{ backdropFilter: "blur(2px)", WebkitBackdropFilter: "blur(2px)" }}
+            >
+              <ChevronIcon dir="right" />
+            </button>
+          )}
+        </>
+      )}
+
+      {/* Dots — bottom-center, only when the active color has multiple images. */}
+      {multi && (
+        <div className="pointer-events-none absolute bottom-2 left-1/2 z-20 flex -translate-x-1/2 items-center gap-1">
+          {images.map((_, i) => (
+            <span
+              key={i}
+              className="rounded-full transition-all duration-200"
+              style={{
+                width: i === idx ? 10 : 4,
+                height: 4,
+                backgroundColor: i === idx ? "#11191f" : "rgba(17,25,31,0.3)",
+                boxShadow: "0 0 2px rgba(255,255,255,0.8)",
+              }}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function QuickAddButton({ size, offset = 8, product, onQuickAdd }) {
@@ -34,7 +200,8 @@ function QuickAddButton({ size, offset = 8, product, onQuickAdd }) {
   //   backdropFilter blur(1.5px). Properties are inline because Tailwind v4 +
   //   Turbopack silently drops arbitrary `backdrop-blur-[1.5px]` and the
   //   outline-offset utilities — without inline styles the button renders as
-  //   a flat translucent box and the glass effect is lost.
+  //   a flat translucent box and the glass effect is lost. z-20 keeps it above
+  //   the ColorImageViewer's z-10 tap-to-navigate Link.
   return (
     <button
       type="button"
@@ -43,7 +210,7 @@ function QuickAddButton({ size, offset = 8, product, onQuickAdd }) {
         e.preventDefault();
         onQuickAdd?.(product);
       }}
-      className="absolute grid place-items-center hover:bg-white/50"
+      className="absolute z-20 grid place-items-center hover:bg-white/50"
       style={{
         right: offset,
         bottom: offset,
@@ -79,14 +246,14 @@ const LABEL_TONES = {
 
 function LabelBadges({ labels, small = true }) {
   if (!labels || labels.length === 0) return null;
-  const fontSize = small ? 9 : 10;
-  const padY = small ? 2 : 3;
-  const padX = small ? 4 : 6;
+  const fontSize = small ? 7 : 8;
+  const padY = small ? 1 : 2;
+  const padX = small ? 3 : 5;
   const gap = small ? 4 : 6;
   const offset = small ? 8 : 16;
   return (
     <div
-      className="pointer-events-none absolute flex flex-wrap"
+      className="pointer-events-none absolute z-20 flex flex-wrap"
       style={{ top: offset, left: offset, gap, maxWidth: `calc(100% - ${offset * 2}px)` }}
       aria-hidden
     >
@@ -95,12 +262,12 @@ function LabelBadges({ labels, small = true }) {
         return (
           <span
             key={lab}
-            className="font-display font-bold uppercase whitespace-nowrap"
+            className="font-display font-medium uppercase whitespace-nowrap"
             style={{
               backgroundColor: tone.bg,
               color: tone.fg,
               fontSize,
-              letterSpacing: "0.5px",
+              letterSpacing: "0.3px",
               paddingTop: padY,
               paddingBottom: padY,
               paddingLeft: padX,
@@ -116,6 +283,8 @@ function LabelBadges({ labels, small = true }) {
   );
 }
 
+// Decorative swatches — used as the fallback when a product has no per-color
+// image data (mock products). Non-interactive.
 function Swatches({ colors, small, offset = 8 }) {
   // Figma:
   //   Mobile: up to 4 swatches, 8x8, gap 2, anchor left:8/bottom:8.
@@ -126,7 +295,7 @@ function Swatches({ colors, small, offset = 8 }) {
   const gap = small ? 2 : 8;
   return (
     <div
-      className="absolute pointer-events-none flex"
+      className="absolute z-20 pointer-events-none flex"
       style={{ left: offset, bottom: offset, gap }}
       aria-hidden
     >
@@ -141,27 +310,88 @@ function Swatches({ colors, small, offset = 8 }) {
   );
 }
 
+// Interactive color picker — each swatch selects that color's image set. The
+// selected swatch wears a black ring with a white inset (matches the
+// product-detail selected-color treatment, scaled down to the card swatch).
+function ColorSwatchPicker({ colorImages, selected, onSelect, small, offset = 8 }) {
+  const max = small ? 4 : 3;
+  const slice = colorImages.slice(0, max);
+  const dot = small ? 8 : 12;
+  const gap = small ? 2 : 8;
+  return (
+    <div className="absolute z-20 flex" style={{ left: offset, bottom: offset, gap }}>
+      {slice.map((c, i) => {
+        const active = i === selected;
+        return (
+          <button
+            key={`${c.colorId ?? c.hex}-${i}`}
+            type="button"
+            aria-label={`Show color ${i + 1}`}
+            aria-pressed={active}
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              onSelect(i);
+            }}
+            className="cursor-pointer rounded-[2px]"
+            style={{
+              width: dot,
+              height: dot,
+              backgroundColor: c.hex,
+              boxShadow: active
+                ? "0 0 0 1px #ffffff inset, 0 0 0 1.5px #11191f"
+                : "0 1px 2px 0 rgba(0,0,0,0.05)",
+              border: active ? "none" : "1px solid rgba(17,25,31,0.1)",
+            }}
+          />
+        );
+      })}
+    </div>
+  );
+}
+
+// Shared hook: resolve the active color + its image list, with fallback to the
+// single primary `image` when the product carries no per-color image data.
+function useColorState(product) {
+  const colorImages = Array.isArray(product.colorImages) ? product.colorImages : [];
+  const [selected, setSelected] = useState(0);
+  const hasColorImages = colorImages.length > 0;
+  const safeSelected = selected < colorImages.length ? selected : 0;
+  const activeImages = hasColorImages
+    ? (colorImages[safeSelected]?.images?.length
+        ? colorImages[safeSelected].images
+        : [product.image].filter(Boolean))
+    : [product.image].filter(Boolean);
+  return { colorImages, hasColorImages, selected: safeSelected, setSelected, activeImages };
+}
+
 function MobileCard({ product, onQuickAdd }) {
   const hasDiscount = product.salePrice != null && product.salePrice < product.price;
+  const { colorImages, hasColorImages, selected, setSelected, activeImages } =
+    useColorState(product);
 
   return (
     <article className="flex flex-col gap-2">
-      <div className="relative w-full bg-[#f5f5f5] shadow-[0_0_10px_0_rgba(0,0,0,0.05)]">
-        <Link
+      <div className="group relative isolate w-full bg-[#f5f5f5] shadow-[0_0_10px_0_rgba(0,0,0,0.05)]">
+        <ColorImageViewer
+          key={selected}
+          images={activeImages}
+          name={product.name}
           href={`/products/${product.id}`}
-          className="relative block w-full"
-          style={{ aspectRatio: "176 / 264" }}
-        >
-          <Image
-            src={product.image}
-            alt={product.name}
-            fill
-            sizes="(max-width: 768px) 50vw, 176px"
-            className="object-cover"
-          />
-        </Link>
+          aspectRatio="176 / 264"
+          sizes="(max-width: 768px) 50vw, 176px"
+        />
         <LabelBadges labels={product.labels} small />
-        {product.colors?.length > 0 && <Swatches colors={product.colors} small />}
+        {hasColorImages ? (
+          <ColorSwatchPicker
+            colorImages={colorImages}
+            selected={selected}
+            onSelect={setSelected}
+            small
+          />
+        ) : (
+          product.colors?.length > 0 && <Swatches colors={product.colors} small />
+        )}
         <QuickAddButton size={24} product={product} onQuickAdd={onQuickAdd} />
       </div>
 
@@ -231,26 +461,31 @@ function MobileCard({ product, onQuickAdd }) {
 
 function DesktopCard({ product, onQuickAdd }) {
   const hasDiscount = product.salePrice != null && product.salePrice < product.price;
+  const { colorImages, hasColorImages, selected, setSelected, activeImages } =
+    useColorState(product);
 
   return (
     <article className="flex flex-col gap-4">
-      <div className="relative w-full overflow-hidden bg-[#f5f5f5] shadow-[0_0_18.523px_0_rgba(0,0,0,0.05)]">
-        <Link
+      <div className="group relative isolate w-full overflow-hidden bg-[#f5f5f5] shadow-[0_0_18.523px_0_rgba(0,0,0,0.05)]">
+        <ColorImageViewer
+          key={selected}
+          images={activeImages}
+          name={product.name}
           href={`/products/${product.id}`}
-          className="relative block w-full"
-          style={{ aspectRatio: "326 / 489" }}
-        >
-          <Image
-            src={product.image}
-            alt={product.name}
-            fill
-            sizes="326px"
-            className="object-cover"
-          />
-        </Link>
+          aspectRatio="326 / 489"
+          sizes="326px"
+          showArrows
+        />
         <LabelBadges labels={product.labels} small={false} />
-        {product.colors?.length > 0 && (
-          <Swatches colors={product.colors} offset={16} />
+        {hasColorImages ? (
+          <ColorSwatchPicker
+            colorImages={colorImages}
+            selected={selected}
+            onSelect={setSelected}
+            offset={16}
+          />
+        ) : (
+          product.colors?.length > 0 && <Swatches colors={product.colors} offset={16} />
         )}
         <QuickAddButton size={40} offset={16} product={product} onQuickAdd={onQuickAdd} />
       </div>
@@ -270,25 +505,47 @@ function DesktopCard({ product, onQuickAdd }) {
             {product.subtitle}
           </p>
         </div>
-        <div className="flex flex-col items-end gap-1">
-          <p
-            className="font-display text-[16px] font-semibold leading-6 whitespace-nowrap"
-            style={{
-              color: hasDiscount ? "rgba(17,25,31,0.5)" : "#11191f",
-              textDecoration: hasDiscount ? "line-through" : "none",
-            }}
-          >
-            {product.currency} {product.price}
-          </p>
-          {hasDiscount && (
+        {hasDiscount ? (
+          // Figma codegen (desktop sale): previous price strikethrough above a
+          // filled blue chip, both in Zalando Sans Condensed Regular. Condensed
+          // → font-body + fontStretch:75% (project ships no separate Condensed);
+          // chip bg kept at the established Repair Blue #0066B2 so mobile +
+          // desktop sale chips match (inline style per the Turbopack gotcha for
+          // conditionally-rendered backgrounds).
+          <div className="flex flex-col items-end" style={{ gap: 2 }}>
+            <p
+              className="font-body text-right text-[16px] leading-6 whitespace-nowrap"
+              style={{
+                fontStretch: "75%",
+                fontWeight: 400,
+                color: "rgba(17,25,31,0.5)",
+                textDecoration: "line-through",
+              }}
+            >
+              {product.currency} {product.price}
+            </p>
             <span
-              className="px-2 py-1 font-display text-[14px] font-semibold leading-4 text-white whitespace-nowrap"
-              style={{ backgroundColor: "#0066B2" }}
+              className="font-body text-right text-[14px] leading-4 text-white whitespace-nowrap"
+              style={{
+                fontStretch: "75%",
+                fontWeight: 400,
+                backgroundColor: "#0066B2",
+                paddingLeft: 8,
+                paddingRight: 8,
+                paddingTop: 4,
+                paddingBottom: 4,
+              }}
             >
               {product.currency} {product.salePrice.toFixed(2)}
             </span>
-          )}
-        </div>
+          </div>
+        ) : (
+          <div className="flex flex-col items-end gap-1">
+            <p className="font-display text-[16px] font-semibold leading-6 text-[#11191f] whitespace-nowrap">
+              {product.currency} {product.price}
+            </p>
+          </div>
+        )}
       </div>
     </article>
   );

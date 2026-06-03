@@ -81,7 +81,8 @@ export default function CompleteProfileForm() {
       }
       const store = useRepairStore.getState();
       store.setAuthInfo(data);
-      store.syncCart();
+      // Merge a pre-signup guest cart into the DB, then reconcile the badge.
+      store.mergeGuestCartThenSync();
       store.syncWishlist();
       // Honor the `?next=` round-trip that GoogleSignInButton stashed along
       // with the signupToken — falls back to the role's home if absent or

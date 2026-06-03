@@ -159,9 +159,28 @@ const initialAuthInfo = {
 const PROACTIVE_REFRESH_WINDOW_SEC = 5 * 60;
 
 const initialCartInfo = {
-  itemCount: 0,      // sum of cart-line quantities — header badge
+  itemCount: 0,      // sum of cart-line quantities — header badge (logged-in)
   lastSynced: null,  // ISO timestamp
 };
+
+// Guest cart — the local basket for visitors who aren't signed in. Persisted
+// (encrypted) so it survives reloads, then merged into the DB on the next login
+// (mergeGuestCartThenSync). INVARIANT: a logged-in user's guestCart is always
+// empty — the merge clears it unconditionally, so the two cart sources never
+// overlap. Each line mirrors a myAppGetCart line so the cart page can use ONE
+// render path for both modes.
+const initialGuestCart = {
+  // [{ id, product_variant_id, quantity, product:{id,name,base_price,effective_price},
+  //    color:{id,name,hex_code}|null, size:{id,name}|null, image_url, currency, line_total }]
+  items: [],
+};
+
+// Sum of guest-cart line quantities — the badge count for signed-out visitors.
+function sumGuestQty(items) {
+  return Array.isArray(items)
+    ? items.reduce((n, i) => n + (Number(i.quantity) || 0), 0)
+    : 0;
+}
 
 const initialWishlistInfo = {
   productIds: [],    // number[] — instant heart-icon state without a round-trip
@@ -258,6 +277,7 @@ export const useRepairStore = create(
       // ── State ──────────────────────────────────────────────────────────────
       authInfo: { ...initialAuthInfo },
       cartInfo: { ...initialCartInfo },
+      guestCart: { items: [] },
       wishlistInfo: { ...initialWishlistInfo },
       lastOrder: initialLastOrder,
       checkoutInfo: { ...initialCheckoutInfo },
@@ -315,6 +335,7 @@ export const useRepairStore = create(
         set({
           authInfo: { ...initialAuthInfo },
           cartInfo: { ...initialCartInfo },
+          guestCart: { items: [] },
           wishlistInfo: { ...initialWishlistInfo },
           lastOrder: initialLastOrder,
           checkoutInfo: { ...initialCheckoutInfo },
@@ -511,6 +532,159 @@ export const useRepairStore = create(
         set({ cartInfo: { ...initialCartInfo } });
       },
 
+      /** Wipe the guest cart (used by the login-merge; safe to call anytime). */
+      clearGuestCart() {
+        set({ guestCart: { items: [] } });
+      },
+
+      /** Set a guest cart line's quantity (clamped ≥1), recomputing line_total. */
+      updateGuestCartItem(variantId, quantity) {
+        const q = Math.max(1, Number(quantity) || 1);
+        set((s) => ({
+          guestCart: {
+            items: s.guestCart.items.map((i) => {
+              if (Number(i.product_variant_id) !== Number(variantId)) return i;
+              const unit = Number(i.product?.effective_price ?? i.product?.base_price ?? 0);
+              return { ...i, quantity: q, line_total: Number((unit * q).toFixed(2)) };
+            }),
+          },
+        }));
+      },
+
+      /** Remove a guest cart line by its variant id. */
+      removeGuestCartItem(variantId) {
+        set((s) => ({
+          guestCart: {
+            items: s.guestCart.items.filter(
+              (i) => Number(i.product_variant_id) !== Number(variantId)
+            ),
+          },
+        }));
+      },
+
+      /**
+       * Unified add-to-cart for both modes.
+       *
+       *   Logged-in → server upsert via myAppAddToCart (the resolver stock-checks
+       *     under FOR UPDATE). Badge is bumped optimistically, reconciled by
+       *     syncCart on success, and reverted on failure.
+       *   Guest     → the line is stored in the persisted guestCart, summing the
+       *     quantity per variant exactly like the server's (user, variant) upsert
+       *     so add behavior is identical across modes. Survives reloads and is
+       *     merged into the DB on the next login.
+       *
+       * `line` is built by the caller from the product detail and mirrors a
+       * myAppGetCart line so the cart page has ONE render path:
+       *   { variantId, quantity, product:{id,name,base_price,effective_price},
+       *     color:{id,name,hex_code}|null, size:{id,name}|null, image_url, currency? }
+       *
+       * Resolves on success; REJECTS with a clean server message on failure
+       * (e.g. "Only 2 in stock") so the caller can surface it. Stock is NEVER
+       * enforced client-side — the server is the only gate (here + checkout).
+       *
+       * Uses graphqlFetchWithRetry (not repairCall) to keep the store free of a
+       * circular import — same pattern as syncCart.
+       */
+      async addToCart(line) {
+        const variantId = Number(line?.variantId);
+        const qty = Math.max(1, Number(line?.quantity) || 1);
+        if (!Number.isFinite(variantId)) throw new Error("Invalid item");
+
+        if (get().authInfo.isLoggedIn) {
+          get().incrementCartCount(qty); // optimistic badge
+          try {
+            await graphqlFetchWithRetry(
+              "myAppAddToCart",
+              { productVariantId: variantId, quantity: qty },
+              {
+                getToken: () => get().authInfo.token,
+                refresh: () => get().refreshAuth(),
+                isQuery: false,
+              }
+            );
+            get().syncCart(); // reconcile exact count (fire-and-forget)
+            return { ok: true };
+          } catch (err) {
+            get().decrementCartCount(qty); // revert optimistic bump
+            const raw = String(err?.message || "");
+            const clean = raw.replace(/^repairClientApi \S+:\s*/, "");
+            throw new Error(clean || "Couldn’t add to cart. Please try again.");
+          }
+        }
+
+        // Guest — upsert into the persisted local cart.
+        const unit = Number(line.product?.effective_price ?? line.product?.base_price ?? 0);
+        set((s) => {
+          const items = [...s.guestCart.items];
+          const idx = items.findIndex((i) => Number(i.product_variant_id) === variantId);
+          if (idx >= 0) {
+            const nextQty = Number(items[idx].quantity) + qty;
+            items[idx] = {
+              ...items[idx],
+              quantity: nextQty,
+              line_total: Number((unit * nextQty).toFixed(2)),
+            };
+          } else {
+            items.push({
+              id: `guest-${variantId}`,
+              product_variant_id: variantId,
+              quantity: qty,
+              product: line.product ?? null,
+              color: line.color ?? null,
+              size: line.size ?? null,
+              image_url: line.image_url ?? null,
+              currency: line.currency ?? "JOD",
+              line_total: Number((unit * qty).toFixed(2)),
+            });
+          }
+          return { guestCart: { items } };
+        });
+        return { ok: true };
+      },
+
+      /**
+       * Merge the guest cart into the DB at a genuine login point, then
+       * reconcile the badge. Call this INSTEAD of syncCart() right after
+       * setAuthInfo on login / signup / OAuth — NOT on token refresh (which
+       * also calls setAuthInfo).
+       *
+       * Ordering matters:
+       *   1. Seed cartInfo.itemCount from the guest sum SYNCHRONOUSLY — the
+       *      moment isLoggedIn flips, selectCartCount switches to
+       *      cartInfo.itemCount; seeding avoids a N→0→N badge blink.
+       *   2. Push each guest line (parallel; per-line failures swallowed — an
+       *      item may have sold out since it was added).
+       *   3. Clear the guest cart UNCONDITIONALLY (logged-in ⇒ guestCart empty).
+       *   4. syncCart() for the exact server count.
+       *
+       * Callers fire this WITHOUT awaiting and proceed to redirect; the internal
+       * order above is preserved regardless.
+       */
+      async mergeGuestCartThenSync() {
+        const items = get().guestCart.items;
+        if (items.length) {
+          get().setCartCount(sumGuestQty(items)); // seed → no blink
+          await Promise.all(
+            items.map((it) =>
+              graphqlFetchWithRetry(
+                "myAppAddToCart",
+                {
+                  productVariantId: Number(it.product_variant_id),
+                  quantity: Number(it.quantity) || 1,
+                },
+                {
+                  getToken: () => get().authInfo.token,
+                  refresh: () => get().refreshAuth(),
+                  isQuery: false,
+                }
+              ).catch(() => null) // sold out / gone at merge time — skip the line
+            )
+          );
+        }
+        set({ guestCart: { items: [] } }); // invariant: logged-in ⇒ no guest cart
+        get().syncCart();
+      },
+
       // ── Wishlist actions ───────────────────────────────────────────────────
 
       /**
@@ -633,6 +807,7 @@ export const useRepairStore = create(
         set({
           authInfo: { ...initialAuthInfo },
           cartInfo: { ...initialCartInfo },
+          guestCart: { items: [] },
           wishlistInfo: { ...initialWishlistInfo },
           lastOrder: initialLastOrder,
           checkoutInfo: { ...initialCheckoutInfo },
@@ -660,6 +835,7 @@ export const useRepairStore = create(
       partialize: (state) => ({
         authInfo: state.authInfo,
         cartInfo: state.cartInfo,
+        guestCart: state.guestCart,
         wishlistInfo: state.wishlistInfo,
         lastOrder: state.lastOrder,
       }),
@@ -711,10 +887,13 @@ export function initRepairStoreListener() {
         if (msg.authInfo) state.applyAuthInfoFromBroadcast(msg.authInfo);
         break;
       case "auth-cleared":
-        // Another tab clicked Sign Out — wipe everything locally too.
+        // Another tab clicked Sign Out — wipe everything locally too. Must mirror
+        // clearAuth() exactly (incl. guestCart) or a sibling-tab logout leaks the
+        // local basket on this tab.
         useRepairStore.setState({
           authInfo: { ...initialAuthInfo },
           cartInfo: { ...initialCartInfo },
+          guestCart: { items: [] },
           wishlistInfo: { ...initialWishlistInfo },
           lastOrder: initialLastOrder,
           checkoutInfo: { ...initialCheckoutInfo },
@@ -756,7 +935,12 @@ export function initRepairStoreListener() {
 export const selectIsLoggedIn = (s) => s.authInfo.isLoggedIn;
 export const selectUser = (s) => s.authInfo.user;
 export const selectToken = (s) => s.authInfo.token;
-export const selectCartCount = (s) => s.cartInfo.itemCount;
+// Badge count is derived per mode — one source of truth each, so it can't drift
+// on rehydrate: the server-synced itemCount when signed in, the guest-cart sum
+// otherwise. Returns a primitive (referentially stable → no extra re-renders).
+export const selectCartCount = (s) =>
+  s.authInfo.isLoggedIn ? s.cartInfo.itemCount : sumGuestQty(s.guestCart.items);
+export const selectGuestCartItems = (s) => s.guestCart.items;
 export const selectWishlistIds = (s) => s.wishlistInfo.productIds;
 export const selectCheckoutInfo = (s) => s.checkoutInfo;
 export const selectAppliedPromoCode = (s) => s.checkoutInfo.appliedPromoCode;

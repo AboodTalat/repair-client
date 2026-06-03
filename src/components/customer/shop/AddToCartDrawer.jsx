@@ -2,7 +2,8 @@
 
 import { useEffect, useRef, useState } from "react";
 import Image from "next/image";
-import { FILTER_OPTIONS } from "@/lib/mockShop";
+import { repairCall } from "@/lib/repairAuthedApi";
+import { useRepairStore } from "@/lib/useRepairStore";
 
 // Quick-add dialog triggered by the plus button on ProductCard.
 //   Mobile (Figma 7:1358 → node 12:2286): BOTTOM-ANCHORED CARD —
@@ -64,6 +65,9 @@ export default function AddToCartDrawer({ open, product, onClose, onAdd }) {
 
   return (
     <DialogBody
+      // Key by product id so switching products gives a fresh mount — selection
+      // + fetched detail reset for free, no synchronous state-reset in the effect.
+      key={lastProductRef.current.id}
       product={lastProductRef.current}
       onClose={onClose}
       onAdd={onAdd}
@@ -73,9 +77,114 @@ export default function AddToCartDrawer({ open, product, onClose, onAdd }) {
 }
 
 function DialogBody({ product, onClose, onAdd, dataState }) {
-  const [size, setSize] = useState(null);
-  const [color, setColor] = useState(product.colors?.[0] ?? null);
+  const productId = product.id;
+
+  // The card-list data the drawer opens on carries colors (hexes) + price +
+  // image, but NO sizes and NO variants — so the real SIZE / per-color stock /
+  // variant id have to come from the product detail. myAppGetProductDetail is a
+  // public query, so this works logged-out. Fetched once per opened product;
+  // the drawer renders instantly on card data and the options populate async.
+  const [detail, setDetail] = useState(null); // { colors, sizes, available:Set, variantId:Map }
+  const [status, setStatus] = useState("loading"); // "loading" | "ready" | "error"
+  const [colorId, setColorId] = useState(null);
+  const [sizeId, setSizeId] = useState(null);
   const [qty, setQty] = useState(1);
+  const [adding, setAdding] = useState(false);
+  const [addError, setAddError] = useState(null);
+
+  useEffect(() => {
+    // Initial state is already loading/empty (this component is keyed by product
+    // id, so each product gets a fresh mount). `active` aborts the state write if
+    // the drawer unmounts before the request resolves.
+    let active = true;
+
+    repairCall("myAppGetProductDetail", { productId }, { isQuery: true })
+      .then((data) => {
+        if (!active) return;
+        if (!data || data.id == null) {
+          setStatus("error");
+          return;
+        }
+        const proj = projectDetail(data);
+        // No usable colors/sizes → treat as error rather than render an empty,
+        // un-addable drawer. NEVER fall back to mock sizes: a mock size could
+        // point at a SKU that doesn't exist and can't resolve a variant.
+        if (!proj.colors.length || !proj.sizes.length) {
+          setStatus("error");
+          return;
+        }
+        setDetail(proj);
+        // Default the selected color to the swatch the card opened on (matched
+        // by hex), falling back to the first available color.
+        const openedHex = String(product.colors?.[0] ?? "").toLowerCase();
+        const match = proj.colors.find((c) => String(c.hex).toLowerCase() === openedHex);
+        setColorId((match ?? proj.colors[0]).id);
+        setStatus("ready");
+      })
+      .catch(() => {
+        if (active) setStatus("error");
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [productId, product.colors]);
+
+  // Availability + variant resolution are keyed by color_id|size_id — matching
+  // the variant shape and the eventual myAppAddToCart payload (never size-name).
+  const isAvailable = (sid) =>
+    colorId != null && Boolean(detail?.available.has(`${colorId}|${sid}`));
+
+  function chooseColor(cid) {
+    setColorId(cid);
+    // A color change can invalidate the chosen size (that color may not offer
+    // it, or it's out of stock there) — clear it so the user re-picks.
+    if (sizeId != null && !detail?.available.has(`${cid}|${sizeId}`)) {
+      setSizeId(null);
+    }
+  }
+
+  const variantId =
+    colorId != null && sizeId != null ? detail?.variantId.get(`${colorId}|${sizeId}`) ?? null : null;
+  const canAdd =
+    status === "ready" && colorId != null && sizeId != null && variantId != null && isAvailable(sizeId);
+
+  async function handleAdd() {
+    if (!canAdd || adding) return; // guard against double-submit on a slow round trip
+
+    // Build a full cart line (mirrors a myAppGetCart line) from the card data
+    // + fetched detail, so the store can persist it for a guest AND the cart
+    // page can render both modes with one shape.
+    const c = detail.colors.find((x) => x.id === colorId);
+    const s = detail.sizes.find((x) => x.id === sizeId);
+    const line = {
+      variantId,
+      quantity: qty,
+      product: {
+        id: product.id,
+        name: product.name,
+        base_price: product.price,
+        effective_price: product.salePrice ?? product.price,
+      },
+      color: c ? { id: c.id, name: c.name, hex_code: c.hex } : null,
+      size: s ? { id: s.id, name: s.name } : null,
+      image_url: product.image,
+      currency: product.currency,
+    };
+
+    setAdding(true);
+    setAddError(null);
+    try {
+      // Guest → localStorage; signed-in → myAppAddToCart (server stock-checks).
+      await useRepairStore.getState().addToCart(line);
+      onAdd?.(); // success banner in the parent
+      onClose?.();
+    } catch (err) {
+      // e.g. "Only 2 in stock" — stock can move between the detail fetch and now.
+      setAddError(err?.message || "Couldn’t add to cart. Please try again.");
+      setAdding(false);
+    }
+  }
 
   return (
     <>
@@ -102,23 +211,28 @@ function DialogBody({ product, onClose, onAdd, dataState }) {
         {/* Body — gap 12 between sections (Color / Size / Quantity) */}
         <div className="flex flex-col" style={{ gap: 12 }}>
           <MobileColorSection
-            colors={product.colors}
-            value={color}
-            onChange={setColor}
+            status={status}
+            colors={detail?.colors}
+            value={colorId}
+            onChange={chooseColor}
           />
-          <MobileSizeSection value={size} onChange={setSize} />
+          <MobileSizeSection
+            status={status}
+            sizes={detail?.sizes}
+            value={sizeId}
+            onChange={setSizeId}
+            isAvailable={isAvailable}
+          />
           <MobileQuantitySection value={qty} onChange={setQty} />
         </div>
 
         {/* Footer — ADD TO CART, h:40, borderRadius:4, 12px Bold */}
-        <div className="flex" style={{ gap: 8 }}>
+        <div className="flex flex-col" style={{ gap: 8 }}>
+          {addError && <AddError message={addError} />}
           <button
             type="button"
-            disabled={!size}
-            onClick={() => {
-              onAdd?.({ product, size, color, qty });
-              onClose?.();
-            }}
+            disabled={!canAdd || adding}
+            onClick={handleAdd}
             className="font-display grid flex-1 place-items-center transition-opacity hover:opacity-90 disabled:opacity-40"
             style={{
               height: 40,
@@ -131,7 +245,7 @@ function DialogBody({ product, onClose, onAdd, dataState }) {
               lineHeight: 1,
             }}
           >
-            ADD TO CART
+            {adding ? "ADDING…" : "ADD TO CART"}
           </button>
         </div>
       </aside>
@@ -214,23 +328,28 @@ function DialogBody({ product, onClose, onAdd, dataState }) {
           </section>
 
           <DesktopColorSection
-            colors={product.colors}
-            value={color}
-            onChange={setColor}
+            status={status}
+            colors={detail?.colors}
+            value={colorId}
+            onChange={chooseColor}
           />
-          <DesktopSizeSection value={size} onChange={setSize} />
+          <DesktopSizeSection
+            status={status}
+            sizes={detail?.sizes}
+            value={sizeId}
+            onChange={setSizeId}
+            isAvailable={isAvailable}
+          />
           <DesktopQuantitySection value={qty} onChange={setQty} />
         </div>
 
         {/* ADD TO CART: h:48, full inner width (= 339px), rounded:4.
-            Disabled until a size is selected, same UX as mobile. */}
+            Disabled until a size is selected / while a request is in flight. */}
+        {addError && <AddError message={addError} />}
         <button
           type="button"
-          disabled={!size}
-          onClick={() => {
-            onAdd?.({ product, size, color, qty });
-            onClose?.();
-          }}
+          disabled={!canAdd || adding}
+          onClick={handleAdd}
           className="font-display grid place-items-center transition-opacity hover:opacity-90 disabled:opacity-40"
           style={{
             width: "100%",
@@ -244,7 +363,7 @@ function DialogBody({ product, onClose, onAdd, dataState }) {
             lineHeight: 1,
           }}
         >
-          ADD TO CART
+          {adding ? "ADDING…" : "ADD TO CART"}
         </button>
       </aside>
     </>
@@ -318,71 +437,90 @@ function DesktopSectionTitle({ children }) {
   );
 }
 
-function DesktopColorSection({ colors, value, onChange }) {
+function DesktopColorSection({ status, colors, value, onChange }) {
   return (
     <section className="flex flex-col" style={{ gap: 8 }}>
       <DesktopSectionTitle>COLOR</DesktopSectionTitle>
-      <div className="flex flex-wrap items-center" style={{ gap: 8 }}>
-        {(colors ?? []).map((hex) => {
-          const active = value === hex;
-          return (
-            <button
-              key={hex}
-              type="button"
-              aria-label={hex}
-              aria-pressed={active}
-              onClick={() => onChange(hex)}
-              style={{
-                width: 32,
-                height: 32,
-                backgroundColor: hex,
-                borderRadius: 3,
-                border: active
-                  ? "3px solid #11191F"
-                  : "1.5px solid rgba(17,25,31,0.10)",
-                padding: 0,
-              }}
-            />
-          );
-        })}
-      </div>
+      {status === "loading" ? (
+        <OptionSkeleton size={32} count={3} />
+      ) : status === "error" ? (
+        <OptionError />
+      ) : (
+        <div className="flex flex-wrap items-center" style={{ gap: 8 }}>
+          {(colors ?? []).map((c) => {
+            const active = value === c.id;
+            return (
+              <button
+                key={c.id}
+                type="button"
+                aria-label={c.name}
+                title={c.name}
+                aria-pressed={active}
+                onClick={() => onChange(c.id)}
+                style={{
+                  width: 32,
+                  height: 32,
+                  backgroundColor: c.hex,
+                  borderRadius: 3,
+                  border: active
+                    ? "3px solid #11191F"
+                    : "1.5px solid rgba(17,25,31,0.10)",
+                  padding: 0,
+                }}
+              />
+            );
+          })}
+        </div>
+      )}
     </section>
   );
 }
 
-function DesktopSizeSection({ value, onChange }) {
+function DesktopSizeSection({ status, sizes, value, onChange, isAvailable }) {
   return (
     <section className="flex flex-col" style={{ gap: 8 }}>
       <DesktopSectionTitle>SIZE</DesktopSectionTitle>
-      <div className="flex flex-wrap" style={{ gap: 8 }}>
-        {FILTER_OPTIONS.sizes.map((s) => {
-          const active = value === s;
-          // XXL is wider in Figma (37.333px ≈ 38).
-          const w = s.length >= 3 ? 38 : 32;
-          return (
-            <button
-              key={s}
-              type="button"
-              onClick={() => onChange(s)}
-              className="font-body grid place-items-center transition-colors"
-              style={{
-                width: w,
-                height: 32,
-                backgroundColor: active ? "#11191F" : "#ffffff",
-                color: active ? "#ffffff" : "#11191F",
-                borderRadius: 3,
-                border: "1.5px solid #11191F",
-                fontWeight: 500,
-                fontSize: 16,
-                fontStretch: "75%",
-                lineHeight: 1,
-              }}
-            >
-              {s}
-            </button>
-          );
-        })}
-      </div>
+      {status === "loading" ? (
+        <OptionSkeleton size={32} count={4} />
+      ) : status === "error" ? (
+        <OptionError />
+      ) : (
+        <div className="flex flex-wrap" style={{ gap: 8 }}>
+          {(sizes ?? []).map((s) => {
+            const active = value === s.id;
+            const avail = isAvailable(s.id);
+            // XXL is wider in Figma (37.333px ≈ 38).
+            const w = s.name.length >= 3 ? 38 : 32;
+            return (
+              <button
+                key={s.id}
+                type="button"
+                disabled={!avail}
+                onClick={() => onChange(s.id)}
+                title={avail ? undefined : "Out of stock"}
+                aria-label={avail ? s.name : `${s.name} (out of stock)`}
+                className="font-body grid place-items-center transition-colors disabled:cursor-not-allowed"
+                style={{
+                  width: w,
+                  height: 32,
+                  backgroundColor: active ? "#11191F" : "#ffffff",
+                  color: active ? "#ffffff" : "#11191F",
+                  borderRadius: 3,
+                  border: "1.5px solid #11191F",
+                  fontWeight: 500,
+                  fontSize: 16,
+                  fontStretch: "75%",
+                  lineHeight: 1,
+                  opacity: avail ? 1 : 0.35,
+                  textDecoration: avail ? "none" : "line-through",
+                }}
+              >
+                {s.name}
+              </button>
+            );
+          })}
+        </div>
+      )}
     </section>
   );
 }
@@ -510,68 +648,88 @@ function MobileSectionTitle({ children }) {
   );
 }
 
-function MobileColorSection({ colors, value, onChange }) {
+function MobileColorSection({ status, colors, value, onChange }) {
   return (
     <section className="flex flex-col" style={{ gap: 8 }}>
       <MobileSectionTitle>COLOR</MobileSectionTitle>
-      <div className="flex flex-wrap items-center" style={{ gap: 8 }}>
-        {(colors ?? []).map((hex) => {
-          const active = value === hex;
-          return (
-            <button
-              key={hex}
-              type="button"
-              aria-label={hex}
-              onClick={() => onChange(hex)}
-              style={{
-                width: 24,
-                height: 24,
-                backgroundColor: hex,
-                borderRadius: 2,
-                border: active
-                  ? "2px solid #11191F"
-                  : "1px solid rgba(17,25,31,0.10)",
-              }}
-            />
-          );
-        })}
-      </div>
+      {status === "loading" ? (
+        <OptionSkeleton size={24} count={3} />
+      ) : status === "error" ? (
+        <OptionError />
+      ) : (
+        <div className="flex flex-wrap items-center" style={{ gap: 8 }}>
+          {(colors ?? []).map((c) => {
+            const active = value === c.id;
+            return (
+              <button
+                key={c.id}
+                type="button"
+                aria-label={c.name}
+                title={c.name}
+                aria-pressed={active}
+                onClick={() => onChange(c.id)}
+                style={{
+                  width: 24,
+                  height: 24,
+                  backgroundColor: c.hex,
+                  borderRadius: 2,
+                  border: active
+                    ? "2px solid #11191F"
+                    : "1px solid rgba(17,25,31,0.10)",
+                }}
+              />
+            );
+          })}
+        </div>
+      )}
     </section>
   );
 }
 
-function MobileSizeSection({ value, onChange }) {
+function MobileSizeSection({ status, sizes, value, onChange, isAvailable }) {
   return (
     <section className="flex flex-col" style={{ gap: 8 }}>
       <MobileSectionTitle>SIZE</MobileSectionTitle>
-      <div className="flex flex-wrap" style={{ gap: 8 }}>
-        {FILTER_OPTIONS.sizes.map((s) => {
-          const active = value === s;
-          return (
-            <button
-              key={s}
-              type="button"
-              onClick={() => onChange(s)}
-              className="font-body grid place-items-center transition-colors"
-              style={{
-                width: s.length >= 3 ? 28 : 24,
-                height: 24,
-                backgroundColor: active ? "#11191F" : "#ffffff",
-                color: active ? "#ffffff" : "#11191F",
-                borderRadius: 2,
-                outline: "1px solid #11191F",
-                outlineOffset: "-1px",
-                fontWeight: 500,
-                fontSize: 12,
-                fontStretch: "75%",
-                lineHeight: 1,
-              }}
-            >
-              {s}
-            </button>
-          );
-        })}
-      </div>
+      {status === "loading" ? (
+        <OptionSkeleton size={24} count={4} />
+      ) : status === "error" ? (
+        <OptionError />
+      ) : (
+        <div className="flex flex-wrap" style={{ gap: 8 }}>
+          {(sizes ?? []).map((s) => {
+            const active = value === s.id;
+            const avail = isAvailable(s.id);
+            return (
+              <button
+                key={s.id}
+                type="button"
+                disabled={!avail}
+                onClick={() => onChange(s.id)}
+                title={avail ? undefined : "Out of stock"}
+                aria-label={avail ? s.name : `${s.name} (out of stock)`}
+                className="font-body grid place-items-center transition-colors disabled:cursor-not-allowed"
+                style={{
+                  width: s.name.length >= 3 ? 28 : 24,
+                  height: 24,
+                  backgroundColor: active ? "#11191F" : "#ffffff",
+                  color: active ? "#ffffff" : "#11191F",
+                  borderRadius: 2,
+                  outline: "1px solid #11191F",
+                  outlineOffset: "-1px",
+                  fontWeight: 500,
+                  fontSize: 12,
+                  fontStretch: "75%",
+                  lineHeight: 1,
+                  opacity: avail ? 1 : 0.35,
+                  textDecoration: avail ? "none" : "line-through",
+                }}
+              >
+                {s.name}
+              </button>
+            );
+          })}
+        </div>
+      )}
     </section>
   );
 }
@@ -643,6 +801,94 @@ function MobileQuantitySection({ value, onChange }) {
         </button>
       </div>
     </section>
+  );
+}
+
+/* ---------- detail projection + option states ---------- */
+
+// Project the raw myAppGetProductDetail blob down to exactly what the drawer
+// needs — deliberately NOT mapDetailToProduct (that's server-coupled and pulls
+// settings / related / crafted-to-last we don't want here).
+//   colors    → [{ id, name, hex }]  (only colors that carry a hex to render)
+//   sizes     → [{ id, name }]       (already sorted by sort_order server-side)
+//   available → Set<"colorId|sizeId"> for variants with stock > 0
+//   variantId → Map<"colorId|sizeId", variantId> for the add payload
+function projectDetail(detail) {
+  const colors = (Array.isArray(detail.colors) ? detail.colors : [])
+    .map((c) => ({ id: Number(c.id), name: c.name, hex: c.hex_code }))
+    .filter((c) => c.hex);
+  const sizes = (Array.isArray(detail.sizes) ? detail.sizes : []).map((s) => ({
+    id: Number(s.id),
+    name: s.name,
+  }));
+  const available = new Set();
+  const variantId = new Map();
+  for (const v of Array.isArray(detail.variants) ? detail.variants : []) {
+    const key = `${Number(v.color_id)}|${Number(v.size_id)}`;
+    variantId.set(key, Number(v.id));
+    if (v.available || Number(v.quantity) > 0) available.add(key);
+  }
+  return { colors, sizes, available, variantId };
+}
+
+// Greyed placeholder chips shown while the detail fetch is in flight. We never
+// flash real-looking (mock) options here — an un-resolvable size must not be
+// pickable, so the loading state is visibly inert.
+function OptionSkeleton({ size, count }) {
+  return (
+    <div className="flex flex-wrap items-center" style={{ gap: 8 }}>
+      {Array.from({ length: count }).map((_, i) => (
+        <div
+          key={i}
+          className="animate-pulse"
+          style={{
+            width: size,
+            height: size,
+            borderRadius: size >= 32 ? 3 : 2,
+            backgroundColor: "rgba(17,25,31,0.08)",
+          }}
+        />
+      ))}
+    </div>
+  );
+}
+
+function OptionError() {
+  return (
+    <p
+      className="font-body"
+      style={{
+        fontWeight: 400,
+        fontSize: 12,
+        fontStretch: "75%",
+        color: "rgba(17,25,31,0.5)",
+        margin: 0,
+        lineHeight: 1.4,
+      }}
+    >
+      Couldn’t load options. Please close and try again.
+    </p>
+  );
+}
+
+// Inline failure message for the ADD action (e.g. stock moved since the drawer
+// opened — "Only 2 in stock"). role=alert so it's announced to screen readers.
+function AddError({ message }) {
+  return (
+    <p
+      role="alert"
+      className="font-body"
+      style={{
+        fontWeight: 500,
+        fontSize: 12,
+        fontStretch: "75%",
+        color: "#a50013",
+        margin: 0,
+        lineHeight: 1.4,
+      }}
+    >
+      {message}
+    </p>
   );
 }
 

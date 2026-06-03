@@ -5,6 +5,7 @@ import {
   FOOTER_LEGAL_LINKS,
   footerShopLinks,
 } from "@/lib/storeNav";
+import NewsletterSignup from "@/components/shared/NewsletterSignup";
 
 function ColumnHeading({ children }) {
   return (
@@ -120,30 +121,7 @@ export default function ShopFooter({ categories = [] }) {
             <p className="font-body text-[14px] leading-5 text-[#9ca3af]">
               Subscribe for exclusive drops and early access.
             </p>
-            <form className="flex gap-2" action="#" method="post">
-              <input
-                type="email"
-                placeholder="Enter your email"
-                aria-label="Email"
-                className="min-w-0 flex-1 border border-white/20 bg-white/10 px-[17px] py-[14px] font-body text-[14px] text-white placeholder:text-[#6b7280] focus:outline-none focus:border-white/40"
-              />
-              <button
-                type="submit"
-                aria-label="Subscribe"
-                className="grid shrink-0 place-items-center bg-white px-6 py-[13px]"
-              >
-                <svg
-                  viewBox="0 0 16 16"
-                  fill="none"
-                  stroke="#11191f"
-                  strokeWidth="1.6"
-                  className="size-4"
-                  aria-hidden
-                >
-                  <path d="M3 8h10M9 4l4 4-4 4" strokeLinecap="round" strokeLinejoin="round" />
-                </svg>
-              </button>
-            </form>
+            <NewsletterSignup tone="dark" />
           </div>
         </div>
 

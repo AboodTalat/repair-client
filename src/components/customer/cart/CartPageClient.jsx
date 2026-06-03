@@ -1,26 +1,20 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { useRouter } from "next/navigation";
 import Image from "next/image";
 import Link from "next/link";
-import {
-  CART_ITEMS,
-  PROMO_CODES,
-  SUGGESTED_PROMOS,
-  calcTotals,
-  formatJOD,
-} from "@/lib/mockCart";
-import { useRepairStore, selectIsLoggedIn } from "@/lib/useRepairStore";
+import { PROMO_CODES, SUGGESTED_PROMOS, formatJOD } from "@/lib/mockCart";
 import { buildSignInRedirect } from "@/lib/authRedirect";
-
-// Figma 119:5392 renders the Order Total card with SUMMER25 already
-// applied — the discount row, total, and chip "active" state all rely on
-// it. Seeding the initial state matches the design out-of-the-box;
-// remove this when wiring real cart/promo state.
-const DEFAULT_APPLIED_PROMO = PROMO_CODES.SUMMER25;
+import { useCart } from "@/lib/useCart";
 
 // /cart page — matches Figma mobile 83:5144 + desktop 119:5240.
+//
+// Data is wired via the useCart hook (guest localStorage cart OR the logged-in
+// DB cart). Promo codes are intentionally NOT applied to the real total yet —
+// promo wiring is a later pass shared with the still-mock checkout flow, so the
+// PromoCodeSection stays interactive but `totals.discount` is always 0 (no fake
+// discount on a real total).
 //
 // Icons live as static SVGs under `/public/cart/`, downloaded from the Figma
 // node directly. Each icon has its Figma fill/stroke baked in via
@@ -473,14 +467,16 @@ function DesktopCartItem({ item, onInc, onDec, onRemove, isFirst }) {
   );
 }
 
-export function ItemsSection({ items, setItems, variant }) {
-  const inc = (id) =>
-    setItems((prev) => prev.map((it) => (it.id === id ? { ...it, qty: it.qty + 1 } : it)));
-  const dec = (id) =>
-    setItems((prev) =>
-      prev.map((it) => (it.id === id ? { ...it, qty: Math.max(1, it.qty - 1) } : it)),
-    );
-  const remove = (id) => setItems((prev) => prev.filter((it) => it.id !== id));
+export function ItemsSection({ items, setItems, onInc, onDec, onRemove, variant }) {
+  // Backward-compatible: /cart passes real cart handlers (onInc/onDec/onRemove,
+  // each called with the item); the still-mock checkout pages pass `setItems`
+  // and fall back to local array mutation keyed by item id.
+  const inc =
+    onInc ?? ((it) => setItems((prev) => prev.map((x) => (x.id === it.id ? { ...x, qty: x.qty + 1 } : x))));
+  const dec =
+    onDec ??
+    ((it) => setItems((prev) => prev.map((x) => (x.id === it.id ? { ...x, qty: Math.max(1, x.qty - 1) } : x))));
+  const remove = onRemove ?? ((it) => setItems((prev) => prev.filter((x) => x.id !== it.id)));
 
   if (variant === "desktop") {
     return (
@@ -501,9 +497,9 @@ export function ItemsSection({ items, setItems, variant }) {
             <DesktopCartItem
               key={it.id}
               item={it}
-              onInc={() => inc(it.id)}
-              onDec={() => dec(it.id)}
-              onRemove={() => remove(it.id)}
+              onInc={() => inc(it)}
+              onDec={() => dec(it)}
+              onRemove={() => remove(it)}
               isFirst={idx === 0}
             />
           ))}
@@ -528,7 +524,7 @@ export function ItemsSection({ items, setItems, variant }) {
       </div>
       <div className="flex flex-col gap-6">
         {items.map((it) => (
-          <MobileCartItem key={it.id} item={it} onInc={() => inc(it.id)} onDec={() => dec(it.id)} />
+          <MobileCartItem key={it.id} item={it} onInc={() => inc(it)} onDec={() => dec(it)} />
         ))}
       </div>
     </section>
@@ -1166,22 +1162,68 @@ function EmptyCart() {
   );
 }
 
+function CartLoading() {
+  return (
+    <div className="flex flex-1 items-center justify-center px-6 py-24">
+      <div className="flex flex-col items-center gap-3">
+        <div className="size-8 animate-spin rounded-full border-2 border-[#e5e7eb] border-t-[#11191f]" />
+        <p className="font-body text-[14px] text-[#6b7280]" style={condensed}>
+          Loading your cart…
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function CartError({ message, onDismiss }) {
+  return (
+    <div
+      role="alert"
+      className="mx-4 mt-4 flex items-center justify-between gap-3 rounded-[4px] border border-[#fecaca] px-4 py-3 md:mx-8"
+      style={{ backgroundColor: "#fef2f2" }}
+    >
+      <span className="font-body text-[13px] leading-5 text-[#b91c1c]" style={condensed}>
+        {message}
+      </span>
+      <button
+        type="button"
+        onClick={onDismiss}
+        className="shrink-0 font-display text-[12px] font-medium uppercase tracking-wide text-[#b91c1c] underline"
+      >
+        Dismiss
+      </button>
+    </div>
+  );
+}
+
 export default function CartPageClient() {
   const router = useRouter();
-  const isLoggedIn = useRepairStore(selectIsLoggedIn);
-  const isGuest = !isLoggedIn;
-  const [items, setItems] = useState(CART_ITEMS);
-  const [appliedPromo, setAppliedPromo] = useState(DEFAULT_APPLIED_PROMO);
-
-  const totals = useMemo(() => calcTotals(items, appliedPromo), [items, appliedPromo]);
+  const { items, loading, error, isGuest, totals, updateQty, removeItem, clearError } = useCart();
+  // Promo is interactive but NOT applied to the real total (discount stays 0) —
+  // wiring it is a later pass shared with the still-mock checkout flow.
+  const [appliedPromo, setAppliedPromo] = useState(null);
 
   const handleContinue = () => {
     router.push("/checkout");
   };
+  const onInc = (it) => updateQty(it, it.qty + 1);
+  const onDec = (it) => updateQty(it, Math.max(1, it.qty - 1));
+  const onRemove = (it) => removeItem(it);
 
+  if (loading) {
+    return (
+      <main className="flex flex-1 flex-col bg-white">
+        <CartLoading />
+      </main>
+    );
+  }
+
+  // Only show the empty state once we know the cart is genuinely empty (gated on
+  // !loading above) so it never flashes during the fetch / login-merge window.
   if (items.length === 0) {
     return (
       <main className="flex flex-1 flex-col bg-white">
+        {error ? <CartError message={error} onDismiss={clearError} /> : null}
         <EmptyCart />
       </main>
     );
@@ -1189,6 +1231,8 @@ export default function CartPageClient() {
 
   return (
     <main className="flex flex-1 flex-col bg-white">
+      {error ? <CartError message={error} onDismiss={clearError} /> : null}
+
       {/* ============== MOBILE LAYOUT ============== */}
       <div className="flex flex-col md:hidden">
         {/* Stepper header — sits below ShopHeader (sticky 56px tall on mobile) */}
@@ -1203,15 +1247,23 @@ export default function CartPageClient() {
           <Stepper />
         </div>
 
-        <div className="px-4 pt-4">
-          <FreeShippingBanner
-            amountToFreeShipping={totals.amountToFreeShipping}
-            freeShippingPct={totals.freeShippingPct}
-            variant="mobile"
-          />
-        </div>
+        {totals.freeShippingEnabled ? (
+          <div className="px-4 pt-4">
+            <FreeShippingBanner
+              amountToFreeShipping={totals.amountToFreeShipping}
+              freeShippingPct={totals.freeShippingPct}
+              variant="mobile"
+            />
+          </div>
+        ) : null}
 
-        <ItemsSection items={items} setItems={setItems} variant="mobile" />
+        <ItemsSection
+          items={items}
+          onInc={onInc}
+          onDec={onDec}
+          onRemove={onRemove}
+          variant="mobile"
+        />
 
         <PromoCodeSection
           appliedPromo={appliedPromo}
@@ -1249,12 +1301,20 @@ export default function CartPageClient() {
         <div className="flex flex-col items-stretch gap-12 lg:flex-row lg:items-start lg:justify-center">
           {/* Left column: cart items */}
           <div className="flex w-full min-w-0 flex-col gap-6 lg:flex-1" style={{ maxWidth: "901.33px" }}>
-            <FreeShippingBanner
-              amountToFreeShipping={totals.amountToFreeShipping}
-              freeShippingPct={totals.freeShippingPct}
+            {totals.freeShippingEnabled ? (
+              <FreeShippingBanner
+                amountToFreeShipping={totals.amountToFreeShipping}
+                freeShippingPct={totals.freeShippingPct}
+                variant="desktop"
+              />
+            ) : null}
+            <ItemsSection
+              items={items}
+              onInc={onInc}
+              onDec={onDec}
+              onRemove={onRemove}
               variant="desktop"
             />
-            <ItemsSection items={items} setItems={setItems} variant="desktop" />
           </div>
 
           {/* Right column: order summary. Full-width below lg (stacked),

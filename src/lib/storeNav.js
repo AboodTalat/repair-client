@@ -169,19 +169,64 @@ export function typesFromTree(categories) {
   return out;
 }
 
+// ---------------------------------------------------------------------------
+// Active-category highlighting
+// ---------------------------------------------------------------------------
+//
+// The chosen category/sub-category is reflected in the /shop query params
+// (?category=<slug>&sub=<slug>). Nav items only carry an `href` like
+// "/shop?category=women&sub=shirts", so we parse the slugs back out of the
+// href and compare against the active selection. Both the desktop nav and the
+// sidebar use these so the "chosen = black, others dimmed" treatment stays
+// identical across surfaces.
+
+function slugsFromHref(href) {
+  const qs = String(href ?? "").split("?")[1];
+  if (!qs) return { cat: null, sub: null };
+  const p = new URLSearchParams(qs);
+  return { cat: p.get("category"), sub: p.get("sub") };
+}
+
+// Major trigger / sidebar root row: chosen whenever its category matches —
+// even when a sub within it is the precise selection (the major stays in
+// context). The href for a major has no `sub`.
+export function isCategoryActive(href, activeCategory) {
+  if (!activeCategory) return false;
+  return slugsFromHref(href).cat === activeCategory;
+}
+
+// Sub link in a dropdown / drilldown: chosen only on an exact category+sub match.
+export function isSubCategoryActive(href, activeCategory, activeSub) {
+  if (!activeCategory || !activeSub) return false;
+  const { cat, sub } = slugsFromHref(href);
+  return cat === activeCategory && sub === activeSub;
+}
+
+// "All items" link (href is the major's href, no sub): chosen when the category
+// matches AND no sub is selected.
+export function isAllItemsActive(href, activeCategory, activeSub) {
+  if (!activeCategory || activeSub) return false;
+  return slugsFromHref(href).cat === activeCategory;
+}
+
 // Sidebar static items that bracket the dynamic categories — top items above
-// the categories, account/cart items below them.
+// the categories, account/cart items below them. "Shop" is intentionally NOT
+// here: the dynamic category list IS the shop navigation, and each major with
+// sub-categories exposes an "All items" entry (sidebar drilldown + desktop
+// dropdown), so a separate top-level "Shop" link would be redundant.
 export const SIDEBAR_TOP = [
   { label: "Home", href: "/" },
-  { label: "Shop", href: "/shop" },
 ];
 
 export const SIDEBAR_BOTTOM = [
   { label: "Orders", href: "/account/orders" },
   { label: "Wishlist", href: "/account/wishlist" },
   { label: "Account", href: "/account" },
-  { label: "Cart", href: "/cart" },
 ];
+
+// Cart is open to guests (a visitor can build a basket before signing in), so
+// it sits outside the auth-gated bottom block and is always appended.
+export const SIDEBAR_CART = { label: "Cart", href: "/cart" };
 
 // Footer Help column — destinations exist as real customer pages.
 export const FOOTER_HELP_LINKS = [
@@ -212,13 +257,14 @@ export function footerShopLinks(categories) {
     .map((cat) => ({ label: cat.label, href: cat.href }));
 }
 
-// The bottom items (Orders / Wishlist / Account / Cart) are user-scoped, so
-// they only appear when the visitor is signed in. Guests see Home + Shop +
-// the category tree only.
+// The bottom items (Orders / Wishlist / Account) are user-scoped, so they only
+// appear when the visitor is signed in. Cart is open to guests and always
+// appended last. Guests see Home + the category tree + Cart.
 export function sidebarItems(categories, isAuthenticated = false) {
   return [
     ...SIDEBAR_TOP,
     ...(categories ?? []),
     ...(isAuthenticated ? SIDEBAR_BOTTOM : []),
+    SIDEBAR_CART,
   ];
 }

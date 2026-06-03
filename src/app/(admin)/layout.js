@@ -1,5 +1,5 @@
 import AdminShell from "@/components/admin/layout/AdminShell";
-import AuthGuard from "@/components/auth/AuthGuard";
+import RoleGuard from "@/components/auth/RoleGuard";
 
 export const metadata = {
   title: "Repair — Console",
@@ -8,8 +8,8 @@ export const metadata = {
 
 export default function AdminLayout({ children }) {
   return (
-    <AuthGuard>
+    <RoleGuard allow={["admin"]} requireAuth>
       <AdminShell>{children}</AdminShell>
-    </AuthGuard>
+    </RoleGuard>
   );
 }

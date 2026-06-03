@@ -9,17 +9,31 @@
 
 export default function FilterBar({
   categoryName,
+  subCategoryName,
   productCount,
   activeFilterCount = 0,
   onOpenFilter,
 }) {
+  // Breadcrumb: HOME / MAJOR / SUB. When a sub-category is selected the major
+  // demotes to a muted intermediate crumb and the sub becomes the emphasized
+  // current item; otherwise the major is the current item.
+  const major = (categoryName || "Discover All").toUpperCase();
   return (
     <div className="flex w-full items-center justify-between">
       <p className="flex items-baseline font-display text-[#11191f]">
         <span className="text-[12px] text-[rgba(17,25,31,0.5)] md:text-[14px]">HOME/</span>
-        <span className="text-[14px] font-medium md:text-[18px]">
-          {(categoryName || "Discover All").toUpperCase()}
-        </span>
+        {subCategoryName ? (
+          <>
+            <span className="text-[12px] text-[rgba(17,25,31,0.5)] md:text-[14px]">
+              {major}/
+            </span>
+            <span className="text-[14px] font-medium md:text-[18px]">
+              {subCategoryName.toUpperCase()}
+            </span>
+          </>
+        ) : (
+          <span className="text-[14px] font-medium md:text-[18px]">{major}</span>
+        )}
       </p>
 
       <div className="flex items-center gap-3 md:gap-6">

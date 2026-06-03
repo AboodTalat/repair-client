@@ -42,7 +42,10 @@ export default function SignInForm() {
       );
       const store = useRepairStore.getState();
       store.setAuthInfo(data);
-      store.syncCart();
+      // Merge any guest cart built before sign-in into the DB, then reconcile
+      // the badge (mergeGuestCartThenSync seeds the count first so it doesn't
+      // blink). Fire-and-forget — don't block the redirect on it.
+      store.mergeGuestCartThenSync();
       store.syncWishlist();
       // Honor `?next=` round-trip from AuthGuard / session-expired flow.
       // Falls back to the role's home (customer → /shop, admin → console, etc.).

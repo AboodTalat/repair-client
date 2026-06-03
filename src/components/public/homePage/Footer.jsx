@@ -5,6 +5,7 @@ import {
   FOOTER_LEGAL_LINKS,
   footerShopLinks,
 } from "@/lib/storeNav";
+import NewsletterSignup from "@/components/shared/NewsletterSignup";
 
 function FooterLink({ href = "#", children }) {
   return (
@@ -106,22 +107,7 @@ export default function Footer({ categories = [] }) {
           >
             Subscribe for exclusive drops and early access.
           </p>
-          <form className="flex gap-2" action="#" method="post">
-            <input
-              type="email"
-              placeholder="Enter your email"
-              aria-label="Email"
-              className="min-w-0 flex-1 rounded border border-[#11191f] bg-white p-[13px] font-body text-[14px] text-[#232323] placeholder:text-[#232323]/50 focus:outline-none"
-              style={{ fontStretch: "75%" }}
-            />
-            <button
-              type="submit"
-              aria-label="Subscribe"
-              className="grid shrink-0 place-items-center rounded bg-[#11191f] px-5"
-            >
-              <Image src="/home/icon-send.svg" alt="" width={12} height={14} />
-            </button>
-          </form>
+          <NewsletterSignup tone="light" />
         </div>
 
         <div className="flex flex-col gap-4 border-t border-[#0f0f11] pt-[25px] md:col-span-12 md:flex-row md:items-center md:justify-between md:gap-6">

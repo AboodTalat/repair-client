@@ -1,5 +1,5 @@
 import AccountantShell from "@/components/accountant/layout/AccountantShell";
-import AuthGuard from "@/components/auth/AuthGuard";
+import RoleGuard from "@/components/auth/RoleGuard";
 
 export const metadata = {
   title: "Repair — Finance Ledger",
@@ -8,8 +8,8 @@ export const metadata = {
 
 export default function AccountantLayout({ children }) {
   return (
-    <AuthGuard>
+    <RoleGuard allow={["accounting"]} requireAuth>
       <AccountantShell>{children}</AccountantShell>
-    </AuthGuard>
+    </RoleGuard>
   );
 }

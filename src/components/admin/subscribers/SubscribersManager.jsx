@@ -1,14 +1,29 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Button, { IconButton } from "@/components/admin/shared/Button";
 import { Chip, SearchInput } from "@/components/admin/shared/Form";
 import DataTable from "@/components/admin/shared/DataTable";
 import StatusBadge from "@/components/admin/shared/StatusBadge";
 import Modal from "@/components/admin/shared/Modal";
 import { IconDownload, IconTrash, IconSend } from "@/components/admin/shared/Icons";
-import { NEWSLETTER_SUBSCRIBERS } from "@/lib/mockAdmin";
+import { repairCall } from "@/lib/repairAuthedApi";
+
+// Admin Newsletter Subscribers — WIRED TO BACKEND.
+//   Q  myAppAdminListNewsletterSubscribers  ({ status?, search?, limit? })
+//   M  myAppAdminUpdateNewsletterSubscriberStatus ({ id, status })
+//   M  myAppAdminDeleteNewsletterSubscriber ({ id })
+// Subscribers are created public-side by myAppSubscribeNewsletter (the footer
+// "Stay in the loop" form). Follows the StockAlertManager pattern: status +
+// search live in state and drive a debounced server refetch; rows render
+// straight from the resolver (no client-side filtering). Status counts come
+// from the resolver's global `statusCounts` array.
+
+// We pull a generous page so the table + CSV export reflect the whole list
+// without a pagination UI; the resolver caps at 500, so a larger list is
+// flagged as truncated below the table.
+const PAGE_LIMIT = 500;
 
 const STATUS_FILTERS = [
   { key: "all",          label: "All" },
@@ -16,12 +31,22 @@ const STATUS_FILTERS = [
   { key: "unsubscribed", label: "Unsubscribed" },
 ];
 
-function toCsv(rows) {
-  const header = "email,signedUp,status,source";
-  const body = rows
-    .map((r) => [r.email, r.signedUp, r.status, r.source].map(csvCell).join(","))
-    .join("\n");
-  return `${header}\n${body}`;
+function formatDate(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? "—" : d.toLocaleDateString("en-CA");
+}
+
+// Resolver returns statusCounts as a raw grouped query → [{ status, cnt }] with
+// cnt possibly a string. Coerce, sum for the "All" chip. Global (filter-independent).
+function countsFromStatus(arr) {
+  const c = { all: 0, active: 0, unsubscribed: 0 };
+  (Array.isArray(arr) ? arr : []).forEach((r) => {
+    const n = Number(r.cnt) || 0;
+    if (r.status in c) c[r.status] = n;
+    c.all += n;
+  });
+  return c;
 }
 
 function csvCell(v) {
@@ -29,12 +54,20 @@ function csvCell(v) {
   return /[,"\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
+function toCsv(rows) {
+  const header = "email,signedUp,status,source";
+  const body = rows
+    .map((r) => [r.email, formatDate(r.created_at), r.status, r.source].map(csvCell).join(","))
+    .join("\n");
+  return `${header}\n${body}`;
+}
+
 function downloadCsv(rows) {
   const blob = new Blob([toCsv(rows)], { type: "text/csv;charset=utf-8;" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = `newsletter-subscribers-${Date.now()}.csv`;
+  a.download = `newsletter-subscribers-${new Date().toISOString().slice(0, 10)}.csv`;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
@@ -42,63 +75,108 @@ function downloadCsv(rows) {
 }
 
 export default function SubscribersManager() {
-  const [rows, setRows] = useState(NEWSLETTER_SUBSCRIBERS);
+  const [rows, setRows] = useState([]);
+  const [counts, setCounts] = useState({ all: 0, active: 0, unsubscribed: 0 });
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
   const [statusFilter, setStatusFilter] = useState("all");
   const [search, setSearch] = useState("");
+  const [busyId, setBusyId] = useState(null);
   const [pendingDelete, setPendingDelete] = useState(null);
 
-  const counts = useMemo(() => ({
-    all: rows.length,
-    active: rows.filter((r) => r.status === "active").length,
-    unsubscribed: rows.filter((r) => r.status === "unsubscribed").length,
-  }), [rows]);
+  const debounceRef = useRef(null);
+  const mountedRef = useRef(false);
 
-  const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    return rows.filter((r) => {
-      if (statusFilter !== "all" && r.status !== statusFilter) return false;
-      if (q && !r.email.toLowerCase().includes(q)) return false;
-      return true;
-    });
-  }, [rows, statusFilter, search]);
+  const fetchSubscribers = useCallback(async (filters = {}) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const input = { limit: PAGE_LIMIT };
+      if (filters.status && filters.status !== "all") input.status = filters.status;
+      if (filters.search) input.search = filters.search;
+      const data = await repairCall("myAppAdminListNewsletterSubscribers", input, { isQuery: true });
+      setRows(Array.isArray(data?.items) ? data.items : []);
+      setCounts(countsFromStatus(data?.statusCounts));
+      setTotal(Number(data?.total) || 0);
+    } catch (err) {
+      setError(err?.message || "Failed to load subscribers");
+      setRows([]);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
-  function confirmDelete() {
-    if (!pendingDelete) return;
-    setRows((arr) => arr.filter((r) => r.id !== pendingDelete.id));
-    setPendingDelete(null);
+  useEffect(() => {
+    if (!mountedRef.current) {
+      mountedRef.current = true;
+      fetchSubscribers({ status: statusFilter, search });
+      return;
+    }
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => {
+      fetchSubscribers({ status: statusFilter, search });
+    }, 250);
+    return () => clearTimeout(debounceRef.current);
+  }, [statusFilter, search, fetchSubscribers]);
+
+  async function toggleStatus(row) {
+    const next = row.status === "active" ? "unsubscribed" : "active";
+    setBusyId(row.id);
+    setError(null);
+    try {
+      await repairCall(
+        "myAppAdminUpdateNewsletterSubscriberStatus",
+        { id: Number(row.id), status: next },
+        { isQuery: false }
+      );
+      await fetchSubscribers({ status: statusFilter, search });
+    } catch (err) {
+      setError(err?.message || "Failed to update the subscriber");
+    } finally {
+      setBusyId(null);
+    }
   }
 
-  function toggleStatus(row) {
-    setRows((arr) =>
-      arr.map((r) =>
-        r.id === row.id
-          ? { ...r, status: r.status === "active" ? "unsubscribed" : "active" }
-          : r
-      )
-    );
+  async function confirmDelete() {
+    if (!pendingDelete) return;
+    const id = pendingDelete.id;
+    setPendingDelete(null);
+    setError(null);
+    try {
+      await repairCall("myAppAdminDeleteNewsletterSubscriber", { id: Number(id) }, { isQuery: false });
+      await fetchSubscribers({ status: statusFilter, search });
+    } catch (err) {
+      setError(err?.message || "Failed to delete the subscriber");
+    }
   }
 
   const columns = [
     { key: "email", label: "Email", render: (row) => (
         <span className="font-body text-[13px] text-[#11191f]">{row.email}</span>
       )},
-    { key: "signedUp", label: "Signed up", render: (row) => (
-        <span className="font-body text-[12px] text-[#6b7280]">{row.signedUp}</span>
+    { key: "signedUp", label: "Signed up", width: 120, render: (row) => (
+        <span className="font-body text-[12px] text-[#6b7280]">{formatDate(row.created_at)}</span>
       )},
-    { key: "source", label: "Source", render: (row) => (
+    { key: "source", label: "Source", width: 110, render: (row) => (
         <span className="font-body text-[12px] capitalize text-[#11191f]">{row.source}</span>
       )},
-    { key: "status", label: "Status", render: (row) => (
+    { key: "status", label: "Status", width: 120, render: (row) => (
         <StatusBadge status={row.status} />
       )},
-    { key: "actions", label: "", width: "140px", align: "right", render: (row) => (
+    { key: "actions", label: "", width: "160px", align: "right", render: (row) => (
         <div className="flex justify-end gap-1">
           <Button
             size="sm"
             variant="secondary"
+            disabled={busyId === row.id}
             onClick={(e) => { e.stopPropagation(); toggleStatus(row); }}
           >
-            {row.status === "active" ? "Unsubscribe" : "Re-subscribe"}
+            {busyId === row.id
+              ? "Working…"
+              : row.status === "active"
+                ? "Unsubscribe"
+                : "Re-subscribe"}
           </Button>
           <IconButton
             label="Delete"
@@ -112,6 +190,12 @@ export default function SubscribersManager() {
 
   return (
     <div className="flex flex-col gap-4">
+      {error && (
+        <div className="rounded-[4px] border border-[#fecaca] bg-[#fef2f2] px-4 py-3">
+          <p className="font-body text-[13px] text-[#dc2626]">{error}</p>
+        </div>
+      )}
+
       {/* Status chips */}
       <div className="flex flex-wrap items-center gap-2">
         {STATUS_FILTERS.map((f) => (
@@ -120,7 +204,7 @@ export default function SubscribersManager() {
             active={statusFilter === f.key}
             onClick={() => setStatusFilter(f.key)}
           >
-            {f.label} ({counts[f.key]})
+            {f.label} ({counts[f.key] ?? 0})
           </Chip>
         ))}
       </div>
@@ -139,7 +223,8 @@ export default function SubscribersManager() {
             variant="secondary"
             size="sm"
             icon={<IconDownload />}
-            onClick={() => downloadCsv(filtered)}
+            disabled={rows.length === 0}
+            onClick={() => downloadCsv(rows)}
           >
             Export CSV
           </Button>
@@ -155,15 +240,32 @@ export default function SubscribersManager() {
         </div>
       </div>
 
-      <DataTable
-        columns={columns}
-        rows={filtered}
-        empty={
-          <p className="font-body text-[13px] text-[#6b7280]">
-            No subscribers match this filter.
-          </p>
-        }
-      />
+      {loading ? (
+        <div className="grid place-items-center rounded-[4px] border border-[#e5e7eb] bg-white px-6 py-16">
+          <div className="flex items-center gap-3">
+            <div className="size-5 animate-spin rounded-full border-2 border-[#e5e7eb] border-t-[#11191f]" />
+            <p className="font-body text-[13px] text-[#6b7280]">Loading subscribers…</p>
+          </div>
+        </div>
+      ) : (
+        <>
+          <DataTable
+            columns={columns}
+            rows={rows}
+            empty={
+              <p className="font-body text-[13px] text-[#6b7280]">
+                No subscribers match this filter.
+              </p>
+            }
+          />
+          {total > rows.length && (
+            <p className="font-body text-[12px] text-[#9ca3af]">
+              Showing the first {rows.length} of {total} subscribers. Narrow the search to find a
+              specific subscriber.
+            </p>
+          )}
+        </>
+      )}
 
       <Modal
         open={!!pendingDelete}

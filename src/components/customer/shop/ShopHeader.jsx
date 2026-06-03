@@ -2,14 +2,25 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import Sidebar from "@/components/shared/Sidebar";
 import ComingSoonTag from "@/components/shared/ComingSoonTag";
 import SearchOverlay from "@/components/customer/shop/SearchOverlay";
-import { sidebarItems } from "@/lib/storeNav";
-import { useRepairStore, selectIsLoggedIn } from "@/lib/useRepairStore";
+import {
+  sidebarItems,
+  isCategoryActive,
+  isSubCategoryActive,
+  isAllItemsActive,
+} from "@/lib/storeNav";
+import {
+  useRepairStore,
+  selectIsLoggedIn,
+  selectUser,
+  selectCartCount,
+} from "@/lib/useRepairStore";
 import { repairCall } from "@/lib/repairAuthedApi";
+import { accountHrefForRole } from "@/lib/authRedirect";
 
 // Mobile (Figma 2:12 / 2:857):
 //   thin sticky bar: sort | RE logo (center) | search + bag.
@@ -21,12 +32,25 @@ import { repairCall } from "@/lib/repairAuthedApi";
 // myAppListCategoriesTree the landing HeaderShell uses, so the nav stays
 // consistent between landing and storefront.
 
-export default function ShopHeader({ cartCount = 0, categories = [] }) {
+export default function ShopHeader({ categories = [] }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [scrolled, setScrolled] = useState(false);
   const router = useRouter();
+  const searchParams = useSearchParams();
   const isAuthenticated = useRepairStore(selectIsLoggedIn);
+  const user = useRepairStore(selectUser);
+  // Live badge count — guest-cart sum when signed out, server-synced count when
+  // signed in (selectCartCount derives the right one). 0 until rehydrate.
+  const cartCount = useRepairStore(selectCartCount);
+  // Stakeholders get their console home; customers + guests get /account.
+  const accountHref = accountHrefForRole(user?.role);
+
+  // Which category / sub-category is currently being browsed (from the /shop
+  // query params). Drives the "chosen = black, others dimmed" treatment in the
+  // desktop nav and the sidebar.
+  const activeCategory = searchParams.get("category");
+  const activeSub = searchParams.get("sub");
 
   // On large screens the centered logo sits between the left nav and the right
   // icons. Once there are 2+ real (non-coming-soon) categories the left nav is
@@ -58,7 +82,7 @@ export default function ShopHeader({ cartCount = 0, categories = [] }) {
       // handles small screens, so skip the check there.
       if (!bar || !mnav || bar.clientWidth === 0) return;
       const PADDING = 64; // px-8 left + right (clientWidth includes padding)
-      const RIGHT_RESERVE = 150; // search + bag + account icons cluster + gaps
+      const RIGHT_RESERVE = 190; // search + bag + account + logout icon cluster + gaps
       const LOGO_RESERVE = hideDesktopLogo ? 0 : 88; // centered logo lane
       const GAP = 24; // breathing room so labels never touch
       const available = bar.clientWidth - PADDING;
@@ -126,22 +150,25 @@ export default function ShopHeader({ cartCount = 0, categories = [] }) {
       >
         <Image src="/shop/icon-search.svg" alt="" width={20} height={20} />
       </button>
-      {isAuthenticated && (
+
+      {/* Cart — open to guests, so it always shows */}
+      <Link
+        href="/cart"
+        aria-label={`Bag (${cartCount})`}
+        className="relative grid size-5 place-items-center"
+      >
+        <Image src="/shop/icon-bag.svg" alt="" width={20} height={20} />
+        {cartCount > 0 && (
+          <span className="absolute -right-2 -top-1 grid size-4 place-items-center rounded-full bg-[#11191f] font-body text-[10px] leading-none text-white">
+            {cartCount}
+          </span>
+        )}
+      </Link>
+
+      {isAuthenticated ? (
         <>
           <Link
-            href="/cart"
-            aria-label={`Bag (${cartCount})`}
-            className="relative grid size-5 place-items-center"
-          >
-            <Image src="/shop/icon-bag.svg" alt="" width={20} height={20} />
-            {cartCount > 0 && (
-              <span className="absolute -right-2 -top-1 grid size-4 place-items-center rounded-full bg-[#11191f] font-body text-[10px] leading-none text-white">
-                {cartCount}
-              </span>
-            )}
-          </Link>
-          <Link
-            href="/account"
+            href={accountHref}
             aria-label="Account"
             className="grid size-5 place-items-center"
           >
@@ -157,7 +184,47 @@ export default function ShopHeader({ cartCount = 0, categories = [] }) {
               <path d="M4 21c0-4 4-7 8-7s8 3 8 7" strokeLinecap="round" />
             </svg>
           </Link>
+          {/* Logout shortcut */}
+          <button
+            type="button"
+            onClick={handleSignOut}
+            aria-label="Log out"
+            className="grid size-5 place-items-center"
+          >
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.6"
+              className="size-5 text-[#11191f]"
+              aria-hidden
+            >
+              <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" strokeLinecap="round" strokeLinejoin="round" />
+              <path d="M16 17l5-5-5-5" strokeLinecap="round" strokeLinejoin="round" />
+              <path d="M21 12H9" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </button>
         </>
+      ) : (
+        /* Large-screen sign-in shortcut for guests */
+        <Link
+          href="/sign-in"
+          aria-label="Sign in"
+          className="grid size-5 place-items-center"
+        >
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.6"
+            className="size-5 text-[#11191f]"
+            aria-hidden
+          >
+            <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4" strokeLinecap="round" strokeLinejoin="round" />
+            <path d="M10 17l5-5-5-5" strokeLinecap="round" strokeLinejoin="round" />
+            <path d="M15 12H3" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </Link>
       )}
     </div>
   );
@@ -214,20 +281,19 @@ export default function ShopHeader({ cartCount = 0, categories = [] }) {
             >
               <Image src="/shop/icon-search.svg" alt="" width={24} height={24} />
             </button>
-            {isAuthenticated && (
-              <Link
-                href="/cart"
-                aria-label={`Bag (${cartCount})`}
-                className="relative grid size-6 place-items-center"
-              >
-                <Image src="/shop/icon-bag.svg" alt="" width={24} height={24} />
-                {cartCount > 0 && (
-                  <span className="absolute -right-2 -top-1 grid size-4 place-items-center rounded-full bg-[#11191f] font-body text-[10px] leading-none text-white">
-                    {cartCount}
-                  </span>
-                )}
-              </Link>
-            )}
+            {/* Cart — open to guests, so it always shows */}
+            <Link
+              href="/cart"
+              aria-label={`Bag (${cartCount})`}
+              className="relative grid size-6 place-items-center"
+            >
+              <Image src="/shop/icon-bag.svg" alt="" width={24} height={24} />
+              {cartCount > 0 && (
+                <span className="absolute -right-2 -top-1 grid size-4 place-items-center rounded-full bg-[#11191f] font-body text-[10px] leading-none text-white">
+                  {cartCount}
+                </span>
+              )}
+            </Link>
           </div>
         </div>
 
@@ -261,7 +327,12 @@ export default function ShopHeader({ cartCount = 0, categories = [] }) {
                   HOME
                 </Link>
                 {categories.map((cat) => (
-                  <DesktopNavItem key={cat.id ?? cat.label} item={cat} />
+                  <DesktopNavItem
+                    key={cat.id ?? cat.label}
+                    item={cat}
+                    activeCategory={activeCategory}
+                    activeSub={activeSub}
+                  />
                 ))}
               </nav>
 
@@ -281,6 +352,8 @@ export default function ShopHeader({ cartCount = 0, categories = [] }) {
         open={menuOpen}
         onClose={() => setMenuOpen(false)}
         items={sidebarItems(categories, isAuthenticated)}
+        activeCategory={activeCategory}
+        activeSub={activeSub}
         isAuthenticated={isAuthenticated}
         onSignOut={handleSignOut}
         signInHref="/sign-in"
@@ -292,7 +365,7 @@ export default function ShopHeader({ cartCount = 0, categories = [] }) {
   );
 }
 
-function DesktopNavItem({ item }) {
+function DesktopNavItem({ item, activeCategory = null, activeSub = null }) {
   const hasChildren = Array.isArray(item.children) && item.children.length > 0;
 
   // A coming-soon major is a teaser — greyed and non-clickable.
@@ -305,11 +378,18 @@ function DesktopNavItem({ item }) {
     );
   }
 
+  // The chosen major is black; while some other category is chosen, the rest
+  // dim to 50%. With no category in context (e.g. /cart, /account) nothing is
+  // dimmed and every label stays black.
+  const isActive = isCategoryActive(item.href, activeCategory);
+  const triggerColor =
+    activeCategory && !isActive ? "text-[#11191f]/50" : "text-[#11191f]";
+
   if (!hasChildren) {
     return (
       <Link
         href={item.href ?? "#"}
-        className="font-display text-[14px] font-medium uppercase leading-5 text-[#11191f] hover:opacity-80"
+        className={`font-display text-[14px] font-medium uppercase leading-5 hover:opacity-80 ${triggerColor}`}
       >
         {item.label}
       </Link>
@@ -320,7 +400,7 @@ function DesktopNavItem({ item }) {
     <div className="group relative">
       <Link
         href={item.href ?? "#"}
-        className="inline-flex items-center gap-1 font-display text-[14px] font-medium uppercase leading-5 text-[#11191f] hover:opacity-80"
+        className={`inline-flex items-center gap-1 font-display text-[14px] font-medium uppercase leading-5 hover:opacity-80 ${triggerColor}`}
         aria-haspopup="true"
       >
         {item.label}
@@ -347,6 +427,23 @@ function DesktopNavItem({ item }) {
         className="invisible absolute left-1/2 top-full z-40 mt-3 min-w-[200px] -translate-x-1/2 rounded-md bg-white text-[#11191f] opacity-0 shadow-xl ring-1 ring-black/5 transition-opacity duration-150 group-hover:visible group-hover:opacity-100 group-focus-within:visible group-focus-within:opacity-100"
       >
         <ul className="flex flex-col py-2">
+          {/* "All items" → the major category itself (shows every product in
+              it). Shown only because this dropdown only renders when the major
+              has sub-categories. */}
+          <li>
+            <Link
+              href={item.href ?? "#"}
+              role="menuitem"
+              className={`block px-4 py-2 font-body text-[14px] uppercase tracking-[0.15em] transition-colors hover:bg-black/5 ${
+                isAllItemsActive(item.href, activeCategory, activeSub)
+                  ? "text-[#11191f]"
+                  : "text-[#11191f]/70 hover:text-[#11191f]"
+              }`}
+              style={{ fontStretch: "75%" }}
+            >
+              All items
+            </Link>
+          </li>
           {item.children.map((child) =>
             child.comingSoon ? (
               <li key={child.id ?? child.label}>
@@ -363,7 +460,11 @@ function DesktopNavItem({ item }) {
                 <Link
                   href={child.href}
                   role="menuitem"
-                  className="block px-4 py-2 font-body text-[14px] uppercase tracking-[0.15em] text-[#11191f]/70 transition-colors hover:bg-black/5 hover:text-[#11191f]"
+                  className={`block px-4 py-2 font-body text-[14px] uppercase tracking-[0.15em] transition-colors hover:bg-black/5 hover:text-[#11191f] ${
+                    isSubCategoryActive(child.href, activeCategory, activeSub)
+                      ? "text-[#11191f]"
+                      : "text-[#11191f]/70"
+                  }`}
                   style={{ fontStretch: "75%" }}
                 >
                   {child.label}

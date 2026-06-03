@@ -155,7 +155,8 @@ export default function GoogleSignInButton({ children }) {
 
         const store = useRepairStore.getState();
         store.setAuthInfo(data);
-        store.syncCart();
+        // Merge a pre-login guest cart into the DB, then reconcile the badge.
+        store.mergeGuestCartThenSync();
         store.syncWishlist();
         router.push(postAuthDestination({ searchParams, role: data?.user?.role }));
       } catch (err) {

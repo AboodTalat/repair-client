@@ -9,6 +9,16 @@ const nextConfig = {
   turbopack: {
     root: __dirname,
   },
+  images: {
+    // Product / category images are stored on UploadThing. v7 serves them from
+    // `<appId>.ufs.sh` (the `ufsUrl` returned by the upload router); `utfs.io`
+    // is the legacy host kept for any older rows. Without these, next/image
+    // throws "hostname not configured" at render and every real photo breaks.
+    remotePatterns: [
+      { protocol: "https", hostname: "**.ufs.sh" },
+      { protocol: "https", hostname: "utfs.io" },
+    ],
+  },
   async headers() {
     // Google Identity Services opens a popup that postMessages an idToken back
     // to this window. Chrome's default COOP can silently drop that handshake
