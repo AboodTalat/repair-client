@@ -704,8 +704,14 @@ export const useRepairStore = create(
               isQuery: true,
             }
           );
+          // Normalize to Number — product_id arrives as a BIGINT (often a
+          // string from mysql2), while product.id on the storefront is also
+          // raw; coercing both sides here is what makes the heart's
+          // `productIds.includes(Number(product.id))` check actually match.
           const ids = Array.isArray(data?.items)
-            ? data.items.map((item) => item.product_id).filter((id) => id != null)
+            ? data.items
+                .map((item) => Number(item.product_id))
+                .filter((id) => Number.isFinite(id))
             : [];
           set({
             wishlistInfo: { productIds: ids, lastSynced: new Date().toISOString() },
@@ -726,17 +732,59 @@ export const useRepairStore = create(
       },
 
       /**
-       * Optimistic heart-toggle. Adds if absent, removes if present.
-       * Always follow this with the actual API mutation; revert on error.
+       * Optimistic heart-toggle (LOCAL only). Adds if absent, removes if
+       * present. Ids are normalized to Number so the list stays type-consistent
+       * with the storefront's `product.id`. Always follow this with the actual
+       * API mutation; revert on error — `toggleWishlist` below does both.
        */
       toggleWishlistItem(productId) {
+        const pid = Number(productId);
+        if (!Number.isFinite(pid)) return;
         set((s) => {
           const ids = s.wishlistInfo.productIds;
-          const next = ids.includes(productId)
-            ? ids.filter((id) => id !== productId)
-            : [...ids, productId];
+          const next = ids.includes(pid)
+            ? ids.filter((id) => id !== pid)
+            : [...ids, pid];
           return { wishlistInfo: { ...s.wishlistInfo, productIds: next } };
         });
+      },
+
+      /**
+       * Server-backed wishlist toggle for logged-in users. Optimistically flips
+       * the local heart, persists via myAppToggleWishlist, and reverts the
+       * optimistic flip on failure. No-op for guests (wishlist is user-scoped on
+       * the server — there's no local wishlist like the guest cart).
+       *
+       * Uses graphqlFetchWithRetry (not repairCall) to keep the store free of
+       * the store→repairAuthedApi→store circular import — same pattern as
+       * addToCart / syncCart. We DON'T reconcile against the server's `{added}`
+       * boolean: the optimistic flip already matches, and the next syncWishlist
+       * is the reconciler. Resolves to the new wishlisted boolean.
+       */
+      async toggleWishlist(productId) {
+        const pid = Number(productId);
+        if (!Number.isFinite(pid)) throw new Error("Invalid item");
+        if (!get().authInfo.isLoggedIn) return false;
+
+        const willAdd = !get().wishlistInfo.productIds.includes(pid);
+        get().toggleWishlistItem(pid); // optimistic
+        try {
+          await graphqlFetchWithRetry(
+            "myAppToggleWishlist",
+            { productId: pid },
+            {
+              getToken: () => get().authInfo.token,
+              refresh: () => get().refreshAuth(),
+              isQuery: false,
+            }
+          );
+          return willAdd;
+        } catch (err) {
+          get().toggleWishlistItem(pid); // revert
+          const raw = String(err?.message || "");
+          const clean = raw.replace(/^repairClientApi \S+:\s*/, "");
+          throw new Error(clean || "Couldn’t update wishlist. Please try again.");
+        }
       },
 
       clearWishlist() {

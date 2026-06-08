@@ -34,7 +34,7 @@ function HeartIcon({ size = 14, color = "#11191f", filled = true }) {
   );
 }
 
-function MobileWishlistCard({ item }) {
+function MobileWishlistCard({ item, onRemove }) {
   return (
     <article
       className="flex w-full flex-col gap-4 rounded bg-white p-4"
@@ -93,8 +93,9 @@ function MobileWishlistCard({ item }) {
 
         <button
           type="button"
+          onClick={onRemove}
           aria-label={`Remove ${item.productName} from wishlist`}
-          className="grid size-8 shrink-0 place-items-center rounded-[2.667px] bg-white/80 backdrop-blur-[2px]"
+          className="grid size-8 shrink-0 place-items-center rounded-[2.667px] bg-white/80 backdrop-blur-[2px] transition-opacity hover:opacity-80"
           style={{ border: "0.7px solid #11191f" }}
         >
           <HeartIcon size={14} color="#11191f" />
@@ -107,7 +108,7 @@ function MobileWishlistCard({ item }) {
       {/* CTA row */}
       <div className="flex w-full items-start gap-2">
         <Link
-          href="/cart"
+          href={`/products/${item.productSlug ?? ""}`}
           className="flex h-8 flex-1 items-center justify-center rounded-[2px] border border-[#11191f] p-2 font-display text-[10px] font-bold uppercase text-[#11191f]"
         >
           Add to Cart
@@ -123,7 +124,7 @@ function MobileWishlistCard({ item }) {
   );
 }
 
-function DesktopWishlistCard({ item }) {
+function DesktopWishlistCard({ item, onRemove }) {
   return (
     <article
       className="flex w-full flex-col gap-5 rounded bg-white p-[21px]"
@@ -175,8 +176,9 @@ function DesktopWishlistCard({ item }) {
 
           <button
             type="button"
+            onClick={onRemove}
             aria-label={`Remove ${item.productName} from wishlist`}
-            className="grid size-9 shrink-0 place-items-center rounded p-px"
+            className="grid size-9 shrink-0 place-items-center rounded p-px transition-opacity hover:opacity-80"
             style={{ border: "1px solid #e5e7eb" }}
           >
             <HeartIcon size={14} color="#11191f" />
@@ -190,7 +192,7 @@ function DesktopWishlistCard({ item }) {
       {/* CTA row */}
       <div className="flex w-full items-start justify-center gap-3 pt-[1px]">
         <Link
-          href="/cart"
+          href={`/products/${item.productSlug ?? ""}`}
           className="flex flex-1 items-center justify-center rounded border border-[#11191f] px-[9px] py-[13px] font-display text-[11px] leading-[16.5px] font-bold uppercase text-[#11191f]"
           style={{ letterSpacing: "0.55px" }}
         >

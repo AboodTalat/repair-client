@@ -4,19 +4,20 @@ import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useRef, useState } from "react";
-import { useRepairStore, selectIsLoggedIn } from "@/lib/useRepairStore";
+import { useRepairStore, selectIsLoggedIn, selectUser } from "@/lib/useRepairStore";
 import { repairCall } from "@/lib/repairAuthedApi";
 import { buildSignInRedirect } from "@/lib/authRedirect";
 import ProductGrid from "@/components/customer/shop/ProductGrid";
+import AddedToCartBanner from "@/components/customer/shop/AddedToCartBanner";
 
 // Inline SVGs — Figma asset URLs expire in 7 days; these approximate the icons.
 
-function HeartIcon() {
+function HeartIcon({ filled = true }) {
   return (
     <svg viewBox="0 0 32 32" fill="none" width={32} height={32} aria-hidden="true">
       <path
         d="M16.4959 23.048C16.2239 23.144 15.7759 23.144 15.5039 23.048C13.1839 22.256 7.99992 18.952 7.99992 13.352C7.99992 10.88 9.99192 8.87999 12.4479 8.87999C13.9039 8.87999 15.1919 9.58399 15.9999 10.672C16.8079 9.58399 18.1039 8.87999 19.5519 8.87999C22.0079 8.87999 23.9999 10.88 23.9999 13.352C23.9999 18.952 18.8159 22.256 16.4959 23.048Z"
-        fill="#11191F"
+        fill={filled ? "#11191F" : "none"}
         stroke="#11191F"
         strokeWidth="1.2"
         strokeLinecap="round"
@@ -170,6 +171,16 @@ export default function ProductPageClient({ product }) {
   // signed-in shoppers; guests don't see it (same rule applied wherever the
   // wishlist affordance appears).
   const isLoggedIn = useRepairStore(selectIsLoggedIn);
+  const user = useRepairStore(selectUser);
+  // Wishlist is a customer-only feature — the heart only renders for a signed-in
+  // customer (admins / delivery / accounting roles don't wishlist storefront
+  // products). `isWishlisted` reads the persisted heart state; ids are kept as
+  // Numbers store-side so the includes() check matches product.id.
+  const canWishlist = isLoggedIn && user?.role === "customer";
+  const isWishlisted = useRepairStore((s) =>
+    s.wishlistInfo.productIds.includes(Number(product.id))
+  );
+  const [wishBusy, setWishBusy] = useState(false);
   const router = useRouter();
   const [activeImage, setActiveImage] = useState(0);
   const [selectedColor, setSelectedColor] = useState(0);
@@ -177,6 +188,13 @@ export default function ProductPageClient({ product }) {
   const [qty, setQty] = useState(1);
   // "Notify when available" stock-alert state. status: idle | loading | done | error.
   const [notify, setNotify] = useState({ status: "idle", message: "" });
+  // Add-to-cart / buy-now state. `addBusy` disables both CTAs during the round
+  // trip (double-submit guard); `addError` surfaces the server message (e.g.
+  // "Only 2 in stock") or a "Select a size first" prompt; `cartBanner` drives
+  // the top "Item added to cart" toast on success.
+  const [addBusy, setAddBusy] = useState(false);
+  const [addError, setAddError] = useState("");
+  const [cartBanner, setCartBanner] = useState(false);
   const [dragOffset, setDragOffset] = useState(0);
   const touchStartX = useRef(null);
   const trackWidthRef = useRef(0);
@@ -235,13 +253,23 @@ export default function ProductPageClient({ product }) {
   function selectColor(i) {
     setSelectedColor(i);
     setActiveImage(0);
-    // Stock-alert feedback is per-variant; clear it when the variant changes.
+    // Stock-alert + add-to-cart feedback are per-variant; clear on change.
     setNotify({ status: "idle", message: "" });
+    setAddError("");
+    // Clamp qty to the new color's stock for the current size (if any).
+    const cid = product.colors?.[i]?.id;
+    const stock =
+      selectedSize != null ? product.stockByColorSize?.[cid]?.[selectedSize] : null;
+    if (typeof stock === "number" && stock > 0) setQty((q) => Math.min(q, stock));
   }
 
   function chooseSize(s) {
     setSelectedSize(s);
     setNotify({ status: "idle", message: "" });
+    setAddError("");
+    // Clamp qty to the chosen size's remaining stock for the active color.
+    const stock = product.stockByColorSize?.[activeColorId]?.[s];
+    if (typeof stock === "number" && stock > 0) setQty((q) => Math.min(q, stock));
   }
 
   // Low-stock banner (store-wide rule). Reflects the SELECTED size's variant
@@ -268,6 +296,18 @@ export default function ProductPageClient({ product }) {
   const outOfStock =
     product.outOfStock ||
     (selectedSize != null && activeColorId != null && !(selectedStock > 0));
+
+  // Cap the quantity stepper at the selected variant's remaining stock, so a
+  // shopper can only add what's actually available (down to the last one) and
+  // the add never fails on "Only N in stock". Null until a size is picked (no
+  // variant resolved yet) — the stepper is unbounded then, and the add path
+  // still validates server-side. `incQty` clamps the desktop "+" button; the
+  // mobile CtaRow gets `maxQty` and clamps its own.
+  const maxQty =
+    typeof selectedStock === "number" && selectedStock > 0 ? selectedStock : null;
+  function incQty() {
+    setQty((q) => (maxQty != null ? Math.min(maxQty, q + 1) : q + 1));
+  }
 
   // Stock-alert subscribe ("Notify when available"). The server keys alerts per
   // VARIANT (product_variant_id), so we resolve the selected color+size to its
@@ -322,6 +362,77 @@ export default function ProductPageClient({ product }) {
     }
   }
 
+  // Build a full cart line from the current selections (mirrors a myAppGetCart
+  // line + the AddToCartDrawer payload) so the store can persist it for a guest
+  // AND the cart page renders both modes with one shape. Size is tracked as a
+  // name on this page (see shopCatalog mapDetailToProduct) — only the variant id
+  // and the display names matter, so size.id stays null.
+  function buildCartLine() {
+    const c = product.colors?.[selectedColor];
+    return {
+      variantId: selectedVariantId,
+      quantity: qty,
+      product: {
+        id: product.id,
+        name: product.name,
+        base_price: product.price,
+        effective_price: product.salePrice ?? product.price,
+      },
+      color: c ? { id: c.id, name: c.name, hex_code: c.hex } : null,
+      size: selectedSize != null ? { id: null, name: selectedSize } : null,
+      image_url: galleryImages?.[activeIdx] || product.images?.[0] || null,
+      currency: product.currency,
+    };
+  }
+
+  // Add-to-cart (and Buy Now, which adds then routes to /cart — the wired cart
+  // surface; /checkout/* is still mock). Guests persist to localStorage, signed-
+  // in shoppers hit myAppAddToCart (server stock-checks under FOR UPDATE) — the
+  // store's addToCart picks the path. Stock is the server's call, so a stale
+  // selection surfaces as an inline "Only N in stock" message.
+  async function handleAddToCart({ buyNow = false } = {}) {
+    if (addBusy || outOfStock) return; // CTAs are disabled in these states anyway
+    if (selectedSize == null) {
+      setAddError("Select a size first.");
+      return;
+    }
+    if (selectedVariantId == null) {
+      setAddError("That option isn't available.");
+      return;
+    }
+    setAddBusy(true);
+    setAddError("");
+    try {
+      await useRepairStore.getState().addToCart(buildCartLine());
+      if (buyNow) {
+        router.push("/cart");
+        return;
+      }
+      setCartBanner(true);
+    } catch (err) {
+      // addToCart rejects with a clean server message (e.g. "Only 2 in stock").
+      setAddError(err?.message || "Couldn’t add to cart. Please try again.");
+    } finally {
+      setAddBusy(false);
+    }
+  }
+
+  // Heart toggle — adds/removes this product from the signed-in customer's
+  // wishlist (persisted server-side via the store). Optimistic with a small
+  // in-flight guard so rapid clicks don't race; errors are swallowed (the store
+  // already reverts the optimistic flip on failure).
+  async function handleToggleWishlist() {
+    if (wishBusy || !canWishlist) return;
+    setWishBusy(true);
+    try {
+      await useRepairStore.getState().toggleWishlist(product.id);
+    } catch {
+      /* store reverted the optimistic flip; nothing more to surface here */
+    } finally {
+      setWishBusy(false);
+    }
+  }
+
   // Label for the out-of-stock secondary CTA, reflecting the subscribe state.
   const notifyLabel =
     notify.status === "loading"
@@ -370,6 +481,7 @@ export default function ProductPageClient({ product }) {
 
   return (
     <div className="flex flex-col bg-white">
+      <AddedToCartBanner visible={cartBanner} onDismiss={() => setCartBanner(false)} />
 
       {/* ── Mobile: image carousel ─────────────────────────────────── */}
       <section className="md:hidden px-4 pt-4">
@@ -424,12 +536,15 @@ export default function ProductPageClient({ product }) {
           </div>
 
           {/* Wishlist button — overlay image bottom-right, per Figma.
-              Only shown to signed-in users (wishlist is user-scoped). */}
-          {isLoggedIn && (
+              Only shown to signed-in customers (wishlist is customer-scoped). */}
+          {canWishlist && (
             <button
               type="button"
-              aria-label="Add to wishlist"
-              className="absolute bottom-3 right-3 grid place-items-center text-[#11191f] rounded-[2.667px]"
+              aria-label={isWishlisted ? "Remove from wishlist" : "Add to wishlist"}
+              aria-pressed={isWishlisted}
+              onClick={handleToggleWishlist}
+              disabled={wishBusy}
+              className="absolute bottom-3 right-3 grid place-items-center text-[#11191f] rounded-[2.667px] transition-opacity disabled:opacity-60"
               style={{
                 width: 32,
                 height: 32,
@@ -440,7 +555,7 @@ export default function ProductPageClient({ product }) {
                 outlineOffset: "-0.4px",
               }}
             >
-              <HeartIcon />
+              <HeartIcon filled={isWishlisted} />
             </button>
           )}
         </div>
@@ -536,6 +651,31 @@ export default function ProductPageClient({ product }) {
                 />
               ))}
             </div>
+
+            {/* Wishlist button (desktop) — no Figma node for this; mirrors the
+                mobile glass treatment, bottom-right of the main image, so a
+                signed-in customer can wishlist from the desktop hero too. */}
+            {canWishlist && (
+              <button
+                type="button"
+                aria-label={isWishlisted ? "Remove from wishlist" : "Add to wishlist"}
+                aria-pressed={isWishlisted}
+                onClick={handleToggleWishlist}
+                disabled={wishBusy}
+                className="absolute bottom-4 right-4 grid place-items-center rounded-[4px] text-[#11191f] transition-opacity disabled:opacity-60"
+                style={{
+                  width: 40,
+                  height: 40,
+                  backgroundColor: "rgba(255,255,255,0.35)",
+                  backdropFilter: "blur(2px)",
+                  WebkitBackdropFilter: "blur(2px)",
+                  outline: "0.5px solid rgba(255,255,255,0.7)",
+                  outlineOffset: "-0.5px",
+                }}
+              >
+                <HeartIcon filled={isWishlisted} />
+              </button>
+            )}
           </div>
         </div>
 
@@ -641,33 +781,34 @@ export default function ProductPageClient({ product }) {
                   <button
                     type="button"
                     aria-label="Increase quantity"
-                    disabled={outOfStock}
-                    onClick={() => setQty((q) => q + 1)}
-                    className={`flex w-8 self-stretch items-center justify-center ${outOfStock ? "cursor-not-allowed" : "cursor-pointer"}`}
+                    disabled={outOfStock || (maxQty != null && qty >= maxQty)}
+                    onClick={incQty}
+                    className={`flex w-8 self-stretch items-center justify-center ${outOfStock || (maxQty != null && qty >= maxQty) ? "cursor-not-allowed" : "cursor-pointer"}`}
                   >
                     <PlusIcon color="#11191f" />
                   </button>
                 </div>
                 <button
                   type="button"
-                  disabled={outOfStock}
+                  disabled={outOfStock || addBusy}
                   aria-disabled={outOfStock || undefined}
-                  className={`flex h-12 flex-1 flex-col items-center justify-center bg-[#11191f] py-3.5 ${outOfStock ? "opacity-50 cursor-not-allowed" : "cursor-pointer"}`}
+                  onClick={outOfStock ? undefined : () => handleAddToCart({ buyNow: true })}
+                  className={`flex h-12 flex-1 flex-col items-center justify-center bg-[#11191f] py-3.5 ${outOfStock || addBusy ? "opacity-50 cursor-not-allowed" : "cursor-pointer"}`}
                 >
                   <span className="font-display text-[14px] font-bold uppercase leading-5 tracking-wide text-white">
-                    {outOfStock ? "Out of Stock" : "Buy Now"}
+                    {outOfStock ? "Out of Stock" : addBusy ? "Processing…" : "Buy Now"}
                   </span>
                 </button>
               </div>
               <button
                 type="button"
-                onClick={outOfStock ? handleNotify : undefined}
-                disabled={outOfStock && notify.status === "loading"}
-                className={`flex h-12 w-full flex-col items-center justify-center py-3 ${outOfStock && notify.status === "loading" ? "cursor-wait opacity-60" : "cursor-pointer"}`}
+                onClick={outOfStock ? handleNotify : () => handleAddToCart()}
+                disabled={outOfStock ? notify.status === "loading" : addBusy}
+                className={`flex h-12 w-full flex-col items-center justify-center py-3 ${(outOfStock ? notify.status === "loading" : addBusy) ? "cursor-wait opacity-60" : "cursor-pointer"}`}
                 style={{ outline: "1px solid #11191f", outlineOffset: "-1px" }}
               >
                 <span className="font-display text-[14px] font-bold uppercase leading-5 tracking-wide text-[#11191f]">
-                  {outOfStock ? notifyLabel : "Add to Cart"}
+                  {outOfStock ? notifyLabel : addBusy ? "Adding…" : "Add to Cart"}
                 </span>
               </button>
               {outOfStock && notify.message ? (
@@ -677,6 +818,15 @@ export default function ProductPageClient({ product }) {
                   role="status"
                 >
                   {notify.message}
+                </p>
+              ) : null}
+              {!outOfStock && addError ? (
+                <p
+                  className="font-display text-[12px] leading-4"
+                  style={{ color: "#dc2626" }}
+                  role="status"
+                >
+                  {addError}
                 </p>
               ) : null}
             </div>
@@ -794,6 +944,11 @@ export default function ProductPageClient({ product }) {
           onNotify={handleNotify}
           notify={notify}
           notifyLabel={notifyLabel}
+          onAddToCart={() => handleAddToCart()}
+          onBuyNow={() => handleAddToCart({ buyNow: true })}
+          addBusy={addBusy}
+          addError={addError}
+          maxQty={maxQty}
         />
 
         {/* Description — only when the admin provided one (mirrors the desktop
@@ -1308,6 +1463,11 @@ function CtaRow({
   onNotify,
   notify = { status: "idle", message: "" },
   notifyLabel = "Notify When Available",
+  onAddToCart,
+  onBuyNow,
+  addBusy = false,
+  addError = "",
+  maxQty = null,
 }) {
   // `size="lg"` matches Figma desktop hero (2119:2567): 48px-tall stepper +
   // 48px-tall buttons, 128px-wide stepper, 16px button text. Default "sm"
@@ -1344,32 +1504,33 @@ function CtaRow({
           <button
             type="button"
             aria-label="Increase quantity"
-            disabled={outOfStock}
-            onClick={() => setQty((q) => q + 1)}
-            className={`grid ${btnSquare} shrink-0 place-items-center rounded-[2px] border border-[#11191f] ${outOfStock ? "cursor-not-allowed" : "cursor-pointer"}`}
+            disabled={outOfStock || (maxQty != null && qty >= maxQty)}
+            onClick={() => setQty((q) => (maxQty != null ? Math.min(maxQty, q + 1) : q + 1))}
+            className={`grid ${btnSquare} shrink-0 place-items-center rounded-[2px] border border-[#11191f] ${outOfStock || (maxQty != null && qty >= maxQty) ? "cursor-not-allowed" : "cursor-pointer"}`}
           >
             <PlusIcon color="#11191f" />
           </button>
         </div>
         <button
           type="button"
-          disabled={outOfStock}
+          disabled={outOfStock || addBusy}
           aria-disabled={outOfStock || undefined}
-          className={`flex flex-1 ${rowH} items-center justify-center rounded-[4px] bg-[#11191f] px-2 ${outOfStock ? "opacity-50 cursor-not-allowed" : "cursor-pointer"}`}
+          onClick={outOfStock ? undefined : onBuyNow}
+          className={`flex flex-1 ${rowH} items-center justify-center rounded-[4px] bg-[#11191f] px-2 ${outOfStock || addBusy ? "opacity-50 cursor-not-allowed" : "cursor-pointer"}`}
         >
           <span className={`font-display ${buyText} font-bold leading-none text-white whitespace-nowrap`}>
-            {outOfStock ? "OUT OF STOCK" : "BUY NOW"}
+            {outOfStock ? "OUT OF STOCK" : addBusy ? "PROCESSING…" : "BUY NOW"}
           </span>
         </button>
       </div>
       <button
         type="button"
-        onClick={outOfStock ? onNotify : undefined}
-        disabled={outOfStock && notify.status === "loading"}
-        className={`flex ${rowH} w-full items-center justify-center rounded-[2px] border border-[#11191f] ${outOfStock && notify.status === "loading" ? "cursor-wait opacity-60" : "cursor-pointer"}`}
+        onClick={outOfStock ? onNotify : onAddToCart}
+        disabled={outOfStock ? notify.status === "loading" : addBusy}
+        className={`flex ${rowH} w-full items-center justify-center rounded-[2px] border border-[#11191f] ${(outOfStock ? notify.status === "loading" : addBusy) ? "cursor-wait opacity-60" : "cursor-pointer"}`}
       >
         <span className={`font-display ${cartText} font-bold uppercase leading-none text-[#11191f]`}>
-          {outOfStock ? notifyLabel : "ADD TO CART"}
+          {outOfStock ? notifyLabel : addBusy ? "ADDING…" : "ADD TO CART"}
         </span>
       </button>
       {outOfStock && notify.message ? (
@@ -1379,6 +1540,15 @@ function CtaRow({
           role="status"
         >
           {notify.message}
+        </p>
+      ) : null}
+      {!outOfStock && addError ? (
+        <p
+          className="font-display text-[10px] leading-3"
+          style={{ color: "#dc2626" }}
+          role="status"
+        >
+          {addError}
         </p>
       ) : null}
     </div>

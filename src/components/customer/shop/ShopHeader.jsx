@@ -45,6 +45,9 @@ export default function ShopHeader({ categories = [] }) {
   const cartCount = useRepairStore(selectCartCount);
   // Stakeholders get their console home; customers + guests get /account.
   const accountHref = accountHrefForRole(user?.role);
+  // Wishlist is a customer-only surface — show its shortcut only to signed-in
+  // customers (admins / delivery / accounting don't wishlist storefront items).
+  const canWishlist = isAuthenticated && user?.role === "customer";
 
   // Which category / sub-category is currently being browsed (from the /shop
   // query params). Drives the "chosen = black, others dimmed" treatment in the
@@ -82,7 +85,9 @@ export default function ShopHeader({ categories = [] }) {
       // handles small screens, so skip the check there.
       if (!bar || !mnav || bar.clientWidth === 0) return;
       const PADDING = 64; // px-8 left + right (clientWidth includes padding)
-      const RIGHT_RESERVE = 190; // search + bag + account + logout icon cluster + gaps
+      // search + bag + account + logout icon cluster + gaps; +44 for the
+      // wishlist heart when it's shown (one 20px icon + a gap-6).
+      const RIGHT_RESERVE = 190 + (canWishlist ? 44 : 0);
       const LOGO_RESERVE = hideDesktopLogo ? 0 : 88; // centered logo lane
       const GAP = 24; // breathing room so labels never touch
       const available = bar.clientWidth - PADDING;
@@ -100,7 +105,7 @@ export default function ShopHeader({ categories = [] }) {
       ro.disconnect();
       window.removeEventListener("resize", measure);
     };
-  }, [categories, hideDesktopLogo]);
+  }, [categories, hideDesktopLogo, canWishlist]);
 
   const handleSignOut = async () => {
     const refreshToken = useRepairStore.getState().authInfo.refreshToken;
@@ -164,6 +169,28 @@ export default function ShopHeader({ categories = [] }) {
           </span>
         )}
       </Link>
+
+      {/* Wishlist — customer-only shortcut to /account/wishlist */}
+      {canWishlist && (
+        <Link
+          href="/account/wishlist"
+          aria-label="Wishlist"
+          className="grid size-5 place-items-center"
+        >
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.6"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className="size-5 text-[#11191f]"
+            aria-hidden
+          >
+            <path d="M12 21s-7.5-4.5-9.5-9A5.5 5.5 0 0 1 12 6a5.5 5.5 0 0 1 9.5 6c-2 4.5-9.5 9-9.5 9z" />
+          </svg>
+        </Link>
+      )}
 
       {isAuthenticated ? (
         <>
