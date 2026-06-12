@@ -202,6 +202,18 @@ const initialCheckoutInfo = {
 
 let _refreshInFlight = null;
 
+// ─── Guest-cart merge lock (module-level, NOT in Zustand state) ───────────────
+//
+// Holds the in-flight `mergeGuestCartThenSync()` promise while a freshly-logged-
+// in user's guest lines are being pushed into the DB cart. The /cart page reads
+// it via `awaitCartMerge()` and waits for it before its first `myAppGetCart`, so
+// the cart never renders the pre-existing DB cart a beat BEFORE the just-added
+// guest product has landed (the login forms fire the merge fire-and-forget and
+// redirect immediately, so without this the fetch races the merge). Null when no
+// merge is running → `awaitCartMerge()` resolves immediately and the fetch runs
+// without delay.
+let _cartMergeInFlight = null;
+
 // ─── JWT exp helper ───────────────────────────────────────────────────────────
 //
 // Reads the `exp` claim from a JWT WITHOUT verifying the signature — the
@@ -661,28 +673,47 @@ export const useRepairStore = create(
        * order above is preserved regardless.
        */
       async mergeGuestCartThenSync() {
-        const items = get().guestCart.items;
-        if (items.length) {
-          get().setCartCount(sumGuestQty(items)); // seed → no blink
-          await Promise.all(
-            items.map((it) =>
-              graphqlFetchWithRetry(
-                "myAppAddToCart",
-                {
-                  productVariantId: Number(it.product_variant_id),
-                  quantity: Number(it.quantity) || 1,
-                },
-                {
-                  getToken: () => get().authInfo.token,
-                  refresh: () => get().refreshAuth(),
-                  isQuery: false,
-                }
-              ).catch(() => null) // sold out / gone at merge time — skip the line
-            )
-          );
+        // Wrap the merge in a module-level promise the /cart page can await
+        // (awaitCartMerge) so its first myAppGetCart runs AFTER the guest lines
+        // have landed in the DB — callers fire this fire-and-forget and redirect
+        // immediately, so the cart fetch would otherwise race the pushes. The
+        // synchronous `setCartCount` seed below still runs before the first
+        // await (the IIFE executes synchronously up to `await Promise.all`), so
+        // the badge never blinks N→0→N and `_cartMergeInFlight` is always set
+        // before this function suspends.
+        const run = (async () => {
+          const items = get().guestCart.items;
+          if (items.length) {
+            get().setCartCount(sumGuestQty(items)); // seed → no blink
+            await Promise.all(
+              items.map((it) =>
+                graphqlFetchWithRetry(
+                  "myAppAddToCart",
+                  {
+                    productVariantId: Number(it.product_variant_id),
+                    quantity: Number(it.quantity) || 1,
+                  },
+                  {
+                    getToken: () => get().authInfo.token,
+                    refresh: () => get().refreshAuth(),
+                    isQuery: false,
+                  }
+                ).catch(() => null) // sold out / gone at merge time — skip the line
+              )
+            );
+          }
+          set({ guestCart: { items: [] } }); // invariant: logged-in ⇒ no guest cart
+          // Badge reconcile — fire-and-forget so the merge promise resolves the
+          // moment the DB cart is complete (the point the /cart fetch waits for),
+          // not after a second round-trip.
+          get().syncCart();
+        })();
+        _cartMergeInFlight = run;
+        try {
+          await run;
+        } finally {
+          if (_cartMergeInFlight === run) _cartMergeInFlight = null;
         }
-        set({ guestCart: { items: [] } }); // invariant: logged-in ⇒ no guest cart
-        get().syncCart();
       },
 
       // ── Wishlist actions ───────────────────────────────────────────────────
@@ -994,3 +1025,13 @@ export const selectCheckoutInfo = (s) => s.checkoutInfo;
 export const selectAppliedPromoCode = (s) => s.checkoutInfo.appliedPromoCode;
 export const selectLastPlacedOrder = (s) => s.lastOrder;
 export const selectSessionExpired = (s) => s.sessionExpired;
+
+// Resolves once any in-flight guest-cart merge (mergeGuestCartThenSync) has
+// pushed its lines into the DB and cleared the guest cart. The /cart page awaits
+// this before its first myAppGetCart so a just-signed-in user sees the merged
+// cart (their pre-existing DB lines + the product they added as a guest) instead
+// of racing the merge. Resolves immediately when no merge is running. Never
+// rejects — a failed merge must not strand the cart page in its loading state.
+export function awaitCartMerge() {
+  return (_cartMergeInFlight ?? Promise.resolve()).catch(() => {});
+}

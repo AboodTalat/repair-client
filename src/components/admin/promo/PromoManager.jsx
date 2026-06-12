@@ -61,6 +61,8 @@ function toUiRow(it) {
     used: Number(it.used_count),
     expires: isoToDateInput(it.expires_at),
     active: !!it.is_active,
+    // Advertised as an example chip on the storefront /cart page.
+    showOnCart: !!it.show_on_cart,
   };
 }
 
@@ -83,6 +85,7 @@ function toWirePayload(draft) {
     usage_limit: limitNum && limitNum > 0 ? limitNum : null,
     expires_at: draft.expires ? draft.expires : null,
     is_active: !!draft.active,
+    show_on_cart: !!draft.showOnCart,
   };
   if (draft.id) payload.id = Number(draft.id);
   return payload;
@@ -234,6 +237,7 @@ export default function PromoManager() {
               usageLimit: "",
               expires: "",
               active: true,
+              showOnCart: false,
             })
           }
         >
@@ -263,6 +267,15 @@ export default function PromoManager() {
                     <IconCopy />
                   </span>
                 </button>
+                {r.showOnCart ? (
+                  <span
+                    className="rounded-full px-2 py-0.5 font-body text-[10px] font-medium uppercase tracking-[0.5px] text-[#1d4ed8]"
+                    style={{ backgroundColor: "#eff6ff" }}
+                    title="Shown as an example chip on the storefront cart"
+                  >
+                    On cart
+                  </span>
+                ) : null}
               </div>
             ),
           },
@@ -594,6 +607,20 @@ function PromoDrawer({ editing, onClose, onSave, onRegen }) {
               </p>
             </div>
             <Toggle checked={!!draft?.active} onChange={(v) => setDraft((d) => ({ ...d, active: v }))} />
+          </div>
+
+          <div className="flex items-center justify-between rounded-[2px] border border-[#e5e7eb] bg-[#fafafa] p-3">
+            <div>
+              <p className="font-body text-[13px] font-medium text-[#11191f]">Show on cart as example</p>
+              <p className="font-body text-[11px] text-[#6b7280]">
+                Displays this code as a tappable example chip on the storefront cart. Only shown
+                while the code is active, not expired, and under its usage limit.
+              </p>
+            </div>
+            <Toggle
+              checked={!!draft?.showOnCart}
+              onChange={(v) => setDraft((d) => ({ ...d, showOnCart: v }))}
+            />
           </div>
 
           {draft?.id ? (

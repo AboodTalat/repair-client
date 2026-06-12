@@ -293,7 +293,6 @@ function ExpressShippingCard({ shipping }) {
 function TaxRateCard({ tax }) {
   const [rate, setRate] = useState(() => String(tax?.rate ?? 0));
   const [inclusive, setInclusive] = useState(() => !!tax?.inclusive);
-  const [appliesShipping, setAppliesShipping] = useState(() => !!tax?.applies_to_shipping);
   const [saved, setSaved] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -309,7 +308,7 @@ function TaxRateCard({ tax }) {
     try {
       await repairCall(
         "myAppAdminUpdateTaxSettings",
-        { rate: val, inclusive, applies_to_shipping: appliesShipping },
+        { rate: val, inclusive },
         { isQuery: false }
       );
       setSaved(true);
@@ -330,7 +329,7 @@ function TaxRateCard({ tax }) {
         Rate
       </p>
       <p className="mb-3 font-body text-[12px] text-[#6b7280]">
-        Percentage of the order subtotal (and shipping, if enabled below).
+        Percentage of the order subtotal.
       </p>
       <div className="flex items-center gap-3">
         <PctInput
@@ -346,17 +345,17 @@ function TaxRateCard({ tax }) {
         <p className="mt-1.5 font-body text-[11px] text-[#dc2626]">{error}</p>
       ) : null}
 
-      <div className="mt-5 flex flex-col gap-3 border-t border-[#f3f4f6] pt-4">
+      <div className="mt-5 flex flex-col gap-2 border-t border-[#f3f4f6] pt-4">
         <Toggle
           checked={inclusive}
           onChange={(v) => { setInclusive(v); setSaved(false); }}
           label="Prices include tax (tax-inclusive display)"
         />
-        <Toggle
-          checked={appliesShipping}
-          onChange={(v) => { setAppliesShipping(v); setSaved(false); }}
-          label="Apply tax on shipping fees"
-        />
+        <p className="font-body text-[12px] leading-[18px] text-[#6b7280]">
+          {inclusive
+            ? "On: your product prices already include tax, so nothing extra is added at checkout — the total stays the price the customer sees. The cart shows the tax portion already contained in the price (for the receipt), not an added charge."
+            : "Off: prices are tax-exclusive. Tax is calculated on the subtotal and added on top at checkout, so the total is higher than the listed prices."}
+        </p>
       </div>
     </SettingsCard>
   );

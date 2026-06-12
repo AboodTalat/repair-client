@@ -87,6 +87,11 @@ function DrawerBody({ onClose, onSubmit, dataState, initial }) {
   const editing = !!initial;
   const [label, setLabel] = useState(initial?.label ?? "");
   const [kind, setKind] = useState(initial?.kind ?? "home");
+  // Recipient name + phone — required by the backend (myAppAddAddress rejects an
+  // address missing full_name/phone). `full_name` accepts the mock `fullName`
+  // alias too so an edit pre-fills regardless of which side built the row.
+  const [fullName, setFullName] = useState(initial?.full_name ?? initial?.fullName ?? "");
+  const [phone, setPhone] = useState(initial?.phone ?? "");
   const [country, setCountry] = useState(initial?.country ?? "");
   const [city, setCity] = useState(initial?.city ?? "");
   const [neighborhood, setNeighborhood] = useState(initial?.neighborhood ?? "");
@@ -97,6 +102,8 @@ function DrawerBody({ onClose, onSubmit, dataState, initial }) {
   // Apartment is optional — title + every other field must be non-empty.
   const valid =
     label.trim().length > 0 &&
+    fullName.trim().length > 0 &&
+    phone.trim().length > 0 &&
     country.trim().length > 0 &&
     city.trim().length > 0 &&
     neighborhood.trim().length > 0 &&
@@ -109,6 +116,8 @@ function DrawerBody({ onClose, onSubmit, dataState, initial }) {
     onSubmit?.({
       label: label.trim(),
       kind,
+      full_name: fullName.trim(),
+      phone: phone.trim(),
       country: country.trim(),
       city: city.trim(),
       neighborhood: neighborhood.trim(),
@@ -144,6 +153,10 @@ function DrawerBody({ onClose, onSubmit, dataState, initial }) {
           setLabel={setLabel}
           kind={kind}
           setKind={setKind}
+          fullName={fullName}
+          setFullName={setFullName}
+          phone={phone}
+          setPhone={setPhone}
           country={country}
           setCountry={setCountry}
           city={city}
@@ -183,6 +196,10 @@ function DrawerBody({ onClose, onSubmit, dataState, initial }) {
           setLabel={setLabel}
           kind={kind}
           setKind={setKind}
+          fullName={fullName}
+          setFullName={setFullName}
+          phone={phone}
+          setPhone={setPhone}
           country={country}
           setCountry={setCountry}
           city={city}
@@ -262,6 +279,10 @@ function AddressForm({
   setLabel,
   kind,
   setKind,
+  fullName,
+  setFullName,
+  phone,
+  setPhone,
   country,
   setCountry,
   city,
@@ -289,6 +310,25 @@ function AddressForm({
         aria-label="Address title"
       />
       <KindPicker kind={kind} setKind={setKind} height={inputHeight} fontSize={fontSize} />
+      <DrawerInput
+        value={fullName}
+        onChange={setFullName}
+        placeholder="Recipient Full Name"
+        autoComplete="name"
+        height={inputHeight}
+        fontSize={fontSize}
+        aria-label="Recipient full name"
+      />
+      <DrawerInput
+        value={phone}
+        onChange={setPhone}
+        placeholder="Phone Number"
+        autoComplete="tel"
+        inputMode="tel"
+        height={inputHeight}
+        fontSize={fontSize}
+        aria-label="Phone number"
+      />
       <DrawerInput
         value={country}
         onChange={setCountry}

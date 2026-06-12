@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import Image from "next/image";
 import {
@@ -8,12 +8,13 @@ import {
   CHECKOUT_ADDRESSES,
   DEFAULT_PAYMENT_METHOD_ID,
   PAYMENT_METHODS,
-  PROMO_CODES,
   buildAddressLine,
+  calcSubtotal,
   calcTotals,
   formatJOD,
 } from "@/lib/mockCart";
 import {
+  BackStepLink,
   Icon,
   PaymentMethodsRow,
   PoliciesFootnote,
@@ -26,6 +27,13 @@ import {
 } from "./CartPageClient";
 import AddCardDrawer from "@/components/customer/account/AddCardDrawer";
 import AddAddressDrawer from "@/components/customer/account/AddAddressDrawer";
+import { useCommerceSettings } from "@/lib/useCommerceSettings";
+import { fetchCartPromoExamples, validatePromoCode } from "@/lib/promo";
+import {
+  useRepairStore,
+  selectAppliedPromoCode,
+  selectIsLoggedIn,
+} from "@/lib/useRepairStore";
 
 // /checkout/payment — Payment step (step 3 of cart → details → payment).
 // Matches Figma mobile 84:6733 + desktop 119:5877.
@@ -44,7 +52,6 @@ import AddAddressDrawer from "@/components/customer/account/AddAddressDrawer";
 // button is a no-op placeholder. Same for the place-order action: it just
 // alerts a success placeholder until the `myAppCheckout` mutation is wired.
 
-const DEFAULT_APPLIED_PROMO = PROMO_CODES.SUMMER25;
 
 // ──────────────────────────────────────────────────────────────────────
 // Small inline glyphs — same rationale as CheckoutDetailsClient.jsx
@@ -535,6 +542,9 @@ function TermsCheckbox({ checked, onChange, variant }) {
 
 function MobileOrderTotalCard({ totals, appliedPromo }) {
   const { subtotal, discount, shipping, tax, total, itemCount } = totals;
+  const taxInclusive = !!totals.taxInclusive;
+  const taxLabel = taxInclusive ? "Tax (included)" : "Tax (Estimated)";
+  const taxValue = taxInclusive ? totals.taxIncludedAmount ?? 0 : tax;
   return (
     <div
       className="inline-flex w-full flex-col items-start gap-4 p-4 outline outline-1"
@@ -550,7 +560,7 @@ function MobileOrderTotalCard({ totals, appliedPromo }) {
           value={shipping === 0 ? "Free" : formatJOD(shipping)}
           valueAccent={shipping === 0 ? "#16a34a" : undefined}
         />
-        <MobileRow label="Tax (Estimated)" value={formatJOD(tax)} />
+        <MobileRow label={taxLabel} value={formatJOD(taxValue)} />
         {discount > 0 ? (
           <div
             className="flex w-full items-center justify-between rounded-[8px] px-2 py-1"
@@ -650,6 +660,9 @@ function PaymentOrderSummaryCard({
   onPlaceOrder,
 }) {
   const { subtotal, discount, shipping, tax, total, itemCount } = totals;
+  const taxInclusive = !!totals.taxInclusive;
+  const taxLabel = taxInclusive ? "Tax (included)" : "Tax (Estimated)";
+  const taxValue = taxInclusive ? totals.taxIncludedAmount ?? 0 : tax;
   return (
     <div className="flex w-full flex-col gap-4 rounded-lg border border-[#f3f4f6] bg-[#f9fafb] p-6">
       <h3 className="w-full border-b border-[#e5e7eb] pb-4 font-display text-[16px] font-bold uppercase leading-6 tracking-[0.4px] text-[#11191f]">
@@ -673,7 +686,7 @@ function PaymentOrderSummaryCard({
           value={shipping === 0 ? "Free" : formatJOD(shipping)}
           valueAccent={shipping === 0 ? "#16a34a" : undefined}
         />
-        <DesktopRow label="Tax (Estimated)" value={formatJOD(tax)} />
+        <DesktopRow label={taxLabel} value={formatJOD(taxValue)} />
         {discount > 0 ? (
           <div
             className="flex w-full items-center justify-between rounded-[4px] p-2"
@@ -754,7 +767,36 @@ function PaymentOrderSummaryCard({
 export default function PaymentPageClient() {
   const router = useRouter();
   const [items] = useState(CART_ITEMS);
-  const [appliedPromo, setAppliedPromo] = useState(DEFAULT_APPLIED_PROMO);
+
+  // The applied promo lives in the store (checkoutInfo.appliedPromoCode), so it
+  // carries over from /cart + /checkout. Apply/clear validate against the
+  // backend (myAppValidatePromoCode) and write to the store — single source of
+  // truth, no local copy.
+  const appliedPromo = useRepairStore(selectAppliedPromoCode);
+  const isLoggedIn = useRepairStore(selectIsLoggedIn);
+
+  const applyPromo = async (code) => {
+    if (!isLoggedIn) return { ok: false, error: "Sign in to apply a promo code." };
+    const res = await validatePromoCode(code, calcSubtotal(items));
+    if (res.ok) useRepairStore.getState().applyPromoCode(res.promo);
+    return res;
+  };
+  const clearPromo = () => useRepairStore.getState().clearPromoCode();
+
+  // Live, admin-flagged example promo codes (same source as /cart). Fetched once
+  // at the page level and passed to both PromoCodeSection instances (mobile +
+  // desktop). Starts empty so no invalid mock codes flash; empty hides the row.
+  const [promoExamples, setPromoExamples] = useState([]);
+  useEffect(() => {
+    let active = true;
+    fetchCartPromoExamples().then((codes) => {
+      if (active) setPromoExamples(codes);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+
   const [paymentMethods, setPaymentMethods] = useState(PAYMENT_METHODS);
   const [selectedPaymentId, setSelectedPaymentId] = useState(DEFAULT_PAYMENT_METHOD_ID);
   const [termsAccepted, setTermsAccepted] = useState(false);
@@ -764,7 +806,13 @@ export default function PaymentPageClient() {
   const [addCardOpen, setAddCardOpen] = useState(false);
   const [editAddressOpen, setEditAddressOpen] = useState(false);
 
-  const totals = useMemo(() => calcTotals(items, appliedPromo), [items, appliedPromo]);
+  // Tax from the LIVE commerce settings (rate + inclusive), mirroring
+  // myAppCheckout; shipping stays the flat mock fee (separate task).
+  const settings = useCommerceSettings();
+  const totals = useMemo(
+    () => calcTotals(items, appliedPromo, settings?.tax),
+    [items, appliedPromo, settings],
+  );
 
   // AddCardDrawer.onSubmit yields `{ brand, last4, expiry, holder }`. Append
   // it as a `kind: "card"` row and auto-select it so the new card is the
@@ -821,6 +869,10 @@ export default function PaymentPageClient() {
           <Stepper activeStep="payment" />
         </div>
 
+        <div className="px-4 pt-4">
+          <BackStepLink activeStep="payment" />
+        </div>
+
         <div className="py-4">
           <PaymentMethodSection
             methods={paymentMethods}
@@ -845,9 +897,11 @@ export default function PaymentPageClient() {
 
         <PromoCodeSection
           appliedPromo={appliedPromo}
-          onApply={setAppliedPromo}
-          onClear={() => setAppliedPromo(null)}
+          onApplyCode={applyPromo}
+          onClear={clearPromo}
+          isGuest={!isLoggedIn}
           variant="mobile"
+          suggestedCodes={promoExamples}
         />
 
         <div className="mx-4 h-px bg-[#f3f4f6]" />
@@ -883,6 +937,7 @@ export default function PaymentPageClient() {
 
       {/* ============== DESKTOP LAYOUT ============== */}
       <div className="mx-auto hidden w-full max-w-[1440px] flex-col gap-12 px-8 pb-20 pt-12 md:flex">
+        <BackStepLink activeStep="payment" />
         <Stepper activeStep="payment" />
 
         <div className="flex flex-col items-stretch gap-12 lg:flex-row lg:items-start lg:justify-center">
@@ -910,9 +965,11 @@ export default function PaymentPageClient() {
           <aside className="flex w-full flex-col gap-6 lg:w-[426.66px] lg:shrink-0">
             <PromoCodeSection
               appliedPromo={appliedPromo}
-              onApply={setAppliedPromo}
-              onClear={() => setAppliedPromo(null)}
+              onApplyCode={applyPromo}
+              onClear={clearPromo}
+              isGuest={!isLoggedIn}
               variant="desktop"
+              suggestedCodes={promoExamples}
             />
             <PaymentOrderSummaryCard
               items={items}

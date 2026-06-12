@@ -25,9 +25,14 @@ import {
   useRepairStore,
   selectIsLoggedIn,
   selectGuestCartItems,
+  selectAppliedPromoCode,
+  awaitCartMerge,
 } from "@/lib/useRepairStore";
 import { repairCall } from "@/lib/repairAuthedApi";
 import { computeCartTotals } from "@/lib/cartTotals";
+import { validatePromoCode } from "@/lib/promo";
+
+const PROMO_REVALIDATE_MS = 400;
 
 const PLACEHOLDER_IMAGE = "/shop/model-1.png";
 const QTY_DEBOUNCE_MS = 350;
@@ -53,7 +58,7 @@ function cleanMessage(err) {
   return raw.replace(/^repairClientApi \S+:\s*/, "") || "Something went wrong. Please try again.";
 }
 
-export function useCart() {
+export function useCart({ shippingMethodKey = "standard" } = {}) {
   const isLoggedIn = useRepairStore(selectIsLoggedIn);
   const guestItems = useRepairStore(selectGuestCartItems);
 
@@ -107,8 +112,24 @@ export function useCart() {
   // No need to reset `loaded` here: a guest already has loaded=false, and
   // isLoggedIn only flips true via login-from-guest, so loading stays true
   // through the first fetch on its own.
+  //
+  // Wait out any in-flight guest-cart merge first: when a guest signs in from
+  // the cart CTA, the login form fires mergeGuestCartThenSync() fire-and-forget
+  // and redirects here immediately, so an unguarded fetch would race the merge
+  // and render the pre-existing DB cart WITHOUT the product the user just added
+  // as a guest. awaitCartMerge() resolves the moment those lines have landed
+  // (or immediately when no merge is running, so a normal visit is unaffected).
+  // `.finally` (not `.then`) so a failed merge still triggers the fetch instead
+  // of leaving the page stuck in `loading`.
   useEffect(() => {
-    if (hydrated && isLoggedIn) refetch();
+    if (!hydrated || !isLoggedIn) return undefined;
+    let active = true;
+    awaitCartMerge().finally(() => {
+      if (active) refetch();
+    });
+    return () => {
+      active = false;
+    };
   }, [hydrated, isLoggedIn, refetch]);
 
   const qtyTimers = useRef({});
@@ -182,11 +203,63 @@ export function useCart() {
     [isLoggedIn, refetch]
   );
 
+  // ---- Promo code -------------------------------------------------------
+  // The applied promo lives in the store (checkoutInfo.appliedPromoCode) so it
+  // carries to /checkout for free. We thread its SERVER-computed discount_amount
+  // into the totals math (computeCartTotals applies it on the post-promo base).
+  const appliedPromo = useRepairStore(selectAppliedPromoCode);
+  const [promoError, setPromoError] = useState("");
+
   const totals = computeCartTotals(
     items,
     settings,
-    isLoggedIn ? serverSubtotal : null
+    isLoggedIn ? serverSubtotal : null,
+    appliedPromo?.discount_amount ?? 0,
+    shippingMethodKey
   );
+
+  // Plain functions (recreated each render) so they always close over the
+  // current subtotal — they're only invoked from event handlers, never compared
+  // by identity, so no useCallback is needed.
+  const applyPromo = async (code) => {
+    if (!isLoggedIn) return { ok: false, error: "Sign in to apply a promo code." };
+    const res = await validatePromoCode(code, totals.subtotal);
+    if (res.ok) {
+      useRepairStore.getState().applyPromoCode(res.promo);
+      setPromoError("");
+    }
+    return res;
+  };
+
+  const clearPromo = () => {
+    useRepairStore.getState().clearPromoCode();
+    setPromoError("");
+  };
+
+  // Re-validate against the server whenever the subtotal settles (debounced) so
+  // the discount tracks qty changes AND a min-order / usage-limit failure drops
+  // the promo with its reason — using the server's math, never a JS copy.
+  const appliedCode = appliedPromo?.code ?? null;
+  const promoSubtotal = totals.subtotal;
+  useEffect(() => {
+    if (!appliedCode || !isLoggedIn) return undefined;
+    let active = true;
+    const t = setTimeout(async () => {
+      const res = await validatePromoCode(appliedCode, promoSubtotal);
+      if (!active) return;
+      if (res.ok) {
+        useRepairStore.getState().applyPromoCode(res.promo);
+        setPromoError("");
+      } else {
+        useRepairStore.getState().clearPromoCode();
+        setPromoError(res.error);
+      }
+    }, PROMO_REVALIDATE_MS);
+    return () => {
+      active = false;
+      clearTimeout(t);
+    };
+  }, [appliedCode, promoSubtotal, isLoggedIn]);
 
   return {
     items,
@@ -197,5 +270,10 @@ export function useCart() {
     updateQty,
     removeItem,
     clearError: () => setError(null),
+    appliedPromo,
+    applyPromo,
+    clearPromo,
+    promoError,
+    clearPromoError: () => setPromoError(""),
   };
 }

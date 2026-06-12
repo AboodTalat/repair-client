@@ -1,11 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Image from "next/image";
 import Link from "next/link";
-import { PROMO_CODES, SUGGESTED_PROMOS, formatJOD } from "@/lib/mockCart";
+import { SUGGESTED_PROMOS, formatJOD } from "@/lib/mockCart";
 import { buildSignInRedirect } from "@/lib/authRedirect";
+import { fetchCartPromoExamples } from "@/lib/promo";
 import { useCart } from "@/lib/useCart";
 
 // /cart page — matches Figma mobile 83:5144 + desktop 119:5240.
@@ -42,6 +43,15 @@ const STEPS = [
 ];
 
 export const CHECKOUT_STEPS = STEPS;
+
+// Each step's canonical route — keeps the "back to previous step" link
+// (BackStepLink) in lock-step with the Stepper without each page having to
+// hardcode where the prior step lives.
+export const STEP_ROUTES = {
+  cart: "/cart",
+  details: "/checkout",
+  payment: "/checkout/payment",
+};
 
 export const condensed = { fontStretch: "75%" };
 
@@ -177,6 +187,52 @@ export function Stepper({ activeStep = "cart" }) {
         </div>
       </div>
     </>
+  );
+}
+
+// Inline left-arrow glyph for the back link — inline SVG to dodge the
+// Figma 7-day asset-URL expiry (same rationale as the cart `<Icon>` set).
+function ArrowLeftIcon({ className = "size-3", style }) {
+  return (
+    <svg
+      viewBox="0 0 12 12"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+      aria-hidden
+      className={className}
+      style={style}
+    >
+      <path
+        d="M7.5 2.5 4 6l3.5 3.5"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+// "← Back to <previous step>" link. Derives the previous step from the same
+// STEPS array the Stepper uses, so it stays correct if the flow changes.
+// Renders nothing on the first step (cart) since there's no step to go back
+// to. Used by /checkout (back to cart) and /checkout/payment (back to
+// details); a plain <Link> so it survives a refresh and gets real anchor
+// semantics — the per-page mock state is reset on navigation either way.
+export function BackStepLink({ activeStep, className = "" }) {
+  const idx = STEPS.findIndex((s) => s.key === activeStep);
+  const prev = idx > 0 ? STEPS[idx - 1] : null;
+  if (!prev) return null;
+  return (
+    <Link
+      href={STEP_ROUTES[prev.key]}
+      className={`inline-flex w-fit items-center gap-1.5 text-[#6b7280] transition-colors hover:text-[#11191f] ${className}`}
+    >
+      <ArrowLeftIcon className="size-3" />
+      <span className="font-display text-[12px] font-semibold uppercase leading-4 tracking-[0.5px]">
+        Back to {prev.label}
+      </span>
+    </Link>
   );
 }
 
@@ -531,26 +587,56 @@ export function ItemsSection({ items, setItems, onInc, onDec, onRemove, variant 
   );
 }
 
-export function PromoCodeSection({ appliedPromo, onApply, onClear, variant }) {
+// `onApplyCode(code)` validates against the backend (myAppValidatePromoCode via
+// the parent) and resolves `{ ok, error? }`. `externalError` surfaces an async
+// drop (e.g. the cart re-validating below a promo's minimum-order after a qty
+// change). Guests are short-circuited — the resolver requires auth.
+// `suggestedCodes` is the list of example promo codes rendered as chips below
+// the input. The /cart page feeds it live, admin-flagged codes (via
+// `fetchCartPromoExamples`); the still-mock /checkout + /checkout/payment pages
+// don't pass it and fall back to the legacy `SUGGESTED_PROMOS` constant. At most
+// MAX_SUGGESTED_CHIPS are shown (the row wraps, but a long list would dwarf the
+// card) and the whole row is hidden when there are none.
+const MAX_SUGGESTED_CHIPS = 4;
+export function PromoCodeSection({
+  appliedPromo,
+  onApplyCode,
+  onClear,
+  isGuest = false,
+  externalError = "",
+  variant,
+  suggestedCodes = SUGGESTED_PROMOS,
+}) {
   const [value, setValue] = useState("");
   const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
 
-  const submit = (codeOverride) => {
+  const submit = async (codeOverride) => {
     const raw = (codeOverride ?? value).trim().toUpperCase();
     if (!raw) {
       setError("Enter a promo code");
       return;
     }
-    const found = PROMO_CODES[raw];
-    if (!found) {
-      setError("That code isn’t valid");
+    if (isGuest) {
+      setError("Sign in to apply a promo code.");
       return;
     }
+    if (loading) return;
     setError("");
-    setValue("");
-    onApply(found);
+    setLoading(true);
+    try {
+      const res = await onApplyCode(raw);
+      if (!res?.ok) {
+        setError(res?.error || "That code isn’t valid");
+        return;
+      }
+      setValue("");
+    } finally {
+      setLoading(false);
+    }
   };
 
+  const shownError = error || externalError;
   const desktop = variant === "desktop";
 
   return (
@@ -584,8 +670,9 @@ export function PromoCodeSection({ appliedPromo, onApply, onClear, variant }) {
             }}
             placeholder="Enter discount code"
             aria-label="Promo code"
+            disabled={loading}
             className={`h-12 w-full rounded-[4px] border bg-white pl-10 pr-4 font-body text-[14px] text-[#11191f] placeholder:text-[#9ca3af] focus:outline-none focus:border-[#11191f] ${
-              error ? "border-[#dc2626]" : desktop ? "border-[#d1d5db]" : "border-[#11191f]"
+              shownError ? "border-[#dc2626]" : desktop ? "border-[#d1d5db]" : "border-[#11191f]"
             }`}
             style={condensed}
             onKeyDown={(e) => {
@@ -599,23 +686,25 @@ export function PromoCodeSection({ appliedPromo, onApply, onClear, variant }) {
         <button
           type="button"
           onClick={() => submit()}
-          className={`shrink-0 rounded-[4px] px-6 text-white ${
+          disabled={loading}
+          className={`shrink-0 rounded-[4px] px-6 text-white disabled:opacity-60 ${
             desktop
               ? "font-display text-[14px] font-bold uppercase leading-5"
               : "h-12 font-display text-[14px] font-medium leading-5"
           }`}
           style={{ backgroundColor: "#11191f" }}
         >
-          Apply
+          {loading ? "Applying…" : "Apply"}
         </button>
       </div>
-      {error ? (
+      {shownError ? (
         <p className="font-body text-[12px] leading-4 text-[#dc2626]" style={condensed}>
-          {error}
+          {shownError}
         </p>
       ) : null}
-      <div className={desktop ? "inline-flex w-full items-start justify-start gap-2" : "inline-flex items-start gap-2 self-stretch"}>
-        {SUGGESTED_PROMOS.map((code) => {
+      {suggestedCodes.length > 0 ? (
+      <div className={desktop ? "flex w-full flex-wrap items-start justify-start gap-2" : "flex flex-wrap items-start gap-2 self-stretch"}>
+        {suggestedCodes.slice(0, MAX_SUGGESTED_CHIPS).map((code) => {
           const isApplied = appliedPromo?.code === code;
           if (desktop) {
             // Desktop chip — Figma 119:5380 / 119:5384. Both chips render
@@ -664,6 +753,7 @@ export function PromoCodeSection({ appliedPromo, onApply, onClear, variant }) {
           );
         })}
       </div>
+      ) : null}
     </div>
   );
 }
@@ -699,6 +789,13 @@ function TotalsRow({ label, value, valueAccent, variant }) {
 export function OrderTotalsBlock({ totals, appliedPromo, variant, onContinue, isGuest = false }) {
   const desktop = variant === "desktop";
   const { subtotal, discount, shipping, tax, total, itemCount } = totals;
+  // Tax-inclusive display: when the store's prices already include tax, show
+  // the embedded amount (display-only — not added to `total`) instead of the
+  // misleading "Tax (Estimated): JOD 0.00". These fields are absent on the
+  // mock checkout totals, so that path falls through to the plain row below.
+  const taxInclusive = !!totals.taxInclusive;
+  const taxLabel = taxInclusive ? "Tax (included)" : "Tax (Estimated)";
+  const taxValue = taxInclusive ? totals.taxIncludedAmount ?? 0 : tax;
 
   // Outer container — Figma:
   //   mobile (83:6043): bg #f9fafb, border #f3f4f6, padding 17px on all sides,
@@ -752,7 +849,7 @@ export function OrderTotalsBlock({ totals, appliedPromo, variant, onContinue, is
           valueAccent={shipping === 0 ? "#16a34a" : undefined}
           variant={variant}
         />
-        <TotalsRow label="Tax (Estimated)" value={formatJOD(tax)} variant={variant} />
+        <TotalsRow label={taxLabel} value={formatJOD(taxValue)} variant={variant} />
         {discount > 0 ? (
           // Discount pill — Figma spec differs by breakpoint:
           //   Mobile (83:6062 / 83:6067 / 83:6069):
@@ -1198,10 +1295,35 @@ function CartError({ message, onDismiss }) {
 
 export default function CartPageClient() {
   const router = useRouter();
-  const { items, loading, error, isGuest, totals, updateQty, removeItem, clearError } = useCart();
-  // Promo is interactive but NOT applied to the real total (discount stays 0) —
-  // wiring it is a later pass shared with the still-mock checkout flow.
-  const [appliedPromo, setAppliedPromo] = useState(null);
+  const {
+    items,
+    loading,
+    error,
+    isGuest,
+    totals,
+    updateQty,
+    removeItem,
+    clearError,
+    appliedPromo,
+    applyPromo,
+    clearPromo,
+    promoError,
+  } = useCart();
+
+  // Live, admin-flagged example promo codes shown as chips under the Promo Code
+  // input. Fetched once at the page level (not inside PromoCodeSection, which
+  // renders twice — mobile + desktop) and passed to both instances. Starts empty
+  // so no invalid mock codes ever flash; an empty result simply hides the chips.
+  const [promoExamples, setPromoExamples] = useState([]);
+  useEffect(() => {
+    let active = true;
+    fetchCartPromoExamples().then((codes) => {
+      if (active) setPromoExamples(codes);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const handleContinue = () => {
     router.push("/checkout");
@@ -1267,9 +1389,12 @@ export default function CartPageClient() {
 
         <PromoCodeSection
           appliedPromo={appliedPromo}
-          onApply={setAppliedPromo}
-          onClear={() => setAppliedPromo(null)}
+          onApplyCode={applyPromo}
+          onClear={clearPromo}
+          isGuest={isGuest}
+          externalError={promoError}
           variant="mobile"
+          suggestedCodes={promoExamples}
         />
 
         <OrderTotalsBlock totals={totals} appliedPromo={appliedPromo} variant="mobile" />
@@ -1322,9 +1447,12 @@ export default function CartPageClient() {
           <aside className="flex w-full flex-col gap-8 lg:w-[426.66px] lg:shrink-0">
             <PromoCodeSection
               appliedPromo={appliedPromo}
-              onApply={setAppliedPromo}
-              onClear={() => setAppliedPromo(null)}
+              onApplyCode={applyPromo}
+              onClear={clearPromo}
+              isGuest={isGuest}
+              externalError={promoError}
               variant="desktop"
+              suggestedCodes={promoExamples}
             />
             <OrderTotalsBlock
               totals={totals}

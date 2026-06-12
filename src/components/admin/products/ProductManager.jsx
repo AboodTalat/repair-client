@@ -204,6 +204,10 @@ export default function ProductManager() {
   const [categoryTree, setCategoryTree] = useState([]);
   const [materials, setMaterials] = useState([]);
   const [refLoading, setRefLoading] = useState(true);
+  // Store-wide low-stock threshold from commerce settings (Settings page →
+  // Low-Stock Banner). Drives the list's "Stock" low-stock flag so the admin
+  // sees the same threshold the storefront banner uses. 0 = no flag (off).
+  const [lowStockThreshold, setLowStockThreshold] = useState(0);
 
   // ── Product list ──
   const [products, setProducts] = useState([]);
@@ -247,13 +251,15 @@ export default function ProductManager() {
     async function load() {
       setRefLoading(true);
       try {
-        const [colorsRes, sizesRes, treeRes, matsRes] = await Promise.all([
+        const [colorsRes, sizesRes, treeRes, matsRes, settingsRes] = await Promise.all([
           repairCall("myAppAdminListColors", {}).catch(() => ({ items: [] })),
           repairCall("myAppAdminListSizes", {}).catch(() => ({ items: [] })),
           repairCall("myAppListCategoriesTree", { includeHidden: true }).catch(() => []),
           repairCall("myAppListMaterials", {}).catch(() => ({ items: [] })),
+          repairCall("myAppGetCommerceSettings", {}, { isQuery: true }).catch(() => null),
         ]);
         if (cancelled) return;
+        setLowStockThreshold(Number(settingsRes?.inventory?.low_stock_threshold) || 0);
         setColors(
           (colorsRes.items || colorsRes || []).map((c) => ({
             id: N(c.id),
@@ -749,7 +755,9 @@ export default function ProductManager() {
               label: "Stock",
               align: "right",
               render: (p) => {
-                const low = p.total_stock <= 15;
+                // Store-wide threshold from Settings → Low-Stock Banner.
+                // 0 = disabled (never flag), matching the storefront banner.
+                const low = lowStockThreshold > 0 && p.total_stock <= lowStockThreshold;
                 return (
                   <span
                     className="inline-flex items-center gap-1.5 font-body text-[12px]"

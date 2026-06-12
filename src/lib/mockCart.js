@@ -179,6 +179,16 @@ export function calcSubtotal(items) {
 
 export function calcDiscount(subtotal, appliedPromo) {
   if (!appliedPromo) return 0;
+  // Validated shape from myAppValidatePromoCode (carried over from /cart via the
+  // store): discount_type "percentage" | <fixed> + discount_value. Mirrors the
+  // server cap in computePromoDiscount (helpers.ts) — clamp to the subtotal.
+  if (appliedPromo.discount_type != null) {
+    const value = Number(appliedPromo.discount_value) || 0;
+    const raw =
+      appliedPromo.discount_type === "percentage" ? (subtotal * value) / 100 : value;
+    return Math.min(Math.max(0, raw), Math.max(0, subtotal));
+  }
+  // Legacy mock shape ({ kind: "percent", value }) — the seeded SUMMER25 default.
   if (appliedPromo.kind === "percent") {
     return (subtotal * appliedPromo.value) / 100;
   }
@@ -190,13 +200,39 @@ export function calcShipping(subtotal) {
   return SHIPPING_FEE;
 }
 
-export function calcTotals(items, appliedPromo) {
+// `taxSettings` is the `tax` slice of myAppGetCommerceSettings ({ rate, inclusive })
+// or null. When provided, tax is computed from the LIVE settings, mirroring the
+// server's myAppCheckout: levied on the post-promo subtotal only (shipping is
+// never taxed), and 0 when prices are tax-inclusive (with the embedded portion
+// surfaced as `taxIncludedAmount` for display). When null, it falls back to the
+// legacy 9%-on-(subtotal+shipping) mock so any caller that hasn't wired settings
+// still renders the Figma numbers. (Shipping is still the flat mock fee — the
+// shipping-method/rate wiring is a separate task.)
+const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+
+export function calcTotals(items, appliedPromo, taxSettings = null) {
   const subtotal = calcSubtotal(items);
   const discount = calcDiscount(subtotal, appliedPromo);
   const shipping = calcShipping(subtotal);
-  const taxBase = subtotal + shipping;
-  const tax = Math.round(taxBase * TAX_RATE * 100) / 100;
-  const total = Math.round((subtotal + shipping + tax - discount) * 100) / 100;
+  const afterPromo = Math.max(0, round2(subtotal - discount));
+
+  let tax;
+  let taxInclusive = false;
+  let taxIncludedAmount = 0;
+  if (taxSettings) {
+    const rate = Number(taxSettings.rate) || 0;
+    taxInclusive = !!taxSettings.inclusive;
+    // Live: tax on the post-promo subtotal only. Inclusive → not added (0), with
+    // the embedded portion derived for the receipt line.
+    tax = taxInclusive ? 0 : round2((afterPromo * rate) / 100);
+    taxIncludedAmount =
+      taxInclusive && rate > 0 ? round2(afterPromo - afterPromo / (1 + rate / 100)) : 0;
+  } else {
+    // Legacy mock fallback — 9% on (subtotal + shipping).
+    tax = round2((subtotal + shipping) * TAX_RATE);
+  }
+
+  const total = round2(afterPromo + shipping + tax);
   const itemCount = items.reduce((n, it) => n + it.qty, 0);
   const amountToFreeShipping = Math.max(0, FREE_SHIPPING_THRESHOLD - subtotal);
   return {
@@ -204,6 +240,10 @@ export function calcTotals(items, appliedPromo) {
     discount,
     shipping,
     tax,
+    // Tax-inclusive display fields (mirror cartTotals.js) — consumed by the
+    // inclusive-aware tax rows on the checkout summary cards.
+    taxInclusive,
+    taxIncludedAmount,
     total,
     itemCount,
     amountToFreeShipping,
