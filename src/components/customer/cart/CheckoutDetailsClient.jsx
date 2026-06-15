@@ -632,8 +632,8 @@ function DesktopOrderSummaryCard({ items, totals, appliedPromo, onContinue, subm
       </button>
       <p className="text-center font-body text-[10px] leading-[15px] text-[#9ca3af]" style={condensed}>
         By proceeding to payment, you agree to our{" "}
-        <a href="/#terms" className="underline">Terms of Service</a> and{" "}
-        <a href="/#privacy" className="underline">Privacy Policy</a>.
+        <a href="/terms" className="underline">Terms of Service</a> and{" "}
+        <a href="/privacy" className="underline">Privacy Policy</a>.
       </p>
       <div className="flex items-center justify-center gap-2 rounded-[4px] py-1.5" style={{ backgroundColor: "#f3f4f6" }}>
         <Icon name="lock-sm" className="h-3 w-[10.5px]" />

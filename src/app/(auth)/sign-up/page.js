@@ -62,11 +62,11 @@ export default async function SignUpPage({ searchParams }) {
         <div className="hidden md:block">
           <TermsFooter>
             By signing up, you agree to our{" "}
-            <Link href="/#terms" className="underline">
+            <Link href="/terms" className="underline">
               Terms of Service
             </Link>{" "}
             and{" "}
-            <Link href="/#privacy" className="underline">
+            <Link href="/privacy" className="underline">
               Privacy Policy
             </Link>
             .

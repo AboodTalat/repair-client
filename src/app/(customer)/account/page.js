@@ -1,12 +1,10 @@
 import AccountClient from "@/components/customer/account/AccountClient";
-import { PROFILE, PAYMENT_METHODS, ADDRESSES } from "@/lib/mockAccount";
 
 // `/account` — customer account hub. Figma mobile 41:1742 + desktop 119:4965.
-// AccountClient owns the toggleable `isDefault` state for payment methods +
-// addresses at every breakpoint, and renders its own responsive switch
-// internally so only one instance is mounted. Swap mock data for
-// repairQuery(...) when the customer-scoped account resolvers land
-// (addresses already exist server-side via addresses.ts).
+// AccountClient is wired to the repair sub-server: profile via myAppGetMyProfile,
+// addresses via the addresses.ts CRUD resolvers (the useAddresses hook), and
+// payment methods via the client-side `paymentCards` store slice (no payment
+// backend yet). It fetches its own data client-side, so no props are passed.
 
 export const metadata = {
   title: "Account — Repair",
@@ -31,11 +29,7 @@ export default function AccountPage() {
           </h1>
         </div>
 
-        <AccountClient
-          profile={PROFILE}
-          methods={PAYMENT_METHODS}
-          addresses={ADDRESSES}
-        />
+        <AccountClient />
       </div>
     </main>
   );

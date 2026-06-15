@@ -4,9 +4,10 @@ import PaymentPageClient from "@/components/customer/cart/PaymentPageClient";
 // Figma mobile 84:6733 + desktop 119:5877. Inherits ShopHeader +
 // ShopFooter from `(customer)/layout.js`.
 //
-// Purely presentational against the mocks in `src/lib/mockCart.js` for
-// now; swap the place-order action to `myAppCheckout` once the cart
-// + payment-method backend story lands (see repair/CLAUDE.md).
+// Wired to the backend: real cart + method-aware totals, admin-managed
+// payment methods (myAppGetCommerceSettings), the address selected on the
+// details step, and a real order placed via `myAppCheckout` on Confirm &
+// Pay (see PaymentPageClient + repair/CLAUDE.md).
 
 export const metadata = {
   title: "Payment — Repair",

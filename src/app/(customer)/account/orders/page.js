@@ -1,10 +1,5 @@
 import OrdersPageClient from "@/components/customer/account/OrdersPageClient";
-import {
-  ORDERS,
-  ORDER_STATUS_OPTIONS,
-  ORDER_DATE_RANGES,
-  filterOrders,
-} from "@/lib/mockOrders";
+import { ORDER_STATUS_OPTIONS, ORDER_DATE_RANGES } from "@/lib/orders";
 
 // `/account/orders` — Figma mobile 41:1420 + desktop 119:4406.
 //
@@ -12,8 +7,9 @@ import {
 //   ?status=delivered,on-the-way   CSV of status SLUGS (see ORDER_STATUS_OPTIONS)
 //   ?date=30d|6m|year|all          single date-range slug (see ORDER_DATE_RANGES)
 // Unknown values are dropped silently so a stale URL never crashes the page.
-// Will swap to `repairQuery("myAppListMyOrders", { filters })` once the
-// customer-scoped order list resolver lands on the server.
+// The actual orders are fetched client-side from myAppGetMyOrders (the list
+// is customer-scoped + needs the auth token), then filtered against these
+// axes in OrdersPageClient.
 
 export const metadata = {
   title: "Orders — Repair",
@@ -25,8 +21,7 @@ const DATE_SLUGS = new Set(ORDER_DATE_RANGES.map((o) => o.slug));
 export default async function OrdersPage({ searchParams }) {
   const sp = await searchParams;
   const filters = parseFilters(sp);
-  const orders = filterOrders(ORDERS, filters);
-  return <OrdersPageClient orders={orders} filters={filters} />;
+  return <OrdersPageClient filters={filters} />;
 }
 
 function parseFilters(sp) {

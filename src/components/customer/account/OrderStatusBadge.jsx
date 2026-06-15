@@ -1,8 +1,15 @@
-// Status pill used on order cards. Tones match the Figma palette:
-//   Delivered  → bg #dcfce7 / text #166534 + check-circle icon
-//   On the way → bg #dbeafe / text #1e40af + truck icon
-//   Cancelled  → bg #fee2e2 / text #991b1b + x-circle icon
-//   Returned   → bg #f3e8ff / text #6b21a8 + return arrow icon
+// Status pill used on order cards + the order-tracking page. One tone per REAL
+// order status (no more collapsing the in-transit states into a single "On the
+// way" pill — a `processing` order must not look in-transit):
+//   Pending          → bg #f3f4f6 / text #4b5563 + clock icon
+//   Processing       → bg #fef3c7 / text #92400e + clock icon
+//   Dispatched       → bg #dbeafe / text #1e40af + package icon
+//   Out for Delivery → bg #e0e7ff / text #3730a3 + truck icon
+//   Delivered        → bg #dcfce7 / text #166534 + check-circle icon
+//   Delivery failed  → bg #ffedd5 / text #9a3412 + truck icon
+//   Cancelled        → bg #fee2e2 / text #991b1b + x-circle icon
+//   Returned         → bg #f3e8ff / text #6b21a8 + return arrow icon
+//   Unknown (fallback) → neutral grey + clock icon
 
 function CheckCircle() {
   return (
@@ -63,6 +70,45 @@ function XCircle() {
   );
 }
 
+function Clock() {
+  return (
+    <svg
+      viewBox="0 0 12 12"
+      width="12"
+      height="12"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.4"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <circle cx="6" cy="6" r="5" />
+      <path d="M6 3.4V6l1.8 1.1" />
+    </svg>
+  );
+}
+
+function Package() {
+  return (
+    <svg
+      viewBox="0 0 12 12"
+      width="12"
+      height="12"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M6 1 1.2 3.4v5.2L6 11l4.8-2.4V3.4L6 1z" />
+      <path d="M1.2 3.4 6 5.8l4.8-2.4" />
+      <path d="M6 5.8V11" />
+    </svg>
+  );
+}
+
 function ReturnArrow() {
   return (
     <svg
@@ -82,15 +128,28 @@ function ReturnArrow() {
   );
 }
 
+// Neutral fallback tone — used for `pending`, `unknown`, and any kind not
+// explicitly mapped. Deliberately NOT the truck "on the way" tone: a missing
+// entry must never silently masquerade as an in-transit order.
+const NEUTRAL_TONE = { bg: "#f3f4f6", color: "#4b5563", Icon: Clock };
+
 const TONES = {
+  // In-transit progression (cool tones), one per real state.
+  pending: NEUTRAL_TONE,
+  processing: { bg: "#fef3c7", color: "#92400e", Icon: Clock },
+  dispatched: { bg: "#dbeafe", color: "#1e40af", Icon: Package },
+  "out-for-delivery": { bg: "#e0e7ff", color: "#3730a3", Icon: Truck },
   delivered: { bg: "#dcfce7", color: "#166534", Icon: CheckCircle },
-  "on-the-way": { bg: "#dbeafe", color: "#1e40af", Icon: Truck },
+  // Failed delivery — amber/orange so it reads as "needs attention", distinct
+  // from the red "cancelled" tone.
+  failed: { bg: "#ffedd5", color: "#9a3412", Icon: Truck },
   cancelled: { bg: "#fee2e2", color: "#991b1b", Icon: XCircle },
   returned: { bg: "#f3e8ff", color: "#6b21a8", Icon: ReturnArrow },
+  unknown: NEUTRAL_TONE,
 };
 
 export default function OrderStatusBadge({ kind, label, size = "md" }) {
-  const tone = TONES[kind] ?? TONES["on-the-way"];
+  const tone = TONES[kind] ?? NEUTRAL_TONE;
   const Icon = tone.Icon;
   const textSize = size === "sm" ? "text-[10px]" : "text-[12px]";
   return (

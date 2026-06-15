@@ -22,6 +22,18 @@ import {
 // renders a broken box. Real products serve UploadThing URLs.
 const PLACEHOLDER_IMAGE = "/shop/model-1.png";
 
+// ISR window for the hot storefront catalogue reads (grid / detail / related).
+// Previously these used `revalidate: 0` (NO cache) so every single page load
+// hit the backend live — which, under a traffic spike, multiplies straight into
+// the DB and the connection pool. A short 60s window means at most one backend
+// call per unique query per minute while admin product/stock edits still
+// surface on the next refresh within the window. Tunable via
+// NEXT_PUBLIC_STOREFRONT_REVALIDATE; set to 0 to restore always-live reads.
+const STOREFRONT_REVALIDATE = (() => {
+  const v = Number(process.env.NEXT_PUBLIC_STOREFRONT_REVALIDATE);
+  return Number.isFinite(v) && v >= 0 ? v : 60;
+})();
+
 // Wire item (myAppListProducts) → ProductCard prop shape.
 //   subtitle  ← products.material (stores the subtitle / composition string)
 //   salePrice ← effective_price only when an active discount lowered the price
@@ -90,11 +102,10 @@ export async function fetchShopProducts({
     if (Array.isArray(subCategoryIds) && subCategoryIds.length) variables.subCategoryIds = subCategoryIds;
     if (minPrice != null) variables.minPrice = Number(minPrice);
     if (maxPrice != null) variables.maxPrice = Number(maxPrice);
-    // revalidate: 0 → no ISR data cache. The storefront must reflect admin
-    // product edits / stock changes on the very next normal refresh, not after
-    // the 5-minute default window. The pages are already dynamic, so this only
-    // costs one live backend call per load.
-    const res = await repairQuery("myAppListProducts", variables, { revalidate: 0 });
+    // Short ISR window (STOREFRONT_REVALIDATE) so a spike collapses onto one
+    // backend call per unique query per window instead of one per page load,
+    // while admin edits still surface on the next refresh inside the window.
+    const res = await repairQuery("myAppListProducts", variables, { revalidate: STOREFRONT_REVALIDATE });
     const items = Array.isArray(res?.items) ? res.items : [];
     const mapped = items.map(mapListItemToCard);
     const total = Number.isFinite(Number(res?.total)) ? Number(res.total) : mapped.length;
@@ -196,7 +207,7 @@ async function fetchRelatedProducts(detail) {
       const res = await repairQuery(
         "myAppListProducts",
         { ...vars, limit: 12 },
-        { revalidate: 0 }
+        { revalidate: STOREFRONT_REVALIDATE }
       );
       const items = Array.isArray(res?.items) ? res.items : [];
       for (const it of items) {
@@ -342,8 +353,8 @@ export const fetchProductDetail = cache(async (slug) => {
     // the low-stock banner. Settings failure degrades to 0 (banner off), never
     // blocks the page.
     const [detail, settings] = await Promise.all([
-      repairQuery("myAppGetProductDetail", { productId }, { revalidate: 0 }),
-      repairQuery("myAppGetCommerceSettings", {}, { revalidate: 0 }).catch(() => null),
+      repairQuery("myAppGetProductDetail", { productId }, { revalidate: STOREFRONT_REVALIDATE }),
+      repairQuery("myAppGetCommerceSettings", {}, { revalidate: STOREFRONT_REVALIDATE }).catch(() => null),
     ]);
     if (!detail || detail.id == null) return null;
     const related = await fetchRelatedProducts(detail);

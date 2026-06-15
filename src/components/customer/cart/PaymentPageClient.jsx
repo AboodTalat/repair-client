@@ -3,16 +3,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import Image from "next/image";
-import {
-  CART_ITEMS,
-  CHECKOUT_ADDRESSES,
-  DEFAULT_PAYMENT_METHOD_ID,
-  PAYMENT_METHODS,
-  buildAddressLine,
-  calcSubtotal,
-  calcTotals,
-  formatJOD,
-} from "@/lib/mockCart";
+import Link from "next/link";
+import { formatJOD } from "@/lib/mockCart";
 import {
   BackStepLink,
   Icon,
@@ -25,38 +17,47 @@ import {
   TrustBadgesRow,
   condensed,
 } from "./CartPageClient";
-import AddCardDrawer from "@/components/customer/account/AddCardDrawer";
-import AddAddressDrawer from "@/components/customer/account/AddAddressDrawer";
+import { useCart } from "@/lib/useCart";
+import { useAddresses } from "@/lib/useAddresses";
 import { useCommerceSettings } from "@/lib/useCommerceSettings";
-import { fetchCartPromoExamples, validatePromoCode } from "@/lib/promo";
+import DemoPaymentGateway from "./DemoPaymentGateway";
+import AddCardDrawer from "@/components/customer/account/AddCardDrawer";
+import { fetchCartPromoExamples } from "@/lib/promo";
+import { repairCall } from "@/lib/repairAuthedApi";
 import {
   useRepairStore,
-  selectAppliedPromoCode,
   selectIsLoggedIn,
+  selectCheckoutInfo,
+  selectPaymentCards,
 } from "@/lib/useRepairStore";
 
 // /checkout/payment — Payment step (step 3 of cart → details → payment).
 // Matches Figma mobile 84:6733 + desktop 119:5877.
 //
-// Most chrome is reused from `CartPageClient.jsx`: Stepper, PromoCodeSection,
-// TrustBadgesRow, PaymentMethodsRow, SupportCard, PoliciesFootnote, and
-// StickyCheckoutBar. New sections unique to this step:
-//   - PaymentMethodSection (radio list of saved cards + Apple Pay + Google
-//     Pay + Cash on Delivery + an "ADD NEW CARD" button)
-//   - ShippingAddressDisplay (read-only address card with Edit link)
-//   - TermsCheckbox (T&C agreement, gates the place-order CTA)
-//   - PaymentOrderSummaryCard (desktop right column composite — mini items,
-//     totals, T&C, "CONFIRM & PAY" CTA, policy line, secure pill)
+// Wired to real data:
+//   - useCart             → cart items + method-aware totals (the SAME math
+//                           myAppCheckout charges, for the shipping method the
+//                           customer chose on the details step).
+//   - useCommerceSettings → the admin-managed payment methods (enabled only —
+//                           the card/wallet/COD options the store turns on in
+//                           the admin Settings page).
+//   - useAddresses        → the saved shipping address selected on /checkout.
 //
-// The Add-New-Card sheet/modal isn't in scope (no Figma for it yet) — the
-// button is a no-op placeholder. Same for the place-order action: it just
-// alerts a success placeholder until the `myAppCheckout` mutation is wired.
+// "Confirm & Pay" places the order via myAppCheckout (transactional, decrements
+// stock, clears the cart server-side), persists the result to the store's
+// lastOrder, and routes to /checkout/success. Recoverable failures (out of
+// stock, promo no longer valid, a disabled method) surface inline so the user
+// can fix them — there's no payment processor that can "decline", so we don't
+// route to the /checkout/failed screen.
+//
+// The shared chrome (Stepper, PromoCodeSection, trust/payment/support rows,
+// sticky mobile CTA) comes from CartPageClient so the visual language stays
+// identical across the three steps.
 
 
 // ──────────────────────────────────────────────────────────────────────
 // Small inline glyphs — same rationale as CheckoutDetailsClient.jsx
-// (avoid Figma 7-day asset URL expiry; keep <16-line SVGs co-located
-// with the components that use them).
+// (avoid Figma 7-day asset URL expiry; keep <16-line SVGs co-located).
 // ──────────────────────────────────────────────────────────────────────
 
 function EditPencilIcon({ className = "size-2.5", style }) {
@@ -124,17 +125,9 @@ function RadioDot({ selected }) {
 
 // ──────────────────────────────────────────────────────────────────────
 // Brand tiles — inline SVGs sized to fit the 40x40 outer tile, matching
-// Figma mobile 84:7671 / desktop 119:5919:
-//   - Visa: light grey 40x40 with an inner dark mini-card holding the
-//     "VISA" wordmark in white (looks like a credit card).
-//   - Mastercard: light grey 40x40 with the two overlapping circles
-//     (red + orange, lens-shaped overlap drawn explicitly). No wordmark.
-//   - Apple Pay: BLACK 40x40 tile with white Apple silhouette only —
-//     no "Pay" text.
-//   - Google Pay: light grey 40x40 with the multicolor Google "G" only.
-//   - Cash on Delivery: light grey 40x40 with a green dollar-bill icon.
-// Inline so they survive Figma's 7-day asset URL expiry — same rationale
-// as `customer/account/AccountIcons.jsx`.
+// Figma mobile 84:7671 / desktop 119:5919. Inline so they survive Figma's
+// 7-day asset URL expiry — same rationale as AccountIcons.jsx.
+// ──────────────────────────────────────────────────────────────────────
 
 const TILE_BASE = "grid size-10 shrink-0 place-items-center";
 
@@ -176,10 +169,7 @@ function MastercardTile() {
         <circle cx="12" cy="10" r="8" fill="#EB001B" />
         <circle cx="20" cy="10" r="8" fill="#F79E1B" />
         {/* Lens-shaped overlap drawn on top so the overlap reads orange. */}
-        <path
-          d="M16 4.2 A8 8 0 0 1 16 15.8 A8 8 0 0 1 16 4.2 Z"
-          fill="#FF5F00"
-        />
+        <path d="M16 4.2 A8 8 0 0 1 16 15.8 A8 8 0 0 1 16 4.2 Z" fill="#FF5F00" />
       </svg>
     </div>
   );
@@ -205,13 +195,7 @@ function ApplePayTile() {
 function GooglePayTile() {
   return (
     <div className={TILE_BASE} style={{ backgroundColor: "#f3f4f6", borderRadius: 8 }}>
-      <svg
-        viewBox="0 0 24 24"
-        width="22"
-        height="22"
-        xmlns="http://www.w3.org/2000/svg"
-        aria-hidden
-      >
+      <svg viewBox="0 0 24 24" width="22" height="22" xmlns="http://www.w3.org/2000/svg" aria-hidden>
         <path
           fill="#4285F4"
           d="M23.49 12.27c0-.79-.07-1.54-.19-2.27H12v4.51h6.16c-.27 1.46-1.13 2.7-2.4 3.51v2.92h3.88c2.27-2.09 3.85-5.17 3.85-8.67z"
@@ -234,17 +218,9 @@ function GooglePayTile() {
 }
 
 function CashOnDeliveryTile() {
-  // Stylized banknote — green rectangle with a lighter green inner oval
-  // and "$" glyph to read as cash. Approximation of Figma's COD icon.
   return (
     <div className={TILE_BASE} style={{ backgroundColor: "#f3f4f6", borderRadius: 8 }}>
-      <svg
-        viewBox="0 0 28 20"
-        width="24"
-        height="18"
-        xmlns="http://www.w3.org/2000/svg"
-        aria-hidden
-      >
+      <svg viewBox="0 0 28 20" width="24" height="18" xmlns="http://www.w3.org/2000/svg" aria-hidden>
         <rect x="1" y="3" width="26" height="14" rx="2" fill="#16a34a" />
         <ellipse cx="14" cy="10" rx="6" ry="4" fill="#bbf7d0" />
         <text
@@ -265,46 +241,42 @@ function CashOnDeliveryTile() {
   );
 }
 
-function PaymentMethodTile({ method }) {
-  if (method.kind === "card" && method.brand === "visa") return <VisaTile />;
-  if (method.kind === "card" && method.brand === "mastercard") return <MastercardTile />;
-  if (method.kind === "applepay") return <ApplePayTile />;
-  if (method.kind === "gpay") return <GooglePayTile />;
-  return <CashOnDeliveryTile />;
+// Map an admin payment-method `key` (visa / mastercard / applepay / googlepay /
+// cod — migration 0003 seeds visa/applepay/googlepay/cod) to its brand tile.
+// Unknown keys fall back to the generic card tile.
+function PaymentMethodTile({ pmKey }) {
+  const k = String(pmKey || "").toLowerCase();
+  if (k === "mastercard") return <MastercardTile />;
+  if (k === "applepay") return <ApplePayTile />;
+  if (k === "googlepay" || k === "gpay") return <GooglePayTile />;
+  if (k === "cod") return <CashOnDeliveryTile />;
+  return <VisaTile />;
 }
 
-function paymentMethodLabels(method) {
-  if (method.kind === "card") {
-    const brandName =
-      { visa: "Visa", mastercard: "Mastercard", amex: "Amex", discover: "Discover" }[method.brand] ??
-      method.brand;
-    return {
-      title: `${brandName} ending in ${method.last4}`,
-      subtitle: `Expires ${method.expiry}`,
-    };
-  }
-  if (method.kind === "applepay") return { title: "Apple Pay", subtitle: "Quick Payment" };
-  if (method.kind === "gpay") return { title: "Google Pay", subtitle: "Quick Payment" };
-  return { title: "Cash on Delivery", subtitle: "Pay when you receive" };
+function brandName(brand) {
+  return (
+    { visa: "Visa", mastercard: "Mastercard", amex: "Amex", discover: "Discover" }[
+      String(brand || "").toLowerCase()
+    ] || "Card"
+  );
 }
 
 // ──────────────────────────────────────────────────────────────────────
-// Payment Method section — heading + radio list + ADD NEW CARD button.
-// Mobile (Figma 84:7671) and desktop (Figma 119:5919) use the same row
-// shape; only the heading sizing changes by breakpoint. Selected card =
-// 2px dark border + soft shadow + #f9fafb bg (mobile), 1px dark border
-// (desktop). Unselected = 1px #e5e7eb border, transparent bg.
+// Payment Method section — heading + radio list + "ADD NEW CARD" button.
+// Each row is a unified "option": a saved card, a wallet (Apple/Google
+// Pay), or Cash on Delivery — whichever the admin commerce settings have
+// enabled. Mobile (Figma 84:7671) and desktop (Figma 119:5919) share the
+// row shape; only the heading sizing changes by breakpoint.
 // ──────────────────────────────────────────────────────────────────────
 
-function PaymentMethodRow({ method, selected, onSelect, variant }) {
+function PaymentMethodRow({ option, selected, onSelect, variant }) {
   const desktop = variant === "desktop";
-  const labels = paymentMethodLabels(method);
   const borderWidth = desktop ? 1 : selected ? 2 : 1;
   const padding = desktop ? 18 : selected ? 16 : 17;
   return (
     <button
       type="button"
-      onClick={() => onSelect(method.id)}
+      onClick={() => onSelect(option.id)}
       className="flex w-full items-center justify-between"
       style={{
         padding: `${padding}px`,
@@ -315,20 +287,17 @@ function PaymentMethodRow({ method, selected, onSelect, variant }) {
       }}
     >
       <div className="flex items-center gap-4">
-        <PaymentMethodTile method={method} />
+        <PaymentMethodTile pmKey={option.tileKey} />
         <div className="flex flex-col items-start text-left">
           <span
             className={`font-display text-[14px] leading-5 text-[#11191f] ${
               selected ? "font-bold" : "font-semibold"
             }`}
           >
-            {labels.title}
+            {option.title}
           </span>
-          <span
-            className="pt-0.5 font-body text-[12px] leading-4 text-[#6b7280]"
-            style={condensed}
-          >
-            {labels.subtitle}
+          <span className="pt-0.5 font-body text-[12px] leading-4 text-[#6b7280]" style={condensed}>
+            {option.subtitle}
           </span>
         </div>
       </div>
@@ -337,16 +306,23 @@ function PaymentMethodRow({ method, selected, onSelect, variant }) {
   );
 }
 
-function PaymentMethodSection({ methods, selectedId, onSelect, onAddCard, variant }) {
+function AddNewCardButton({ onClick }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="flex w-full items-center justify-center rounded-[4px] px-[16.5px] pb-[16.5px] pt-[14.5px]"
+      style={{ backgroundColor: "#f0f1f3", border: "0.5px solid rgba(0,0,0,0.1)" }}
+    >
+      <span className="font-display text-[12px] font-medium leading-normal text-[#11191f]">ADD NEW CARD</span>
+    </button>
+  );
+}
+
+function PaymentMethodSection({ options, selectedId, onSelect, onAddCard, cardEnabled, hasCards, loading, variant }) {
   const desktop = variant === "desktop";
   return (
-    <section
-      className={
-        desktop
-          ? "flex w-full flex-col gap-6"
-          : "flex w-full flex-col gap-4 px-4"
-      }
-    >
+    <section className={desktop ? "flex w-full flex-col gap-6" : "flex w-full flex-col gap-4 px-4"}>
       <h2
         className={
           desktop
@@ -357,53 +333,45 @@ function PaymentMethodSection({ methods, selectedId, onSelect, onAddCard, varian
         Payment Method
       </h2>
       <div className="flex w-full flex-col gap-4">
-        {methods.map((m) => (
-          <PaymentMethodRow
-            key={m.id}
-            method={m}
-            selected={m.id === selectedId}
-            onSelect={onSelect}
-            variant={variant}
-          />
-        ))}
+        {loading ? (
+          <p className="font-body text-[13px] leading-5 text-[#9ca3af]" style={condensed}>
+            Loading payment options…
+          </p>
+        ) : (
+          <>
+            {cardEnabled && !hasCards ? (
+              <p className="font-body text-[13px] leading-5 text-[#6b7280]" style={condensed}>
+                No saved cards yet — add one below to pay by card.
+              </p>
+            ) : null}
+            {options.map((o) => (
+              <PaymentMethodRow
+                key={o.id}
+                option={o}
+                selected={o.id === selectedId}
+                onSelect={onSelect}
+                variant={variant}
+              />
+            ))}
+          </>
+        )}
       </div>
-      {/* "ADD NEW CARD" muted button — opens AddCardDrawer from the account
-          surface (Figma mobile 79:3149). Same drawer used on /account. */}
-      <button
-        type="button"
-        onClick={onAddCard}
-        className="flex w-full items-center justify-center rounded-[4px] px-[16.5px] pb-[16.5px] pt-[14.5px]"
-        style={{
-          backgroundColor: "#f0f1f3",
-          border: "0.5px solid rgba(0,0,0,0.1)",
-        }}
-      >
-        <span className="font-display text-[12px] font-medium leading-normal text-[#11191f]">
-          ADD NEW CARD
-        </span>
-      </button>
+      {cardEnabled && !loading ? <AddNewCardButton onClick={onAddCard} /> : null}
     </section>
   );
 }
 
 // ──────────────────────────────────────────────────────────────────────
-// Shipping Address Display — read-only card. The address selection was
-// already made on the Details step; on Payment we just show the chosen
-// shipping address with an Edit affordance (which would route back to
-// /checkout when wired). Mobile Figma 84:7725, desktop Figma 126:5481.
+// Shipping Address Display — read-only card. The address was selected on
+// the Details step; the Edit affordance routes back to /checkout to change
+// it (or the delivery method). Mobile Figma 84:7725, desktop Figma 126:5481.
 // ──────────────────────────────────────────────────────────────────────
 
 function ShippingAddressDisplay({ address, onEdit, variant }) {
   const desktop = variant === "desktop";
   if (!address) return null;
   return (
-    <section
-      className={
-        desktop
-          ? "flex w-full flex-col gap-4"
-          : "flex w-full flex-col gap-4 px-4"
-      }
-    >
+    <section className={desktop ? "flex w-full flex-col gap-4" : "flex w-full flex-col gap-4 px-4"}>
       <div className="flex w-full items-center justify-between">
         <h2
           className={
@@ -444,10 +412,7 @@ function ShippingAddressDisplay({ address, onEdit, variant }) {
             </div>
           </div>
           <div className="flex min-w-0 flex-1 flex-col">
-            <p
-              className="font-body text-[12px] font-medium leading-normal text-[#11191f]"
-              style={condensed}
-            >
+            <p className="font-body text-[12px] font-medium leading-normal text-[#11191f]" style={condensed}>
               {address.label}{" "}
               {address.isDefault ? (
                 <span
@@ -464,6 +429,7 @@ function ShippingAddressDisplay({ address, onEdit, variant }) {
           className="flex w-full flex-col gap-1 font-body text-[10px] leading-normal"
           style={{ ...condensed, color: "rgba(17,25,31,0.5)" }}
         >
+          {address.full_name ? <p className="font-medium text-[#11191f]">{address.full_name}</p> : null}
           <p>{address.line}</p>
           <p>{address.phone}</p>
         </div>
@@ -474,9 +440,8 @@ function ShippingAddressDisplay({ address, onEdit, variant }) {
 
 // ──────────────────────────────────────────────────────────────────────
 // Terms checkbox — agreement with links to T&C / Privacy. Mobile Figma
-// 84:7781 wraps the row inside a #fafafa pill; desktop Figma 119:6008
-// is plain (no background). Both have a 16-20px checkbox + condensed
-// label with two underlined Bold links.
+// 84:7781 wraps the row inside a #fafafa pill; desktop Figma 119:6008 is
+// plain. Both gate the place-order CTA.
 // ──────────────────────────────────────────────────────────────────────
 
 function TermsCheckbox({ checked, onChange, variant }) {
@@ -488,18 +453,9 @@ function TermsCheckbox({ checked, onChange, variant }) {
           ? "flex w-full cursor-pointer items-start gap-3"
           : "mx-4 flex w-full max-w-[calc(100%-2rem)] cursor-pointer items-start gap-3 rounded-[4px] p-4"
       }
-      style={
-        desktop
-          ? undefined
-          : { backgroundColor: "#fafafa", border: "1px solid #e5e7eb" }
-      }
+      style={desktop ? undefined : { backgroundColor: "#fafafa", border: "1px solid #e5e7eb" }}
     >
-      <input
-        type="checkbox"
-        checked={checked}
-        onChange={onChange}
-        className="peer sr-only"
-      />
+      <input type="checkbox" checked={checked} onChange={onChange} className="peer sr-only" />
       <span
         className={`${desktop ? "size-4 rounded-[2px]" : "size-5 rounded-[4px]"} grid shrink-0 place-items-center border bg-white`}
         style={{ borderColor: checked ? "#11191f" : "#767676" }}
@@ -520,13 +476,13 @@ function TermsCheckbox({ checked, onChange, variant }) {
         style={desktop ? undefined : condensed}
       >
         I agree to the{" "}
-        <a href="/#terms" className="font-bold text-[#11191f] underline">
+        <Link href="/terms" className="font-bold text-[#11191f] underline">
           Terms &amp; Conditions
-        </a>{" "}
+        </Link>{" "}
         and{" "}
-        <a href="/#privacy" className="font-bold text-[#11191f] underline">
+        <Link href="/privacy" className="font-bold text-[#11191f] underline">
           Privacy Policy
-        </a>
+        </Link>
         . I understand that my order is final and non-refundable once placed.
       </span>
     </label>
@@ -534,10 +490,7 @@ function TermsCheckbox({ checked, onChange, variant }) {
 }
 
 // ──────────────────────────────────────────────────────────────────────
-// Mobile-only inline Order Total card (same shape as the cart-page
-// OrderTotalsBlock mobile variant). Kept local so this page doesn't
-// depend on a specific cart-page export name; the rows + discount pill
-// + bordered total row mirror Figma 84:8019.
+// Mobile-only inline Order Total card (Figma 84:8019).
 // ──────────────────────────────────────────────────────────────────────
 
 function MobileOrderTotalCard({ totals, appliedPromo }) {
@@ -573,10 +526,7 @@ function MobileOrderTotalCard({ totals, appliedPromo }) {
               <Icon name="check" className="h-3 w-2.5" />
               <span className="text-[12px]">Discount ({appliedPromo?.code})</span>
             </span>
-            <span
-              className="font-display text-[12px] font-bold leading-5"
-              style={{ color: "#15803d" }}
-            >
+            <span className="font-display text-[12px] font-bold leading-5" style={{ color: "#15803d" }}>
               -JOD{discount.toFixed(2)}
             </span>
           </div>
@@ -611,9 +561,7 @@ function MobileRow({ label, value, valueAccent }) {
 }
 
 // ──────────────────────────────────────────────────────────────────────
-// Desktop right-column composite — same shape as the details page card
-// but with an embedded T&C checkbox above the CTA and "Confirm & Pay"
-// as the CTA copy.
+// Desktop right-column composite — embedded T&C checkbox above the CTA.
 // ──────────────────────────────────────────────────────────────────────
 
 function MiniItem({ item }) {
@@ -623,9 +571,7 @@ function MiniItem({ item }) {
         <Image src={item.image} alt={item.name} fill sizes="64px" className="object-cover" />
       </div>
       <div className="flex min-w-0 flex-1 flex-col">
-        <h4 className="font-display text-[14px] font-bold leading-5 text-[#11191f]">
-          {item.name}
-        </h4>
+        <h4 className="font-display text-[14px] font-bold leading-5 text-[#11191f]">{item.name}</h4>
         <p className="font-body text-[12px] leading-4 text-[#6b7280]" style={condensed}>
           {item.variantLabel}
         </p>
@@ -658,11 +604,13 @@ function PaymentOrderSummaryCard({
   termsAccepted,
   onToggleTerms,
   onPlaceOrder,
+  submitting,
 }) {
   const { subtotal, discount, shipping, tax, total, itemCount } = totals;
   const taxInclusive = !!totals.taxInclusive;
   const taxLabel = taxInclusive ? "Tax (included)" : "Tax (Estimated)";
   const taxValue = taxInclusive ? totals.taxIncludedAmount ?? 0 : tax;
+  const disabled = !termsAccepted || submitting;
   return (
     <div className="flex w-full flex-col gap-4 rounded-lg border border-[#f3f4f6] bg-[#f9fafb] p-6">
       <h3 className="w-full border-b border-[#e5e7eb] pb-4 font-display text-[16px] font-bold uppercase leading-6 tracking-[0.4px] text-[#11191f]">
@@ -699,10 +647,7 @@ function PaymentOrderSummaryCard({
               <Icon name="check-success" className="h-3 w-[10.5px]" />
               <span>Discount ({appliedPromo?.code})</span>
             </span>
-            <span
-              className="font-display text-[14px] font-medium leading-5"
-              style={{ color: "#16a34a" }}
-            >
+            <span className="font-display text-[14px] font-medium leading-5" style={{ color: "#16a34a" }}>
               -{formatJOD(discount)}
             </span>
           </div>
@@ -721,29 +666,24 @@ function PaymentOrderSummaryCard({
       <button
         type="button"
         onClick={onPlaceOrder}
-        disabled={!termsAccepted}
+        disabled={disabled}
         className="mt-2 flex h-14 w-full items-center justify-center rounded-[4px] text-white shadow-[0_10px_15px_-3px_rgba(0,0,0,0.10),0_4px_6px_-4px_rgba(0,0,0,0.10)] disabled:cursor-not-allowed"
-        style={{
-          backgroundColor: termsAccepted ? "#11191f" : "rgba(17,25,31,0.5)",
-        }}
+        style={{ backgroundColor: disabled ? "rgba(17,25,31,0.5)" : "#11191f" }}
       >
         <span className="font-display text-[14px] font-bold uppercase leading-6 tracking-[0.8px]">
-          Confirm &amp; Pay
+          {submitting ? "Processing…" : "Confirm & Pay"}
         </span>
       </button>
 
-      <p
-        className="text-center font-body text-[10px] leading-[15px] text-[#9ca3af]"
-        style={condensed}
-      >
+      <p className="text-center font-body text-[10px] leading-[15px] text-[#9ca3af]" style={condensed}>
         By proceeding to payment, you agree to our{" "}
-        <a href="/#terms" className="underline">
+        <Link href="/terms" className="underline">
           Terms of Service
-        </a>{" "}
+        </Link>{" "}
         and{" "}
-        <a href="/#privacy" className="underline">
+        <Link href="/privacy" className="underline">
           Privacy Policy
-        </a>
+        </Link>
         .
       </p>
 
@@ -752,10 +692,62 @@ function PaymentOrderSummaryCard({
         style={{ backgroundColor: "#f3f4f6" }}
       >
         <Icon name="lock-sm" className="h-3 w-[10.5px]" />
-        <span className="font-display text-[10px] leading-[15px] text-[#6b7280]">
-          Encrypted &amp; Secure
-        </span>
+        <span className="font-display text-[10px] leading-[15px] text-[#6b7280]">Encrypted &amp; Secure</span>
       </div>
+    </div>
+  );
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// Loading / empty / error gates.
+// ──────────────────────────────────────────────────────────────────────
+
+function CheckoutLoading() {
+  return (
+    <div className="flex flex-1 items-center justify-center px-6 py-24">
+      <div className="flex flex-col items-center gap-3">
+        <div className="size-8 animate-spin rounded-full border-2 border-[#e5e7eb] border-t-[#11191f]" />
+        <p className="font-body text-[14px] text-[#6b7280]" style={condensed}>
+          Loading checkout…
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function EmptyCheckout() {
+  return (
+    <div className="flex flex-1 flex-col items-center justify-center gap-4 px-6 py-24 text-center">
+      <div className="grid size-16 place-items-center rounded-full bg-[#f3f4f6]">
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src="/shop/icon-bag.svg" alt="" aria-hidden className="size-7" />
+      </div>
+      <h2 className="font-display text-[20px] font-bold uppercase leading-7 tracking-[-0.5px] text-[#11191f]">
+        Your cart is empty
+      </h2>
+      <p className="max-w-[320px] font-body text-[14px] leading-5 text-[#6b7280]" style={condensed}>
+        Add a few pieces from the shop before checking out.
+      </p>
+      <Link
+        href="/shop"
+        className="mt-2 flex h-12 items-center justify-center rounded-[4px] bg-[#11191f] px-8 font-display text-[14px] font-bold uppercase leading-5 text-white tracking-[0.7px]"
+      >
+        Continue Shopping
+      </Link>
+    </div>
+  );
+}
+
+function ErrorBanner({ message }) {
+  return (
+    <div
+      role="alert"
+      className="mx-4 mt-4 flex items-center gap-3 rounded-[4px] border border-[#fecaca] px-4 py-3 md:mx-8"
+      style={{ backgroundColor: "#fef2f2" }}
+    >
+      <span className="font-body text-[13px] leading-5 text-[#b91c1c]" style={condensed}>
+        {message}
+      </span>
     </div>
   );
 }
@@ -766,26 +758,123 @@ function PaymentOrderSummaryCard({
 
 export default function PaymentPageClient() {
   const router = useRouter();
-  const [items] = useState(CART_ITEMS);
-
-  // The applied promo lives in the store (checkoutInfo.appliedPromoCode), so it
-  // carries over from /cart + /checkout. Apply/clear validate against the
-  // backend (myAppValidatePromoCode) and write to the store — single source of
-  // truth, no local copy.
-  const appliedPromo = useRepairStore(selectAppliedPromoCode);
   const isLoggedIn = useRepairStore(selectIsLoggedIn);
+  const checkoutInfo = useRepairStore(selectCheckoutInfo);
 
-  const applyPromo = async (code) => {
-    if (!isLoggedIn) return { ok: false, error: "Sign in to apply a promo code." };
-    const res = await validatePromoCode(code, calcSubtotal(items));
-    if (res.ok) useRepairStore.getState().applyPromoCode(res.promo);
-    return res;
+  // Gate on store rehydration (skipHydration) — without this, a logged-in user
+  // who refreshes /checkout/payment would read isLoggedIn=false on the first
+  // frame and get bounced to /cart before the persisted auth state loads.
+  const [hydrated, setHydrated] = useState(() => useRepairStore.persist.hasHydrated());
+  useEffect(() => {
+    if (hydrated) return undefined;
+    const unsub = useRepairStore.persist.onFinishHydration(() => setHydrated(true));
+    if (useRepairStore.persist.hasHydrated()) setHydrated(true);
+    return unsub;
+  }, [hydrated]);
+
+  // Checkout requires an account (guests register on the details step). Only
+  // evaluate AFTER hydration so a real session isn't misread as logged-out.
+  useEffect(() => {
+    if (hydrated && !isLoggedIn) router.replace("/cart");
+  }, [hydrated, isLoggedIn, router]);
+
+  const settings = useCommerceSettings();
+
+  // The shipping method chosen on the details step drives the totals math.
+  // checkoutInfo is NOT persisted, so a hard refresh of this page resets it to
+  // "standard" (and clears the address selection below) — the displayed total
+  // still matches what's charged because the server recomputes from the same key.
+  const shippingKey = checkoutInfo.selectedShippingMethodKey || "standard";
+
+  const {
+    items,
+    loading: cartLoading,
+    error: cartError,
+    totals,
+    appliedPromo,
+    applyPromo,
+    clearPromo,
+    promoError,
+  } = useCart({ shippingMethodKey: shippingKey });
+
+  const { addresses, loading: addrLoading } = useAddresses();
+
+  // Resolve the address to charge: the one selected on /checkout, else the
+  // default, else the first saved. Derived (no effect) so it can't race the
+  // async address load. Null when the user has no saved address.
+  const resolvedAddress = useMemo(() => {
+    if (!addresses.length) return null;
+    return (
+      addresses.find((a) => String(a.id) === String(checkoutInfo.selectedAddressId)) ??
+      addresses.find((a) => a.isDefault) ??
+      addresses[0]
+    );
+  }, [addresses, checkoutInfo.selectedAddressId]);
+
+  // The admin commerce settings decide WHICH payment-method TYPES are available
+  // (enabled only; the admin patch refuses to leave zero enabled). The user's
+  // saved cards (demo, client-side) fill the "card" type — added via
+  // AddCardDrawer, so a freshly-registered user can add one and pay by card.
+  const enabledPayments = useMemo(
+    () => (Array.isArray(settings?.paymentMethods) ? settings.paymentMethods.filter((m) => m.enabled) : []),
+    [settings]
+  );
+  const isCardKey = (k) => k === "visa" || k === "mastercard" || k === "card";
+  const cardMethod = enabledPayments.find((m) => isCardKey(m.key));
+  const cardEnabled = !!cardMethod;
+  const savedCards = useRepairStore(selectPaymentCards);
+
+  // Unified, selectable option list: each saved card (when card payment is on)
+  // + each enabled wallet + Cash on Delivery.
+  const options = useMemo(() => {
+    const list = [];
+    if (cardEnabled) {
+      for (const c of savedCards) {
+        list.push({
+          id: `card:${c.id}`,
+          kind: "card",
+          paymentKey: cardMethod.key,
+          tileKey: c.brand,
+          title: `${brandName(c.brand)} ending ${c.last4}`,
+          subtitle: c.expiry ? `Expires ${c.expiry}` : "Saved card",
+          card: c,
+        });
+      }
+    }
+    for (const m of enabledPayments) {
+      const k = String(m.key).toLowerCase();
+      if (k === "applepay" || k === "googlepay") {
+        list.push({ id: `method:${k}`, kind: k, paymentKey: m.key, tileKey: k, title: m.name, subtitle: "Quick payment" });
+      } else if (k === "cod") {
+        list.push({ id: "method:cod", kind: "cod", paymentKey: m.key, tileKey: "cod", title: m.name, subtitle: "Pay when you receive" });
+      }
+    }
+    return list;
+  }, [cardEnabled, cardMethod, savedCards, enabledPayments]);
+
+  // Derived selection (no effect): the previously-chosen option if still
+  // present, else the default saved card, else the first option.
+  const [chosenOptionId, setChosenOptionId] = useState(null);
+  const selectedOption =
+    options.find((o) => o.id === chosenOptionId) ??
+    options.find((o) => o.kind === "card" && o.card?.isDefault) ??
+    options[0] ??
+    null;
+
+  const [termsAccepted, setTermsAccepted] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [formError, setFormError] = useState(null);
+  const [gatewayOpen, setGatewayOpen] = useState(false);
+  const [addCardOpen, setAddCardOpen] = useState(false);
+
+  // Add a demo card (AddCardDrawer returns brand/last4/expiry/holder — no PAN)
+  // and auto-select it.
+  const handleAddCard = (card) => {
+    const id = useRepairStore.getState().addPaymentCard(card);
+    setChosenOptionId(`card:${id}`);
   };
-  const clearPromo = () => useRepairStore.getState().clearPromoCode();
 
-  // Live, admin-flagged example promo codes (same source as /cart). Fetched once
-  // at the page level and passed to both PromoCodeSection instances (mobile +
-  // desktop). Starts empty so no invalid mock codes flash; empty hides the row.
+  // Live, admin-flagged example promo codes (same source as /cart).
   const [promoExamples, setPromoExamples] = useState([]);
   useEffect(() => {
     let active = true;
@@ -797,67 +886,132 @@ export default function PaymentPageClient() {
     };
   }, []);
 
-  const [paymentMethods, setPaymentMethods] = useState(PAYMENT_METHODS);
-  const [selectedPaymentId, setSelectedPaymentId] = useState(DEFAULT_PAYMENT_METHOD_ID);
-  const [termsAccepted, setTermsAccepted] = useState(false);
-  const [shippingAddress, setShippingAddress] = useState(
-    CHECKOUT_ADDRESSES.find((a) => a.isDefault) ?? CHECKOUT_ADDRESSES[0],
-  );
-  const [addCardOpen, setAddCardOpen] = useState(false);
-  const [editAddressOpen, setEditAddressOpen] = useState(false);
-
-  // Tax from the LIVE commerce settings (rate + inclusive), mirroring
-  // myAppCheckout; shipping stays the flat mock fee (separate task).
-  const settings = useCommerceSettings();
-  const totals = useMemo(
-    () => calcTotals(items, appliedPromo, settings?.tax),
-    [items, appliedPromo, settings],
-  );
-
-  // AddCardDrawer.onSubmit yields `{ brand, last4, expiry, holder }`. Append
-  // it as a `kind: "card"` row and auto-select it so the new card is the
-  // active payment method.
-  const handleAddCard = (card) => {
-    const id = `pm-new-${Date.now()}`;
-    const row = {
-      id,
-      kind: "card",
-      brand: (card.brand || "visa").toLowerCase(),
-      last4: card.last4,
-      expiry: card.expiry,
-    };
-    setPaymentMethods((prev) => [...prev, row]);
-    setSelectedPaymentId(id);
+  // ── Place order ───────────────────────────────────────────────────────
+  // The actual order placement — runs AFTER a (simulated) payment approval, or
+  // directly for Cash on Delivery (nothing to authorize). myAppCheckout is
+  // transactional + decrements stock, so guard against double-submit.
+  const placeOrder = async (paymentKey) => {
+    if (submitting) return;
+    setSubmitting(true);
+    try {
+      const data = await repairCall(
+        "myAppCheckout",
+        {
+          addressId: resolvedAddress.id,
+          promoCode: appliedPromo?.code ?? undefined,
+          paymentMethod: paymentKey,
+          shippingMethodKey: shippingKey,
+        },
+        { isQuery: false }
+      );
+      // Persist the AUTHORITATIVE result (server-computed total) so the success
+      // page shows the charged figure, then clear the in-progress selections and
+      // refresh the (now server-cleared) cart badge. Keep `submitting` true so
+      // the empty-cart gate doesn't flash before we navigate.
+      const store = useRepairStore.getState();
+      store.setLastPlacedOrder({
+        order_id: data?.order_id,
+        order_number: data?.order_number,
+        total: data?.total,
+      });
+      store.clearCheckout();
+      store.syncCart();
+      router.push("/checkout/success");
+    } catch (err) {
+      const raw = String(err?.message || "");
+      const msg = raw.replace(/^repairClientApi \S+:\s*/, "") || "Checkout failed, please try again.";
+      setFormError(msg);
+      setSubmitting(false);
+    }
   };
 
-  // AddAddressDrawer.onSubmit yields the structured fields. Rebuild the
-  // flat display `line` so the read-only card downstream renders it.
-  const handleSaveAddress = (next) => {
-    setShippingAddress((prev) => ({
-      ...prev,
-      ...next,
-      line: buildAddressLine(next),
-    }));
-  };
-
-  const handlePlaceOrder = () => {
+  // CTA entry point: validate, then either place the order directly (Cash on
+  // Delivery — nothing to authorize) or open the DEMO payment gateway for
+  // card / wallet methods. The gateway is a placeholder until a real processor
+  // is integrated — see DemoPaymentGateway.jsx.
+  const startPayment = () => {
+    if (submitting || gatewayOpen) return;
+    setFormError(null);
     if (!termsAccepted) {
-      if (typeof window !== "undefined") {
-        window.alert("Please accept the Terms & Conditions to place your order.");
-      }
+      setFormError("Please accept the Terms & Conditions to place your order.");
       return;
     }
-    // Placeholder until `myAppCheckout` is wired through. The success
-    // screen reads its order metadata from `mockCart.js` so the numbers
-    // line up with what was just rendered here.
-    router.push("/checkout/success");
+    if (!resolvedAddress) {
+      setFormError("Please add a shipping address before placing your order.");
+      return;
+    }
+    if (!selectedOption) {
+      setFormError(
+        cardEnabled
+          ? "Add a card (or pick a payment method) to continue."
+          : "Please choose a payment method."
+      );
+      return;
+    }
+    // Cash on Delivery: nothing to authorize → place the order directly.
+    if (selectedOption.kind === "cod") {
+      placeOrder(selectedOption.paymentKey);
+      return;
+    }
+    // Card / wallet → simulate the gateway authorizing the on-file instrument.
+    setGatewayOpen(true);
   };
+
+  // DEMO gateway approved → place the real order with the selected method.
+  const handleGatewayApprove = () => {
+    setGatewayOpen(false);
+    if (selectedOption) placeOrder(selectedOption.paymentKey);
+  };
+
+  // DEMO gateway declined → record the attempt + show /checkout/failed. No
+  // order is created and stock is untouched (the failure happens BEFORE
+  // myAppCheckout, so there's nothing to roll back).
+  const handleGatewayDecline = ({ reason }) => {
+    setGatewayOpen(false);
+    const card = selectedOption?.card;
+    useRepairStore.getState().setPaymentAttempt({
+      amount: totals.total,
+      last4: card?.last4 ?? null,
+      brand: card ? brandName(card.brand) : selectedOption?.title ?? "Payment",
+      methodLabel: selectedOption?.title ?? "Payment",
+      reason: reason || "Your payment could not be processed.",
+      txnId: `TXN-${Date.now()}-${Math.floor(Math.random() * 100000).toString().padStart(5, "0")}`,
+    });
+    router.push("/checkout/failed");
+  };
+
+  const goEditAddress = () => router.push("/checkout");
+
+  // ── Loading / empty gates ──────────────────────────────────────────────
+  if (!hydrated || !isLoggedIn) {
+    return (
+      <main className="flex flex-1 flex-col bg-white">
+        <CheckoutLoading />
+      </main>
+    );
+  }
+  if (cartLoading || addrLoading) {
+    return (
+      <main className="flex flex-1 flex-col bg-white">
+        <CheckoutLoading />
+      </main>
+    );
+  }
+  if (items.length === 0 && !submitting) {
+    return (
+      <main className="flex flex-1 flex-col bg-white">
+        <EmptyCheckout />
+      </main>
+    );
+  }
 
   return (
     <main className="flex flex-1 flex-col bg-white">
+      {formError ? <ErrorBanner message={formError} /> : null}
+      {cartError ? <ErrorBanner message={cartError} /> : null}
+
       {/* ============== MOBILE LAYOUT ============== */}
       <div className="flex flex-col md:hidden">
-        {/* Stepper header — sits below ShopHeader (sticky 56px tall on mobile) */}
         <div
           className="sticky top-14 z-10 flex h-24 flex-col items-start border-b border-[#f5f5f5] p-4"
           style={{
@@ -875,10 +1029,13 @@ export default function PaymentPageClient() {
 
         <div className="py-4">
           <PaymentMethodSection
-            methods={paymentMethods}
-            selectedId={selectedPaymentId}
-            onSelect={setSelectedPaymentId}
+            options={options}
+            selectedId={selectedOption?.id ?? null}
+            onSelect={setChosenOptionId}
             onAddCard={() => setAddCardOpen(true)}
+            cardEnabled={cardEnabled}
+            hasCards={savedCards.length > 0}
+            loading={!settings}
             variant="mobile"
           />
         </div>
@@ -886,11 +1043,7 @@ export default function PaymentPageClient() {
         <div className="mx-4 h-px bg-[#f3f4f6]" />
 
         <div className="py-4">
-          <ShippingAddressDisplay
-            address={shippingAddress}
-            onEdit={() => setEditAddressOpen(true)}
-            variant="mobile"
-          />
+          <ShippingAddressDisplay address={resolvedAddress} onEdit={goEditAddress} variant="mobile" />
         </div>
 
         <div className="mx-4 h-px bg-[#f3f4f6]" />
@@ -899,7 +1052,8 @@ export default function PaymentPageClient() {
           appliedPromo={appliedPromo}
           onApplyCode={applyPromo}
           onClear={clearPromo}
-          isGuest={!isLoggedIn}
+          isGuest={false}
+          externalError={promoError}
           variant="mobile"
           suggestedCodes={promoExamples}
         />
@@ -930,8 +1084,8 @@ export default function PaymentPageClient() {
 
         <StickyCheckoutBar
           total={totals.total}
-          onContinue={handlePlaceOrder}
-          ctaText="PAY & CONFIRM ORDER"
+          onContinue={startPayment}
+          ctaText={submitting ? "Processing…" : "PAY & CONFIRM ORDER"}
         />
       </div>
 
@@ -942,32 +1096,29 @@ export default function PaymentPageClient() {
 
         <div className="flex flex-col items-stretch gap-12 lg:flex-row lg:items-start lg:justify-center">
           {/* Left column: payment methods + shipping address display */}
-          <div
-            className="flex w-full min-w-0 flex-col gap-8 lg:flex-1"
-            style={{ maxWidth: "901.33px" }}
-          >
+          <div className="flex w-full min-w-0 flex-col gap-8 lg:flex-1" style={{ maxWidth: "901.33px" }}>
             <PaymentMethodSection
-              methods={paymentMethods}
-              selectedId={selectedPaymentId}
-              onSelect={setSelectedPaymentId}
+              options={options}
+              selectedId={selectedOption?.id ?? null}
+              onSelect={setChosenOptionId}
               onAddCard={() => setAddCardOpen(true)}
+              cardEnabled={cardEnabled}
+              hasCards={savedCards.length > 0}
+              loading={!settings}
               variant="desktop"
             />
-            <ShippingAddressDisplay
-              address={shippingAddress}
-              onEdit={() => setEditAddressOpen(true)}
-              variant="desktop"
-            />
+            <ShippingAddressDisplay address={resolvedAddress} onEdit={goEditAddress} variant="desktop" />
           </div>
 
           {/* Right column: promo, order summary card (with embedded T&C +
-              CONFIRM & PAY CTA), trust + payments + support */}
+              Confirm & Pay CTA), trust + payments + support */}
           <aside className="flex w-full flex-col gap-6 lg:w-[426.66px] lg:shrink-0">
             <PromoCodeSection
               appliedPromo={appliedPromo}
               onApplyCode={applyPromo}
               onClear={clearPromo}
-              isGuest={!isLoggedIn}
+              isGuest={false}
+              externalError={promoError}
               variant="desktop"
               suggestedCodes={promoExamples}
             />
@@ -977,7 +1128,8 @@ export default function PaymentPageClient() {
               appliedPromo={appliedPromo}
               termsAccepted={termsAccepted}
               onToggleTerms={() => setTermsAccepted((v) => !v)}
-              onPlaceOrder={handlePlaceOrder}
+              onPlaceOrder={startPayment}
+              submitting={submitting}
             />
             <TrustBadgesRow variant="desktop" />
             <PaymentMethodsRow variant="desktop" />
@@ -986,19 +1138,23 @@ export default function PaymentPageClient() {
         </div>
       </div>
 
-      {/* Drawers — same components used from /account so the visual
-          language and animation stay consistent across the app. */}
-      <AddCardDrawer
-        open={addCardOpen}
-        onClose={() => setAddCardOpen(false)}
-        onSubmit={handleAddCard}
-      />
-      <AddAddressDrawer
-        open={editAddressOpen}
-        onClose={() => setEditAddressOpen(false)}
-        onSubmit={handleSaveAddress}
-        initial={shippingAddress}
-      />
+      {/* Add a (demo) card — reuses the account drawer; on submit it stores the
+          card and auto-selects it. */}
+      <AddCardDrawer open={addCardOpen} onClose={() => setAddCardOpen(false)} onSubmit={handleAddCard} />
+
+      {/* DEMO payment gateway — mounted only while open so each launch starts
+          fresh. Placeholder until a real processor is integrated. */}
+      {gatewayOpen && selectedOption ? (
+        <DemoPaymentGateway
+          amount={totals.total}
+          summary={selectedOption.title}
+          last4={selectedOption.card?.last4 ?? null}
+          brand={selectedOption.card ? brandName(selectedOption.card.brand) : selectedOption.title}
+          onApprove={handleGatewayApprove}
+          onDecline={handleGatewayDecline}
+          onClose={() => setGatewayOpen(false)}
+        />
+      ) : null}
     </main>
   );
 }

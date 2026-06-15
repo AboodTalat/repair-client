@@ -3,12 +3,14 @@
 import { useState } from "react";
 import CountryCodePicker from "./CountryCodePicker";
 import { DEFAULT_COUNTRY, phoneLengthFor } from "@/lib/countryCodes";
+import { repairCall } from "@/lib/repairAuthedApi";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 
-// Contact form — Figma 66:2449. Presentational shell matching the auth-page
-// pattern (no onSubmit handler yet). Wire to a backend resolver when the
-// contact-message endpoint lands on the repair sub-server.
+// Contact form — Figma 66:2449. Wired to the public `myAppSendContactMessage`
+// mutation on the repair sub-server (no auth required; the guest's null token
+// is harmless — same pattern as NewsletterSignup). Client-side validation below
+// is the contract the server also enforces.
 //
 // Field chrome per Figma: 1px #11191f border, 2px radius, Zalando Sans
 // Expanded Medium placeholders @ rgba(17,25,31,0.5). The `.contact-input`
@@ -34,6 +36,8 @@ export default function ContactForm() {
     message: "",
   });
   const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [sent, setSent] = useState(false);
 
   const phoneLen = phoneLengthFor(country.iso2);
 
@@ -57,8 +61,9 @@ export default function ContactForm() {
     setCountry(c);
   };
 
-  const onSubmit = (e) => {
+  const onSubmit = async (e) => {
     e.preventDefault();
+    if (submitting) return;
     setError("");
     if (!form.firstName.trim() || !form.lastName.trim()) {
       setError("Please enter your first and last name.");
@@ -84,9 +89,30 @@ export default function ContactForm() {
       setError("Please enter a message.");
       return;
     }
-    // Backend wiring (myAppSendContactMessage) lands later — see the contact
-    // bullet in Server CLAUDE.md. The validation above is the contract this
-    // form will honor once the call is wired.
+
+    // Wire format: full E.164 phone (`+<dial><local>`), matching the auth forms.
+    setSubmitting(true);
+    try {
+      await repairCall(
+        "myAppSendContactMessage",
+        {
+          firstName: form.firstName.trim(),
+          lastName: form.lastName.trim(),
+          email: form.email.trim(),
+          phone: `+${country.dial}${localDigits}`,
+          message: form.message.trim(),
+        },
+        { isQuery: false }
+      );
+      setSent(true);
+      setForm({ firstName: "", lastName: "", email: "", phone: "", message: "" });
+    } catch {
+      // Never surface the raw thrown "repairClientApi …" message — client-side
+      // validation already caught bad input, so a failure here is network/server.
+      setError("Something went wrong — please try again.");
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -183,18 +209,29 @@ export default function ContactForm() {
         <p
           role="alert"
           aria-live="polite"
-          className="font-display text-[10px] uppercase tracking-[0.4px] text-[#A50013] md:text-[12px]"
+          className="font-display text-[10px] uppercase tracking-[0.4px] md:text-[12px]"
+          style={{ color: "#A50013" }}
         >
           {error}
+        </p>
+      ) : sent ? (
+        <p
+          role="status"
+          aria-live="polite"
+          className="font-display text-[10px] uppercase tracking-[0.4px] md:text-[12px]"
+          style={{ color: "#15803d" }}
+        >
+          Message sent — we&apos;ll get back to you soon.
         </p>
       ) : null}
 
       <button
         type="submit"
-        className="mt-2 flex h-12 w-full items-center justify-center rounded-[6px] border border-[#11191f] font-display text-[14px] font-bold uppercase tracking-[0.6px] text-white md:h-14 md:text-[15px]"
+        disabled={submitting}
+        className="mt-2 flex h-12 w-full items-center justify-center rounded-[6px] border border-[#11191f] font-display text-[14px] font-bold uppercase tracking-[0.6px] text-white disabled:opacity-60 md:h-14 md:text-[15px]"
         style={{ backgroundColor: "#11191f" }}
       >
-        Send Message
+        {submitting ? "Sending…" : "Send Message"}
       </button>
     </form>
   );

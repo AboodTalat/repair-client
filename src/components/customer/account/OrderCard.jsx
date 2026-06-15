@@ -1,12 +1,19 @@
 import Image from "next/image";
 import Link from "next/link";
 import OrderStatusBadge from "./OrderStatusBadge";
-import { badgeFor } from "@/lib/mockOrders";
+import { badgeFor, isInFlight, formatJOD } from "@/lib/orders";
 
 // (#13) Track Order CTA — primary when the order is still in flight,
-// hidden once the order has terminated (delivered/cancelled/returned).
+// hidden once the order has terminated (delivered/cancelled/returned/failed).
 function showTrackCta(status) {
-  return status === "processing" || status === "prepared" || status === "handed_to_delivery" || status === "pending" || status === "dispatched";
+  return isInFlight(status);
+}
+
+// Secondary caption under the product name: item count for multi-item orders,
+// otherwise the single item's variant (colour / size).
+function captionFor(order) {
+  if (order.itemCount > 1) return `${order.itemCount} items`;
+  return order.variant || "";
 }
 
 // Order card — Figma mobile 41:1420 (cards under node 76:2106) +
@@ -21,7 +28,7 @@ function showTrackCta(status) {
 // Following the customer/shop/ProductCard split-by-variant pattern instead of
 // forcing both into a single responsive tree.
 
-function MobileOrderCard({ order }) {
+function MobileOrderCard({ order, onBuyAgain, buyAgainBusy = false }) {
   const badge = badgeFor(order.status);
   return (
     <article
@@ -70,23 +77,23 @@ function MobileOrderCard({ order }) {
                 {order.productName}
               </span>
               <span
-                className="font-body text-[14px] text-[#11191f]"
+                className="font-body text-[14px] text-[#11191f] whitespace-nowrap"
                 style={{ fontStretch: "75%", fontWeight: 500 }}
               >
-                {order.currency} {order.price}
+                {formatJOD(order.total)}
               </span>
             </div>
             <span
               className="font-body text-[12px] text-[rgba(17,25,31,0.5)]"
               style={{ fontStretch: "75%", fontWeight: 400 }}
             >
-              {order.subtitle}
+              {captionFor(order)}
             </span>
             <span
               className="font-body text-[12px] leading-4 text-[rgba(17,25,31,0.5)]"
               style={{ fontStretch: "75%", fontWeight: 400 }}
             >
-              {order.variant}
+              Order #{order.orderNumber}
             </span>
           </div>
           <OrderStatusBadge kind={badge.kind} label={badge.label} size="sm" />
@@ -112,24 +119,26 @@ function MobileOrderCard({ order }) {
           >
             Inquire
           </Link>
-          <Link
-            href={`/products/${order.productSlug ?? ""}`}
+          <button
+            type="button"
+            onClick={() => onBuyAgain?.(order.id)}
+            disabled={buyAgainBusy}
             className={
-              "flex h-8 flex-1 items-center justify-center rounded-[2px] border border-[#11191f] p-2 font-display text-[10px] font-bold uppercase " +
+              "flex h-8 flex-1 items-center justify-center rounded-[2px] border border-[#11191f] p-2 font-display text-[10px] font-bold uppercase disabled:opacity-60 " +
               (showTrackCta(order.status)
                 ? "text-[#11191f]"
                 : "bg-[#11191f] text-white")
             }
           >
-            Buy Again
-          </Link>
+            {buyAgainBusy ? "Adding…" : "Buy Again"}
+          </button>
         </div>
       </div>
     </article>
   );
 }
 
-function DesktopOrderCard({ order }) {
+function DesktopOrderCard({ order, onBuyAgain, buyAgainBusy = false }) {
   const badge = badgeFor(order.status);
   return (
     <article
@@ -176,20 +185,20 @@ function DesktopOrderCard({ order }) {
                 {order.productName}
               </span>
               <span className="font-display text-[16px] font-bold leading-6 text-[#11191f] whitespace-nowrap">
-                {order.currency} {order.price}
+                {formatJOD(order.total)}
               </span>
             </div>
             <span
               className="font-body text-[14px] leading-5 text-[rgba(17,25,31,0.5)]"
               style={{ fontStretch: "75%", fontWeight: 400 }}
             >
-              {order.subtitle}
+              {captionFor(order)}
             </span>
             <span
               className="font-body text-[14px] leading-5 text-[rgba(17,25,31,0.5)]"
               style={{ fontStretch: "75%", fontWeight: 400 }}
             >
-              {order.variant}
+              Order #{order.orderNumber}
             </span>
           </div>
           <div className="pt-2">
@@ -217,18 +226,20 @@ function DesktopOrderCard({ order }) {
           >
             Inquire
           </Link>
-          <Link
-            href={`/products/${order.productSlug ?? ""}`}
+          <button
+            type="button"
+            onClick={() => onBuyAgain?.(order.id)}
+            disabled={buyAgainBusy}
             className={
-              "flex h-12 flex-1 items-center justify-center rounded px-4 py-3 font-display text-[14px] font-bold uppercase " +
+              "flex h-12 flex-1 items-center justify-center rounded px-4 py-3 font-display text-[14px] font-bold uppercase disabled:opacity-60 " +
               (showTrackCta(order.status)
                 ? "border border-[#11191f] text-[#11191f]"
                 : "bg-[#11191f] text-white")
             }
             style={{ letterSpacing: "0.35px" }}
           >
-            Buy Again
-          </Link>
+            {buyAgainBusy ? "Adding…" : "Buy Again"}
+          </button>
         </div>
       </div>
     </article>

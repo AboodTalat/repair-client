@@ -20,6 +20,8 @@ import {
 } from "@/components/admin/shared/Icons";
 import { repairCall } from "@/lib/repairAuthedApi";
 import { revalidateStorefrontCategories } from "@/lib/categoryActions";
+import { useUploadThing } from "@/lib/uploadthing";
+import { useRepairStore, selectToken } from "@/lib/useRepairStore";
 
 // Bust the cached storefront category nav after a category change so the
 // storefront reflects it on the next refresh. Best-effort — never blocks or
@@ -38,7 +40,7 @@ function cleanErr(e, fallback) {
   return m || fallback;
 }
 
-const blankMajor = { id: null, name: "", visible: true, comingSoon: false };
+const blankMajor = { id: null, name: "", visible: true, comingSoon: false, image: null };
 const blankSub = { id: null, majorId: null, name: "", visible: true, comingSoon: false };
 
 const MAJOR_ACCENT_COLORS = ["#1d4ed8", "#7c3aed", "#059669", "#d97706", "#0891b2", "#db2777"];
@@ -61,6 +63,7 @@ function normalize(tree) {
       name: m.name,
       visible: m.is_visible,
       comingSoon: m.coming_soon === true,
+      image: m.image_url ?? null,
       productCount: m.product_count ?? 0,
       order: m.sort_order ?? 0,
     });
@@ -302,13 +305,16 @@ export default function CategoryManager() {
     if (!editing) return;
     try {
       if (editing.kind === "major") {
+        // `image` is null when cleared or never set; the resolver normalizes
+        // null/"" → no image and only touches the column when the key is sent.
+        const imageUrl = values.image || null;
         if (values.id) {
           await repairCall("myAppAdminUpdateMajorCategory", {
-            id: Number(values.id), name: values.name, is_visible: values.visible, coming_soon: !!values.comingSoon,
+            id: Number(values.id), name: values.name, is_visible: values.visible, coming_soon: !!values.comingSoon, image_url: imageUrl,
           }, { isQuery: false });
         } else {
           await repairCall("myAppAdminCreateMajorCategory", {
-            name: values.name, is_visible: values.visible, coming_soon: !!values.comingSoon, sort_order: majors.length,
+            name: values.name, is_visible: values.visible, coming_soon: !!values.comingSoon, image_url: imageUrl, sort_order: majors.length,
           }, { isQuery: false });
         }
       } else {
@@ -720,8 +726,19 @@ function CategoryDrawer({ editing, majors, onClose, onSave }) {
   const [draft, setDraft] = useState({});
   const [errors, setErrors] = useState({});
   const [drawerError, setDrawerError] = useState(null);
+  const [imageError, setImageError] = useState(null);
   const [saving, setSaving] = useState(false);
   const [syncedEditing, setSyncedEditing] = useState(null);
+  const fileInputRef = useRef(null);
+
+  // UploadThing — admin-gated `categoryImage` route (single file ≤4MB). The
+  // hook is called unconditionally (Rules of Hooks); only the rendered field is
+  // gated to major categories. The token is forwarded so the upload router's
+  // requireRole(["admin"]) middleware authorizes the request.
+  const token = useRepairStore(selectToken);
+  const { startUpload, isUploading } = useUploadThing("categoryImage", {
+    headers: { Authorization: `Bearer ${token}` },
+  });
 
   // Initialise the form draft from the incoming `editing` row during render —
   // the React-idiomatic alternative to a setState-in-effect, and it avoids a
@@ -731,6 +748,31 @@ function CategoryDrawer({ editing, majors, onClose, onSave }) {
     setDraft({ ...editing.row });
     setErrors({});
     setDrawerError(null);
+    setImageError(null);
+  }
+
+  async function onPickImage(e) {
+    const file = e.target.files?.[0];
+    // Reset the input value so re-selecting the same file fires onChange again.
+    e.target.value = "";
+    if (!file) return;
+    setImageError(null);
+    try {
+      const uploaded = await startUpload([file]);
+      const url = uploaded?.[0]?.ufsUrl || uploaded?.[0]?.url;
+      if (!url) {
+        setImageError("Upload failed. Please try again.");
+        return;
+      }
+      setDraft((d) => ({ ...d, image: url }));
+    } catch {
+      setImageError("Upload failed. Please try again.");
+    }
+  }
+
+  function removeImage() {
+    setImageError(null);
+    setDraft((d) => ({ ...d, image: null }));
   }
 
   async function handleSave() {
@@ -761,7 +803,7 @@ function CategoryDrawer({ editing, majors, onClose, onSave }) {
           <Button variant="secondary" onClick={onClose}>
             Cancel
           </Button>
-          <Button onClick={handleSave} disabled={saving}>
+          <Button onClick={handleSave} disabled={saving || isUploading}>
             {saving ? "Saving..." : "Save"}
           </Button>
         </>
@@ -804,6 +846,66 @@ function CategoryDrawer({ editing, majors, onClose, onSave }) {
               <span className="font-body text-[11px] text-[#dc2626]">{errors.name}</span>
             ) : null}
           </Field>
+          {editing?.kind === "major" ? (
+            <Field label="Category image">
+              <p className="-mt-1 mb-2 font-body text-[11px] text-[#6b7280]">
+                Shown on the storefront shop page tile. Optional — a built-in
+                fallback image is used when none is set. PNG/JPG up to 4MB.
+              </p>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={onPickImage}
+              />
+              {draft.image ? (
+                <div className="flex items-start gap-3">
+                  <div className="relative size-24 shrink-0 overflow-hidden rounded-[2px] border border-[#e5e7eb] bg-[#f3f4f6]">
+                    {/* Admin-only preview — a plain <img> avoids next/image
+                        layout concerns; the storefront tile uses next/image. */}
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={draft.image}
+                      alt="Category"
+                      className="size-full object-cover"
+                    />
+                  </div>
+                  <div className="flex flex-col gap-2">
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      onClick={() => fileInputRef.current?.click()}
+                      disabled={isUploading}
+                    >
+                      {isUploading ? "Uploading..." : "Replace"}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={removeImage}
+                      disabled={isUploading}
+                    >
+                      Remove
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  icon={<IconPlus />}
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={isUploading}
+                >
+                  {isUploading ? "Uploading..." : "Upload image"}
+                </Button>
+              )}
+              {imageError ? (
+                <span className="mt-2 block font-body text-[11px] text-[#dc2626]">{imageError}</span>
+              ) : null}
+            </Field>
+          ) : null}
           <div className="flex items-center justify-between rounded-[2px] border border-[#e5e7eb] bg-[#fafafa] p-3">
             <div>
               <p className="font-body text-[13px] font-medium text-[#11191f]">

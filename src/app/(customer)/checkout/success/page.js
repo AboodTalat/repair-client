@@ -5,10 +5,10 @@ import OrderSuccessClient from "@/components/customer/cart/OrderSuccessClient";
 // 85:8692 + desktop 119:6418. Inherits ShopHeader + ShopFooter from
 // `(customer)/layout.js`.
 //
-// Purely presentational — order number / payment label / estimated
-// delivery are hardcoded against the seeded cart in `mockCart.js`. Swap
-// to data returned from `myAppCheckout` once the mutation is wired
-// through (resolver already exists in orders.ts).
+// Wired to the real placed order: reads the store's persisted `lastOrder`
+// (set by myAppCheckout) and fetches `myAppGetOrderDetail` for the line
+// items + snapshotted shipping address. Visiting with no placed order
+// redirects to /shop (see OrderSuccessClient).
 
 export const metadata = {
   title: "Order Confirmed — Repair",

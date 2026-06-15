@@ -335,3 +335,32 @@ export function phoneLengthFor(iso2) {
   if (typeof iso2 !== "string") return DEFAULT_PHONE_LENGTH;
   return PHONE_LENGTHS[iso2.toUpperCase()] ?? DEFAULT_PHONE_LENGTH;
 }
+
+// Dial codes, longest first — so a NANP number like "1242…" matches "1242"
+// (Bahamas) before the bare "1". Computed once at module load.
+const DIALS_BY_LENGTH_DESC = Array.from(
+  new Set(COUNTRY_CODES.map((c) => c.dial))
+).sort((a, b) => b.length - a.length);
+
+// Split a stored E.164 phone ("+962791234567") back into { country, local } so
+// the account editor can prefill the country picker + the national-number input,
+// and the display can show the dial code separately. Matching is LENIENT and
+// cosmetic — the editor always rebuilds "+<dial><local>", so a mislabel between
+// shared-dial countries (e.g. US vs Canada on "+1") round-trips to the same
+// stored value. Returns DEFAULT_COUNTRY + the raw digits when the string has no
+// "+" prefix or no dial matches.
+export function parseE164(phone) {
+  const raw = typeof phone === "string" ? phone.trim() : "";
+  if (!raw.startsWith("+")) {
+    return { country: DEFAULT_COUNTRY, local: raw.replace(/\D/g, "") };
+  }
+  const digits = raw.slice(1).replace(/\D/g, "");
+  const dial = DIALS_BY_LENGTH_DESC.find(
+    (d) => digits.startsWith(d) && digits.length > d.length
+  );
+  if (!dial) {
+    return { country: DEFAULT_COUNTRY, local: digits };
+  }
+  const country = COUNTRY_CODES.find((c) => c.dial === dial) ?? DEFAULT_COUNTRY;
+  return { country, local: digits.slice(dial.length) };
+}

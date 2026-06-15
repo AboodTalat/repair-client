@@ -291,8 +291,20 @@ export const useRepairStore = create(
       cartInfo: { ...initialCartInfo },
       guestCart: { items: [] },
       wishlistInfo: { ...initialWishlistInfo },
+      // Demo saved payment cards (client-only — { id, brand, last4, expiry,
+      // holder, isDefault }; NEVER a full PAN or CVC). Persisted + user-scoped
+      // (wiped on logout). A real card vault / payment processor replaces this.
+      paymentCards: [],
       lastOrder: initialLastOrder,
       checkoutInfo: { ...initialCheckoutInfo },
+
+      // Transient (NOT persisted) — the most recent DEMO payment-gateway
+      // attempt that was declined, consumed by /checkout/failed to show the
+      // attempted amount / card last4 / txn id. Set on a simulated decline,
+      // cleared on a successful order (clearCheckout). When a real payment
+      // gateway lands this is replaced by the processor's rejection payload.
+      // { amount, last4, brand, methodLabel, reason, txnId } | null
+      paymentAttempt: null,
 
       // Transient (NOT persisted) — flips true when a refresh fails OR
       // another tab tells us the session is dead.  StoreProvider subscribes
@@ -351,6 +363,7 @@ export const useRepairStore = create(
           wishlistInfo: { ...initialWishlistInfo },
           lastOrder: initialLastOrder,
           checkoutInfo: { ...initialCheckoutInfo },
+          paymentCards: [],
           sessionExpired: false,
         });
         broadcastAuth({ kind: "auth-cleared", at: Date.now() });
@@ -685,24 +698,43 @@ export const useRepairStore = create(
           const items = get().guestCart.items;
           if (items.length) {
             get().setCartCount(sumGuestQty(items)); // seed → no blink
-            await Promise.all(
-              items.map((it) =>
-                graphqlFetchWithRetry(
-                  "myAppAddToCart",
-                  {
-                    productVariantId: Number(it.product_variant_id),
-                    quantity: Number(it.quantity) || 1,
-                  },
-                  {
-                    getToken: () => get().authInfo.token,
-                    refresh: () => get().refreshAuth(),
-                    isQuery: false,
-                  }
-                ).catch(() => null) // sold out / gone at merge time — skip the line
-              )
+            const results = await Promise.all(
+              items.map(async (it) => {
+                try {
+                  await graphqlFetchWithRetry(
+                    "myAppAddToCart",
+                    {
+                      productVariantId: Number(it.product_variant_id),
+                      quantity: Number(it.quantity) || 1,
+                    },
+                    {
+                      getToken: () => get().authInfo.token,
+                      refresh: () => get().refreshAuth(),
+                      isQuery: false,
+                    }
+                  );
+                  return { it, keep: false }; // pushed to the DB cart → drop from guest
+                } catch (err) {
+                  // Distinguish a PERMANENT application rejection (the variant
+                  // sold out / no longer exists — message "…myAppAddToCart: …",
+                  // no HTTP status) from a TRANSIENT failure (network TypeError,
+                  // 5xx, or 401-after-failed-refresh — has a status, or a
+                  // non-app-level message). Only drop permanent rejections; KEEP
+                  // transient ones in the guest cart so a flaky moment during
+                  // login can't silently lose the basket (the next merge retries
+                  // them). Previously every failure was swallowed and the guest
+                  // cart was cleared unconditionally.
+                  const appLevelReject =
+                    err?.status == null && /myAppAddToCart:/.test(err?.message || "");
+                  return { it, keep: !appLevelReject };
+                }
+              })
             );
+            const leftover = results.filter((r) => r.keep).map((r) => r.it);
+            set({ guestCart: { items: leftover } });
+          } else {
+            set({ guestCart: { items: [] } }); // invariant: logged-in ⇒ no guest cart
           }
-          set({ guestCart: { items: [] } }); // invariant: logged-in ⇒ no guest cart
           // Badge reconcile — fire-and-forget so the merge promise resolves the
           // moment the DB cart is complete (the point the /cart fetch waits for),
           // not after a second round-trip.
@@ -836,6 +868,58 @@ export const useRepairStore = create(
         set({ lastOrder: initialLastOrder });
       },
 
+      // ── Saved payment cards (demo; client-only) ────────────────────────────
+      //
+      // These back the /checkout/payment saved-card list + "Add New Card" flow
+      // while there's no real card vault. Only brand/last4/expiry/holder are
+      // kept — AddCardDrawer derives those and never returns the full PAN/CVC.
+
+      /** Append a card (first card becomes the default). Returns its id. */
+      addPaymentCard(card) {
+        const id = card.id ?? `card-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+        set((s) => {
+          const isFirst = s.paymentCards.length === 0;
+          const entry = {
+            id,
+            brand: card.brand ?? "unknown",
+            last4: card.last4 ?? "",
+            expiry: card.expiry ?? "",
+            holder: card.holder ?? "",
+            isDefault: isFirst,
+          };
+          return { paymentCards: [...s.paymentCards, entry] };
+        });
+        return id;
+      },
+
+      /** Remove a card; promote a remaining one to default if needed. */
+      removePaymentCard(id) {
+        set((s) => {
+          const remaining = s.paymentCards.filter((c) => c.id !== id);
+          const removedDefault = s.paymentCards.find((c) => c.id === id)?.isDefault;
+          if (removedDefault && remaining.length && !remaining.some((c) => c.isDefault)) {
+            remaining[0] = { ...remaining[0], isDefault: true };
+          }
+          return { paymentCards: remaining };
+        });
+      },
+
+      /**
+       * Set the default card (radio: at most one). Clicking the current default
+       * toggles it OFF (no default) — mirrors the address single-default UX.
+       */
+      setDefaultPaymentCard(id) {
+        set((s) => {
+          const turningOff = !!s.paymentCards.find((c) => c.id === id)?.isDefault;
+          return {
+            paymentCards: s.paymentCards.map((c) => ({
+              ...c,
+              isDefault: turningOff ? false : c.id === id,
+            })),
+          };
+        });
+      },
+
       // ── Checkout actions (in-memory only) ──────────────────────────────────
 
       /** Store the validated promo result from myAppValidatePromoCode. */
@@ -870,9 +954,23 @@ export const useRepairStore = create(
         }));
       },
 
-      /** Wipe in-progress checkout selections.  Does NOT touch lastOrder. */
+      /** Wipe in-progress checkout selections + any stale declined-payment
+       *  attempt.  Does NOT touch lastOrder. */
       clearCheckout() {
-        set({ checkoutInfo: { ...initialCheckoutInfo } });
+        set({ checkoutInfo: { ...initialCheckoutInfo }, paymentAttempt: null });
+      },
+
+      /**
+       * Record a DEMO-gateway declined payment so /checkout/failed can show
+       * the attempted amount / card last4 / txn id. Transient (not persisted)
+       * — a refresh of the failed page falls back to a generic message.
+       */
+      setPaymentAttempt(attempt) {
+        set({ paymentAttempt: attempt });
+      },
+
+      clearPaymentAttempt() {
+        set({ paymentAttempt: null });
       },
 
       // ── Global reset ───────────────────────────────────────────────────────
@@ -890,6 +988,7 @@ export const useRepairStore = create(
           wishlistInfo: { ...initialWishlistInfo },
           lastOrder: initialLastOrder,
           checkoutInfo: { ...initialCheckoutInfo },
+          paymentCards: [],
         });
         useRepairStore.persist.clearStorage();
       },
@@ -917,6 +1016,7 @@ export const useRepairStore = create(
         guestCart: state.guestCart,
         wishlistInfo: state.wishlistInfo,
         lastOrder: state.lastOrder,
+        paymentCards: state.paymentCards,
       }),
     }
   )
@@ -976,6 +1076,7 @@ export function initRepairStoreListener() {
           wishlistInfo: { ...initialWishlistInfo },
           lastOrder: initialLastOrder,
           checkoutInfo: { ...initialCheckoutInfo },
+          paymentCards: [],
           sessionExpired: false,
         });
         break;
@@ -1024,6 +1125,8 @@ export const selectWishlistIds = (s) => s.wishlistInfo.productIds;
 export const selectCheckoutInfo = (s) => s.checkoutInfo;
 export const selectAppliedPromoCode = (s) => s.checkoutInfo.appliedPromoCode;
 export const selectLastPlacedOrder = (s) => s.lastOrder;
+export const selectPaymentCards = (s) => s.paymentCards;
+export const selectPaymentAttempt = (s) => s.paymentAttempt;
 export const selectSessionExpired = (s) => s.sessionExpired;
 
 // Resolves once any in-flight guest-cart merge (mergeGuestCartThenSync) has

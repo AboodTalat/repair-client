@@ -965,9 +965,9 @@ export function OrderTotalsBlock({ totals, appliedPromo, variant, onContinue, is
           )}
           <p className="text-center font-body text-[10px] leading-[15px] text-[#9ca3af]" style={condensed}>
             By proceeding to payment, you agree to our{" "}
-            <a href="/#terms" className="underline">Terms of Service</a>
+            <a href="/terms" className="underline">Terms of Service</a>
             {" "}and{" "}
-            <a href="/#privacy" className="underline">Privacy Policy</a>.
+            <a href="/privacy" className="underline">Privacy Policy</a>.
           </p>
           <div
             className="flex items-center justify-center gap-2 rounded-[4px] py-1.5"
@@ -1168,10 +1168,10 @@ export function PoliciesFootnote() {
         style={condensed}
       >
         <span>By proceeding to payment, you agree to our </span>
-        <a href="/#terms" className="text-[#11191f] underline">Terms of Service</a>
+        <a href="/terms" className="text-[#11191f] underline">Terms of Service</a>
         <br />
         <span>and </span>
-        <a href="/#privacy" className="text-[#11191f] underline">Privacy Policy</a>
+        <a href="/privacy" className="text-[#11191f] underline">Privacy Policy</a>
         <span>.</span>
       </div>
       <div

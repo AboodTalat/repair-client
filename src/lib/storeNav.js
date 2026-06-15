@@ -111,12 +111,18 @@ function shapeShopTree(tree) {
     const slug = slugify(major.name);
     const deco = CATEGORY_PRESENTATION[slug] ?? DEFAULT_PRESENTATION;
     const subs = Array.isArray(major.sub_categories) ? major.sub_categories : [];
+    // Prefer the admin-uploaded image; fall back to the built-in presentation
+    // image so a category tile never renders a broken <Image>. The backend
+    // only ever stores a validated UploadThing URL or null here (migration
+    // 0015), so a truthy value is safe to hand to next/image (the host is
+    // already in next.config remotePatterns).
+    const adminImage = typeof major.image_url === "string" ? major.image_url.trim() : "";
     return {
       id: major.id,
       slug,
       name: major.name,
       tagline: deco.tagline,
-      image: deco.image,
+      image: adminImage || deco.image,
       active: isShoppable(major),
       comingSoon: isComingSoon(major),
       subs: subs.map((sub) => ({
@@ -237,11 +243,12 @@ export const FOOTER_HELP_LINKS = [
   { label: "Track Order", href: "/account/orders" },
 ];
 
-// Footer legal links — no dedicated pages yet; kept as hash anchors so the
-// markup is consistent and easy to swap when the legal pages land.
+// Footer legal links. Privacy + Terms point at their dedicated static pages
+// ((customer)/privacy + (customer)/terms); Cookies has no page yet and stays a
+// hash anchor until one lands.
 export const FOOTER_LEGAL_LINKS = [
-  { label: "Privacy Policy", href: "/#privacy" },
-  { label: "Terms of Service", href: "/#terms" },
+  { label: "Privacy Policy", href: "/privacy" },
+  { label: "Terms of Service", href: "/terms" },
   { label: "Cookies", href: "/#cookies" },
 ];
 

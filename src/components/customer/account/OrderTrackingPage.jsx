@@ -2,8 +2,17 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { TRACKING_PIPELINE, trackingProgress } from "@/lib/mockOrders";
+import { useRouter } from "next/navigation";
+import { useEffect, useMemo, useState } from "react";
+import { TRACKING_PIPELINE, trackingProgress, badgeFor, formatOrderDate, formatJOD } from "@/lib/orders";
+import { buildAddressLine } from "@/lib/mockCart";
 import OrderStatusBadge from "@/components/customer/account/OrderStatusBadge";
+import ReorderResultDrawer from "@/components/customer/account/ReorderResultDrawer";
+import { repairCall } from "@/lib/repairAuthedApi";
+import { useCommerceSettings } from "@/lib/useCommerceSettings";
+import { useRepairStore } from "@/lib/useRepairStore";
+
+const PLACEHOLDER_IMAGE = "/shop/model-1.png";
 
 function CheckIcon() {
   return (
@@ -35,8 +44,8 @@ function StepIcon({ status }) {
   );
 }
 
-function Pipeline({ order }) {
-  const { stepIndex, terminal } = trackingProgress(order.status);
+function Pipeline({ status }) {
+  const { stepIndex, terminal } = trackingProgress(status);
 
   if (terminal === "cancelled") {
     return (
@@ -59,6 +68,23 @@ function Pipeline({ order }) {
       <div className="flex flex-col items-center gap-2 rounded-[4px] border border-[#e9d5ff] bg-[#faf5ff] p-6 text-center">
         <p className="font-display text-[16px] font-bold uppercase text-[#11191f]">This order was returned</p>
         <p className="font-body text-[13px] text-[#6b7280]">A refund will arrive to your original payment method.</p>
+      </div>
+    );
+  }
+  if (terminal === "failed_delivery") {
+    return (
+      <div className="flex flex-col items-center gap-2 rounded-[4px] border border-[#fed7aa] bg-[#fff7ed] p-6 text-center">
+        <span className="grid size-10 place-items-center rounded-full bg-[#ea580c] text-white">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="size-5">
+            <path d="M12 9v4" />
+            <path d="M12 17h.01" />
+            <path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z" />
+          </svg>
+        </span>
+        <p className="font-display text-[16px] font-bold uppercase text-[#11191f]">Delivery attempt failed</p>
+        <p className="font-body text-[13px] text-[#6b7280]">
+          We couldn&apos;t complete delivery. Our team will re-attempt or reach out — contact support if you need help.
+        </p>
       </div>
     );
   }
@@ -140,8 +166,8 @@ function HistoryTimeline({ history }) {
       </p>
       <ol className="flex flex-col gap-3">
         {[...history].reverse().map((h, i) => (
-          <li key={i} className="flex gap-3 text-[13px]">
-            <span className="font-body text-[#6b7280]">{h.at}</span>
+          <li key={h.id ?? i} className="flex gap-3 text-[13px]">
+            <span className="shrink-0 font-body text-[#6b7280]">{h.at}</span>
             <span className="font-body text-[#11191f]">{h.note}</span>
           </li>
         ))}
@@ -150,15 +176,176 @@ function HistoryTimeline({ history }) {
   );
 }
 
-export default function OrderTrackingPage({ order }) {
-  const badge = (() => {
-    switch (order.status) {
-      case "delivered":          return { kind: "delivered",  label: "Delivered" };
-      case "cancelled":          return { kind: "cancelled",  label: "Cancelled" };
-      case "returned":           return { kind: "returned",   label: "Returned" };
-      default:                   return { kind: "on-the-way", label: "On the way" };
+function TrackingLoading() {
+  return (
+    <div className="mx-auto flex w-full max-w-[1024px] flex-1 items-center justify-center px-4 py-24">
+      <div className="flex flex-col items-center gap-3">
+        <div className="size-8 animate-spin rounded-full border-2 border-[#e5e7eb] border-t-[#11191f]" />
+        <p className="font-body text-[14px] text-[#6b7280]" style={{ fontStretch: "75%" }}>
+          Loading your order…
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function TrackingNotFound({ id }) {
+  return (
+    <div className="mx-auto flex w-full max-w-[640px] flex-col items-center gap-4 px-4 py-16 text-center">
+      <p className="font-display text-[24px] font-bold uppercase text-[#11191f]">
+        Order not found
+      </p>
+      <p className="font-body text-[13px] text-[#6b7280]">
+        We couldn&apos;t find an order with id <code>{String(id)}</code>.
+      </p>
+      <Link
+        href="/account/orders"
+        className="inline-flex h-11 items-center justify-center rounded-[2px] bg-[#11191f] px-5 font-display text-[12px] font-bold uppercase tracking-[1px] text-white hover:bg-[#1c2630]"
+      >
+        Back to orders
+      </Link>
+    </div>
+  );
+}
+
+const STATUS_NOTE = {
+  pending: "Order placed",
+  processing: "Order placed — being prepared",
+  dispatched: "Packed and handed to the courier",
+  out_for_delivery: "Out for delivery",
+  delivered: "Delivered",
+  failed_delivery: "Delivery attempt failed",
+  cancelled: "Order cancelled",
+  returned: "Order returned",
+};
+
+export default function OrderTrackingPage({ orderId }) {
+  const settings = useCommerceSettings();
+  const router = useRouter();
+
+  // Gate on rehydration so the auth token is present before the fetch.
+  const [hydrated, setHydrated] = useState(() => useRepairStore.persist.hasHydrated());
+  useEffect(() => {
+    if (hydrated) return undefined;
+    const unsub = useRepairStore.persist.onFinishHydration(() => setHydrated(true));
+    if (useRepairStore.persist.hasHydrated()) setHydrated(true);
+    return unsub;
+  }, [hydrated]);
+
+  const [detail, setDetail] = useState(null);
+  const [loaded, setLoaded] = useState(false);
+  const [reordering, setReordering] = useState(false);
+  const [reorderError, setReorderError] = useState(null);
+  // Out-of-stock items from a reorder → shows ReorderResultDrawer with "Notify
+  // me" buttons. { items: [{productVariantId, productName, color, size}], addedCount }.
+  const [reorderResult, setReorderResult] = useState(null);
+
+  const numericId = Number(orderId);
+  const validId = Number.isFinite(numericId);
+
+  // "Buy again" — re-add this order's items to the cart server-side (capped to
+  // current stock). If some items are sold out, surface them with "Notify me";
+  // otherwise route straight to /cart. Double-submit-guarded.
+  async function handleBuyAgain() {
+    if (reordering) return;
+    setReordering(true);
+    setReorderError(null);
+    try {
+      const res = await repairCall("myAppReorder", { orderId: numericId }, { isQuery: false });
+      const outOfStock = Array.isArray(res?.outOfStock) ? res.outOfStock : [];
+      const added = Number(res?.added) || 0;
+      if (added > 0) await useRepairStore.getState().syncCart();
+      if (outOfStock.length > 0) {
+        setReorderResult({ items: outOfStock, addedCount: added });
+        return;
+      }
+      router.push("/cart");
+    } catch (e) {
+      const msg = String(e?.message || "").replace(/^repairClientApi \S+:\s*/, "");
+      setReorderError(msg || "Couldn't add these items. Please try again.");
+    } finally {
+      setReordering(false);
     }
-  })();
+  }
+
+  useEffect(() => {
+    if (!hydrated || !validId) return undefined;
+    let active = true;
+    // Flip `loaded` only inside the async callback so we never setState
+    // synchronously in the effect body (loaded defaults to false / loading).
+    repairCall("myAppGetOrderDetail", { orderId: numericId }, { isQuery: true })
+      .then((d) => {
+        if (active) setDetail(d);
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (active) setLoaded(true);
+      });
+    return () => {
+      active = false;
+    };
+  }, [hydrated, validId, numericId]);
+
+  const order = detail?.order ?? null;
+
+  const items = useMemo(() => {
+    const rows = Array.isArray(detail?.items) ? detail.items : [];
+    return rows.map((it, i) => ({
+      id: it.id ?? i,
+      name: it.product_name ?? "Item",
+      variantLabel: [it.color_name, it.size_name].filter(Boolean).join(" / "),
+      image: it.product_image_url || PLACEHOLDER_IMAGE,
+      quantity: Number(it.quantity) || 1,
+      lineTotal: Number(it.total) || 0,
+    }));
+  }, [detail]);
+
+  const history = useMemo(() => {
+    const rows = Array.isArray(detail?.history) ? detail.history : [];
+    return rows.map((h, i) => ({
+      id: h.id ?? i,
+      at: h.changed_at ? `${formatOrderDate(h.changed_at)}` : "",
+      note: h.note || STATUS_NOTE[h.status] || h.status || "",
+    }));
+  }, [detail]);
+
+  const shippingAddress = useMemo(() => {
+    const snap = order?.shipping_address_snapshot;
+    if (!snap) return null;
+    return {
+      label: snap.label || "Shipping Address",
+      line: buildAddressLine(snap),
+      phone: snap.phone || "",
+    };
+  }, [order]);
+
+  const estimatedDelivery = useMemo(() => {
+    const rows = Array.isArray(settings?.shippingMethods) ? settings.shippingMethods : [];
+    const key = String(order?.shipping_method_key ?? "").toLowerCase();
+    return rows.find((m) => String(m.key).toLowerCase() === key)?.eta || "3-5 Business Days";
+  }, [settings, order]);
+
+  const paymentMethod = useMemo(() => {
+    const rows = Array.isArray(settings?.paymentMethods) ? settings.paymentMethods : [];
+    const key = String(order?.payment_method ?? "").toLowerCase();
+    return rows.find((m) => String(m.key).toLowerCase() === key)?.name || order?.payment_method || "—";
+  }, [settings, order]);
+
+  if (!hydrated) {
+    return <TrackingLoading />;
+  }
+  if (!validId) {
+    return <TrackingNotFound id={orderId} />;
+  }
+  if (!loaded) {
+    return <TrackingLoading />;
+  }
+  if (!order) {
+    return <TrackingNotFound id={orderId} />;
+  }
+
+  const badge = badgeFor(order.status);
+  const total = Number(order.total) || 0;
 
   return (
     <div className="mx-auto flex w-full max-w-[1024px] flex-col gap-6 px-4 py-8 md:px-8">
@@ -179,89 +366,122 @@ export default function OrderTrackingPage({ order }) {
       {/* Header */}
       <div className="flex flex-col gap-1">
         <p className="font-body text-[12px] font-medium uppercase tracking-[1px] text-[#6b7280]">
-          Order #{order.id}
+          Order #{order.order_number}
         </p>
         <h1 className="font-display text-[24px] font-bold uppercase tracking-[0.5px] text-[#11191f] md:text-[28px]">
           Track your order
         </h1>
         <p className="font-body text-[13px] text-[#6b7280]">
-          Placed on {order.purchaseDate}. Estimated arrival: <strong>{order.estimatedDelivery}</strong>.
+          Placed on {formatOrderDate(order.created_at ?? order.createdAt)}. Estimated arrival:{" "}
+          <strong>{estimatedDelivery}</strong>.
         </p>
       </div>
 
       {/* Pipeline */}
       <section className="rounded-[4px] border border-[#e5e7eb] bg-white p-5 md:p-8">
-        <Pipeline order={order} />
+        <Pipeline status={order.status} />
       </section>
 
-      {/* Item summary + shipping */}
+      {/* Items + shipping/delivery */}
       <section className="grid grid-cols-1 gap-4 md:grid-cols-2">
-        <div className="flex gap-4 rounded-[4px] border border-[#e5e7eb] bg-white p-4">
-          <div className="relative size-24 shrink-0 overflow-hidden bg-[#f5f5f5]">
-            <Image
-              src={order.image}
-              alt={order.productName}
-              fill
-              sizes="96px"
-              className="object-cover"
-            />
+        {/* Items list */}
+        <div className="flex flex-col gap-4 rounded-[4px] border border-[#e5e7eb] bg-white p-4">
+          <p className="font-body text-[10px] font-medium uppercase tracking-[1px] text-[#6b7280]">
+            Items ({items.length})
+          </p>
+          <div className="flex flex-col gap-4">
+            {items.map((item) => (
+              <div key={item.id} className="flex gap-4">
+                <div className="relative size-20 shrink-0 overflow-hidden bg-[#f5f5f5]">
+                  <Image src={item.image} alt={item.name} fill sizes="80px" className="object-cover" />
+                </div>
+                <div className="flex min-w-0 flex-col justify-center gap-1">
+                  <p className="font-display text-[14px] font-medium uppercase text-[#11191f]">
+                    {item.name}
+                  </p>
+                  <p className="font-body text-[12px] text-[#6b7280]" style={{ fontStretch: "75%" }}>
+                    {[item.variantLabel, `Qty ${item.quantity}`].filter(Boolean).join(" · ")}
+                  </p>
+                  <p className="mt-1 font-display text-[14px] font-bold text-[#11191f]">
+                    {formatJOD(item.lineTotal)}
+                  </p>
+                </div>
+              </div>
+            ))}
           </div>
-          <div className="flex min-w-0 flex-col justify-center gap-1">
-            <p className="font-display text-[14px] font-medium uppercase text-[#11191f]">
-              {order.productName}
-            </p>
-            <p
-              className="font-body text-[12px] text-[#6b7280]"
-              style={{ fontStretch: "75%" }}
-            >
-              {order.subtitle} · {order.variant}
-            </p>
-            <p className="mt-1 font-display text-[14px] font-bold text-[#11191f]">
-              {order.currency} {order.price}
-            </p>
+          <div className="flex items-center justify-between border-t border-[#f3f4f6] pt-3">
+            <span className="font-display text-[13px] font-medium text-[#4b5563]">Order Total</span>
+            <span className="font-display text-[15px] font-bold text-[#11191f]">{formatJOD(total)}</span>
           </div>
         </div>
+
+        {/* Shipping + delivery details */}
         <div className="flex flex-col gap-3 rounded-[4px] border border-[#e5e7eb] bg-white p-4">
-          <div>
-            <p className="font-body text-[10px] font-medium uppercase tracking-[1px] text-[#6b7280]">
-              Shipping address
-            </p>
-            <p className="mt-1 font-body text-[13px] text-[#11191f]">{order.shippingAddress}</p>
-          </div>
+          {shippingAddress ? (
+            <div>
+              <p className="font-body text-[10px] font-medium uppercase tracking-[1px] text-[#6b7280]">
+                Shipping address
+              </p>
+              <p className="mt-1 font-body text-[13px] text-[#11191f]">{shippingAddress.line}</p>
+              {shippingAddress.phone ? (
+                <p className="font-body text-[13px] text-[#6b7280]">{shippingAddress.phone}</p>
+              ) : null}
+            </div>
+          ) : null}
           <div className="grid grid-cols-2 gap-2 border-t border-[#f3f4f6] pt-3">
             <div>
               <p className="font-body text-[10px] font-medium uppercase tracking-[1px] text-[#6b7280]">
-                Courier
+                Estimated delivery
               </p>
-              <p className="mt-1 font-body text-[13px] text-[#11191f]">{order.courier}</p>
+              <p className="mt-1 font-body text-[13px] text-[#11191f]">{estimatedDelivery}</p>
             </div>
             <div>
               <p className="font-body text-[10px] font-medium uppercase tracking-[1px] text-[#6b7280]">
-                Tracking #
+                Payment
               </p>
-              <p className="mt-1 font-body text-[13px] text-[#11191f]">{order.trackingNumber}</p>
+              <p className="mt-1 font-body text-[13px] text-[#11191f]">{paymentMethod}</p>
             </div>
           </div>
         </div>
       </section>
 
-      <HistoryTimeline history={order.history} />
+      <HistoryTimeline history={history} />
 
       {/* CTA row */}
-      <div className="flex flex-col items-stretch gap-2 sm:flex-row sm:justify-end">
-        <Link
-          href="/contact"
-          className="inline-flex h-11 items-center justify-center rounded-[2px] border border-[#11191f] px-5 font-display text-[12px] font-bold uppercase tracking-[1px] text-[#11191f] hover:bg-[#f3f4f6]"
-        >
-          Inquire
-        </Link>
-        <Link
-          href={`/products/${order.productSlug}`}
-          className="inline-flex h-11 items-center justify-center rounded-[2px] bg-[#11191f] px-5 font-display text-[12px] font-bold uppercase tracking-[1px] text-white hover:bg-[#1c2630]"
-        >
-          Buy Again
-        </Link>
+      <div className="flex flex-col gap-2">
+        {reorderError ? (
+          <p className="text-right font-body text-[12px] text-[#b91c1c]" role="alert">
+            {reorderError}
+          </p>
+        ) : null}
+        <div className="flex flex-col items-stretch gap-2 sm:flex-row sm:justify-end">
+          <Link
+            href="/contact"
+            className="inline-flex h-11 items-center justify-center rounded-[2px] border border-[#11191f] px-5 font-display text-[12px] font-bold uppercase tracking-[1px] text-[#11191f] hover:bg-[#f3f4f6]"
+          >
+            Inquire
+          </Link>
+          <button
+            type="button"
+            onClick={handleBuyAgain}
+            disabled={reordering}
+            className="inline-flex h-11 items-center justify-center rounded-[2px] bg-[#11191f] px-5 font-display text-[12px] font-bold uppercase tracking-[1px] text-white hover:bg-[#1c2630] disabled:opacity-60"
+          >
+            {reordering ? "Adding…" : "Buy Again"}
+          </button>
+        </div>
       </div>
+
+      <ReorderResultDrawer
+        open={reorderResult != null}
+        items={reorderResult?.items ?? []}
+        addedCount={reorderResult?.addedCount ?? 0}
+        onClose={() => setReorderResult(null)}
+        onGoToCart={() => {
+          setReorderResult(null);
+          router.push("/cart");
+        }}
+      />
     </div>
   );
 }

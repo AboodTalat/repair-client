@@ -1,7 +1,16 @@
 import Image from "next/image";
 import GlassButton from "./GlassButton";
 
-export default function HeroSection() {
+export default function HeroSection({ hero } = {}) {
+  // CMS overlay — each field falls back to the current copy, so an empty CMS
+  // renders the hero exactly as before. The bespoke two-line title markup is the
+  // default; a CMS `title` replaces it with a single styled heading.
+  const eyebrow = hero?.eyebrow || "New Drop · SS26";
+  const subtitle =
+    hero?.subtitle ||
+    "Premium materials. Precision engineering. Built for thousands of workouts.";
+  const ctaLabel = hero?.ctaLabel || "GET YOURS NOW";
+  const title = hero?.title;
   return (
     <section className="relative min-h-[852px] w-full overflow-hidden bg-[linear-gradient(180deg,#0f1112_0%,#101011_54.5%,#101013_76.4%,#101014_100%)] md:min-h-screen">
       {/* Mobile layout (< md) — original design */}
@@ -19,17 +28,17 @@ export default function HeroSection() {
 
         <div className="absolute inset-x-0 bottom-0 px-[69px] pb-[118px] text-center">
           <h1 className="font-display text-[21px] font-bold uppercase leading-tight text-white">
-            Step into <span>Energy</span>
+            {title ? title : (<>Step into <span>Energy</span></>)}
           </h1>
           <p
             className="mx-auto mt-2 max-w-[230px] font-body text-[14px] text-[#d4d4d4]"
             style={{ fontStretch: "75%" }}
           >
-            Premium materials. Precision engineering. Built for thousands of workouts.
+            {subtitle}
           </p>
           <div className="mt-4 flex justify-center">
             <GlassButton variant="dark" className="!w-[255px]">
-              GET YOURS NOW
+              {ctaLabel}
             </GlassButton>
           </div>
         </div>
@@ -43,22 +52,20 @@ export default function HeroSection() {
               className="font-body text-[14px] uppercase tracking-[0.4em] text-white/60"
               style={{ fontStretch: "75%" }}
             >
-              New Drop · SS26
+              {eyebrow}
             </p>
             <h1 className="mt-4 font-display text-[64px] font-bold uppercase leading-[1.05] text-white lg:text-[88px] xl:text-[104px]">
-              Step into
-              <br />
-              <span className="text-white/90">Energy</span>
+              {title ? title : (<>Step into<br /><span className="text-white/90">Energy</span></>)}
             </h1>
             <p
               className="mt-6 max-w-[440px] font-body text-[18px] leading-[1.6] text-[#d4d4d4] lg:text-[20px]"
               style={{ fontStretch: "75%" }}
             >
-              Premium materials. Precision engineering. Built for thousands of workouts.
+              {subtitle}
             </p>
             <div className="mt-10 flex items-center gap-5">
               <GlassButton variant="dark" className="!h-12 !w-[260px]">
-                GET YOURS NOW
+                {ctaLabel}
               </GlassButton>
               <a
                 href="#colorways"

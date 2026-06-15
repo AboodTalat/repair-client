@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { ORDER_STATUS_OPTIONS, ORDER_DATE_RANGES } from "@/lib/mockOrders";
+import { ORDER_STATUS_OPTIONS, ORDER_DATE_RANGES } from "@/lib/orders";
 
 // Order filter dialog — mirrors the shop FilterDrawer's footprint and motion
 // so the customer surfaces feel consistent.

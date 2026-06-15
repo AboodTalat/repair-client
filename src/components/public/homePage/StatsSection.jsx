@@ -7,7 +7,11 @@ const STATS = [
   { value: "100%", label: "Performance Guaranteed" },
 ];
 
-export default function StatsSection() {
+export default function StatsSection({ stats } = {}) {
+  // CMS overlay — admin-set stats when present, else the current fabric stats,
+  // so an empty CMS renders this section exactly as before. Both shapes carry
+  // { value, label }.
+  const rows = Array.isArray(stats) && stats.length ? stats : STATS;
   return (
     <>
       {/* Mobile (< md) — original full-bleed + bottom panel */}
@@ -30,7 +34,7 @@ export default function StatsSection() {
 
         <div className="absolute inset-x-0 bottom-[48px] px-4">
           <div className="flex items-start gap-4 rounded-[12px] bg-black/30 p-3 backdrop-blur-sm">
-            {STATS.map((s) => (
+            {rows.map((s) => (
               <div key={s.value} className="flex flex-1 flex-col items-center gap-2">
                 <p className="font-display text-[31px] font-bold leading-10 text-white">
                   {s.value}
@@ -84,7 +88,7 @@ export default function StatsSection() {
             </p>
 
             <div className="mt-10 grid grid-cols-3 gap-6 border-y border-white/10 py-8">
-              {STATS.map((s) => (
+              {rows.map((s) => (
                 <div key={s.value} className="flex flex-col gap-2">
                   <p className="font-display text-[44px] font-bold leading-none text-white lg:text-[56px]">
                     {s.value}

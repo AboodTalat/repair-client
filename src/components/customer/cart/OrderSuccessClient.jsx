@@ -1,28 +1,25 @@
 "use client";
 
+import { useEffect, useMemo, useState } from "react";
 import Image from "next/image";
 import { useRouter } from "next/navigation";
-import { CART_ITEMS, CHECKOUT_ADDRESSES, formatJOD } from "@/lib/mockCart";
+import { buildAddressLine, formatJOD } from "@/lib/mockCart";
 import { condensed } from "./CartPageClient";
+import { repairCall } from "@/lib/repairAuthedApi";
+import { useCommerceSettings } from "@/lib/useCommerceSettings";
+import { useRepairStore, selectLastPlacedOrder } from "@/lib/useRepairStore";
 
-// /checkout/success — Order confirmation screen reached after the
-// "PAY & CONFIRM ORDER" CTA on /checkout/payment.
-// Matches Figma mobile 85:8692 + desktop 119:6418.
+// /checkout/success — Order confirmation screen reached after a successful
+// "Confirm & Pay" on /checkout/payment. Matches Figma mobile 85:8692 +
+// desktop 119:6418.
 //
-// Purely presentational. The order number, total, payment-method label,
-// and estimated delivery are hardcoded against the seeded cart in
-// `mockCart.js` so the numbers line up with /cart and /checkout/payment
-// without threading state across pages. Swap to data returned from
-// `myAppCheckout` once the mutation is wired through (resolver already
-// exists in orders.ts and returns the created order + totals).
+// Wired to the real placed order: the store's `lastOrder` (persisted, set by
+// myAppCheckout) gives the order id / number / charged total; myAppGetOrderDetail
+// fills in the line items + the snapshotted shipping address; commerce settings
+// resolve the payment-method label + the delivery ETA. Visiting this page with
+// no placed order (direct nav / cleared state) redirects to /shop.
 
-const ORDER_NUMBER = "#ORD-2847391";
-const ORDER_TOTAL = 127.99; // Figma 85:9100 / 119:6533 — design uses 127.99
-const ESTIMATED_DELIVERY = "3-5 Business Days";
-const PAYMENT_METHOD = "Visa ending 4242";
-
-const SHIPPING_ADDRESS =
-  CHECKOUT_ADDRESSES.find((a) => a.isDefault) ?? CHECKOUT_ADDRESSES[0];
+const PLACEHOLDER_IMAGE = "/shop/model-1.png";
 
 // Coaching CTA — Figma mobile 112:3655 + desktop 128:6022. The model
 // photo (the coach "Asaad Hamawi" referenced in the card copy) is
@@ -267,7 +264,7 @@ function CoachingCard({ variant }) {
 // + total amount as label/value rows below.
 // ──────────────────────────────────────────────────────────────────────
 
-function MobileOrderInfoCard() {
+function MobileOrderInfoCard({ orderNumber, estimatedDelivery, total }) {
   return (
     <div
       className="mx-4 flex flex-col gap-3 overflow-hidden rounded-[4px] bg-white p-4"
@@ -282,7 +279,7 @@ function MobileOrderInfoCard() {
             Order Number
           </p>
           <p className="font-display text-[18px] font-bold leading-7 text-[#11191f]">
-            {ORDER_NUMBER}
+            {orderNumber}
           </p>
         </div>
         <div
@@ -301,7 +298,7 @@ function MobileOrderInfoCard() {
             Estimated Delivery
           </span>
           <span className="font-display text-[12px] font-bold leading-5 text-[#11191f]">
-            {ESTIMATED_DELIVERY}
+            {estimatedDelivery}
           </span>
         </div>
         <div className="flex w-full items-center justify-between">
@@ -312,7 +309,7 @@ function MobileOrderInfoCard() {
             Total Amount
           </span>
           <span className="font-display text-[14px] font-bold leading-7 text-[#11191f]">
-            {formatJOD(ORDER_TOTAL)}
+            {formatJOD(total)}
           </span>
         </div>
       </div>
@@ -361,7 +358,7 @@ function MobileItemsSection({ items }) {
                 </p>
               </div>
               <p className="font-display text-[14px] font-bold leading-5 text-[#11191f]">
-                {formatJOD(item.price * item.qty)}
+                {formatJOD(item.lineTotal)}
               </p>
             </div>
           </div>
@@ -409,7 +406,7 @@ function DesktopItemsSection({ items }) {
                 {item.variantLabel}
               </p>
               <p className="pt-3 font-display text-[16px] font-bold leading-6 text-[#11191f]">
-                {formatJOD(item.price * item.qty)}
+                {formatJOD(item.lineTotal)}
               </p>
             </div>
           </div>
@@ -526,7 +523,14 @@ function DesktopShippingAddressSection({ address }) {
 // (outlined) buttons. Figma 119:6504.
 // ──────────────────────────────────────────────────────────────────────
 
-function DesktopOrderInfoCard({ onContinueShopping, onTrackOrder }) {
+function DesktopOrderInfoCard({
+  orderNumber,
+  estimatedDelivery,
+  paymentMethod,
+  total,
+  onContinueShopping,
+  onTrackOrder,
+}) {
   return (
     <div
       className="flex w-full flex-col gap-8 overflow-hidden rounded-[12px] border bg-white p-8"
@@ -542,7 +546,7 @@ function DesktopOrderInfoCard({ onContinueShopping, onTrackOrder }) {
             Order Number
           </p>
           <p className="font-display text-[24px] font-bold leading-8 tracking-[-0.6px] text-[#11191f]">
-            {ORDER_NUMBER}
+            {orderNumber}
           </p>
         </div>
         <div
@@ -554,14 +558,14 @@ function DesktopOrderInfoCard({ onContinueShopping, onTrackOrder }) {
       </div>
 
       <div className="flex w-full flex-col gap-6">
-        <DesktopMetaRow label="Estimated Delivery" value={ESTIMATED_DELIVERY} />
-        <DesktopMetaRow label="Payment Method" value={PAYMENT_METHOD} valueMedium />
+        <DesktopMetaRow label="Estimated Delivery" value={estimatedDelivery} />
+        <DesktopMetaRow label="Payment Method" value={paymentMethod} valueMedium />
         <div className="flex w-full items-center justify-between border-t border-[#f3f4f6] pt-6">
           <span className="font-display text-[14px] leading-7 text-[#4b5563]">
             Total Amount
           </span>
           <span className="font-display text-[14px] font-bold leading-8 text-[#11191f]">
-            {formatJOD(ORDER_TOTAL)}
+            {formatJOD(total)}
           </span>
         </div>
       </div>
@@ -634,12 +638,113 @@ function DesktopHelpBox() {
 // Main client component.
 // ──────────────────────────────────────────────────────────────────────
 
+function SuccessLoading() {
+  return (
+    <div className="flex flex-1 items-center justify-center px-6 py-24">
+      <div className="flex flex-col items-center gap-3">
+        <div className="size-8 animate-spin rounded-full border-2 border-[#e5e7eb] border-t-[#11191f]" />
+        <p className="font-body text-[14px] text-[#6b7280]" style={condensed}>
+          Loading your order…
+        </p>
+      </div>
+    </div>
+  );
+}
+
 export default function OrderSuccessClient() {
   const router = useRouter();
-  const items = CART_ITEMS;
+  const lastOrder = useRepairStore(selectLastPlacedOrder);
+  const settings = useCommerceSettings();
+
+  // Gate on rehydration — lastOrder is persisted but unavailable on the first
+  // (pre-hydrate) frame, so without this a fresh reload would redirect to /shop.
+  const [hydrated, setHydrated] = useState(() => useRepairStore.persist.hasHydrated());
+  useEffect(() => {
+    if (hydrated) return undefined;
+    const unsub = useRepairStore.persist.onFinishHydration(() => setHydrated(true));
+    if (useRepairStore.persist.hasHydrated()) setHydrated(true);
+    return unsub;
+  }, [hydrated]);
+
+  // No placed order (direct nav / cleared state) → nothing to confirm.
+  useEffect(() => {
+    if (hydrated && !lastOrder) router.replace("/shop");
+  }, [hydrated, lastOrder, router]);
+
+  // Pull the full order (line items + snapshotted shipping address) once we
+  // know the id. The charged total / order number come from lastOrder so the
+  // header renders even if this fetch fails (e.g. session expired).
+  const orderId = lastOrder?.order_id ?? null;
+  const [detail, setDetail] = useState(null);
+  const [detailLoaded, setDetailLoaded] = useState(false);
+  useEffect(() => {
+    if (!orderId) return undefined;
+    let active = true;
+    repairCall("myAppGetOrderDetail", { orderId }, { isQuery: true })
+      .then((d) => {
+        if (active) setDetail(d);
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (active) setDetailLoaded(true);
+      });
+    return () => {
+      active = false;
+    };
+  }, [orderId]);
+
+  const order = detail?.order ?? null;
+
+  const items = useMemo(() => {
+    const rows = Array.isArray(detail?.items) ? detail.items : [];
+    return rows.map((it, i) => ({
+      id: it.id ?? i,
+      name: it.product_name ?? "Item",
+      variantLabel: [it.color_name, it.size_name].filter(Boolean).join(" / "),
+      image: it.product_image_url || PLACEHOLDER_IMAGE,
+      lineTotal: Number(it.total) || 0,
+    }));
+  }, [detail]);
+
+  const shippingAddress = useMemo(() => {
+    const snap = order?.shipping_address_snapshot;
+    if (!snap) return null;
+    return {
+      label: snap.label || "Shipping Address",
+      line: buildAddressLine(snap),
+      phone: snap.phone || "",
+      isDefault: !!snap.is_default,
+    };
+  }, [order]);
+
+  const orderNumber = lastOrder?.order_number ? `#${lastOrder.order_number}` : "—";
+  const total = Number(order?.total ?? lastOrder?.total ?? 0);
+
+  // Resolve the payment-method label + delivery ETA from the live commerce
+  // settings (matched by the keys the order stored), falling back gracefully.
+  const paymentMethod = useMemo(() => {
+    const rows = Array.isArray(settings?.paymentMethods) ? settings.paymentMethods : [];
+    const key = String(order?.payment_method ?? "").toLowerCase();
+    return rows.find((m) => String(m.key).toLowerCase() === key)?.name || order?.payment_method || "—";
+  }, [settings, order]);
+
+  const estimatedDelivery = useMemo(() => {
+    const rows = Array.isArray(settings?.shippingMethods) ? settings.shippingMethods : [];
+    const key = String(order?.shipping_method_key ?? "").toLowerCase();
+    return rows.find((m) => String(m.key).toLowerCase() === key)?.eta || "3-5 Business Days";
+  }, [settings, order]);
 
   const handleContinueShopping = () => router.push("/shop");
-  const handleTrackOrder = () => router.push("/account/orders");
+  const handleTrackOrder = () =>
+    router.push(orderId ? `/account/orders/${orderId}` : "/account/orders");
+
+  if (!hydrated || !lastOrder || !detailLoaded) {
+    return (
+      <main className="flex flex-1 flex-col bg-white">
+        <SuccessLoading />
+      </main>
+    );
+  }
 
   return (
     <main className="flex flex-1 flex-col bg-white">
@@ -668,12 +773,16 @@ export default function OrderSuccessClient() {
         </div>
 
         <div className="pt-6">
-          <MobileOrderInfoCard />
+          <MobileOrderInfoCard
+            orderNumber={orderNumber}
+            estimatedDelivery={estimatedDelivery}
+            total={total}
+          />
         </div>
 
         <MobileItemsSection items={items} />
 
-        <MobileShippingAddressSection address={SHIPPING_ADDRESS} />
+        <MobileShippingAddressSection address={shippingAddress} />
 
         {/* Trailing breathing room before the footer (hidden on mobile) */}
         <div className="h-12" />
@@ -694,12 +803,16 @@ export default function OrderSuccessClient() {
           >
             <CoachingCard variant="desktop" />
             <DesktopItemsSection items={items} />
-            <DesktopShippingAddressSection address={SHIPPING_ADDRESS} />
+            <DesktopShippingAddressSection address={shippingAddress} />
           </div>
 
           {/* Right column: order info card + help box */}
           <aside className="flex w-full flex-col gap-8 lg:w-[398.66px] lg:shrink-0">
             <DesktopOrderInfoCard
+              orderNumber={orderNumber}
+              estimatedDelivery={estimatedDelivery}
+              paymentMethod={paymentMethod}
+              total={total}
               onContinueShopping={handleContinueShopping}
               onTrackOrder={handleTrackOrder}
             />

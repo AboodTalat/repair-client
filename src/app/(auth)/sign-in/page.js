@@ -108,11 +108,11 @@ export default async function SignInPage({ searchParams }) {
         <div className="hidden md:block">
           <TermsFooter>
             By signing in, you agree to our{" "}
-            <Link href="/#terms" className="underline">
+            <Link href="/terms" className="underline">
               Terms of Service
             </Link>{" "}
             and{" "}
-            <Link href="/#privacy" className="underline">
+            <Link href="/privacy" className="underline">
               Privacy Policy
             </Link>
             .

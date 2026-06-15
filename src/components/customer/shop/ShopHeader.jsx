@@ -85,9 +85,10 @@ export default function ShopHeader({ categories = [] }) {
       // handles small screens, so skip the check there.
       if (!bar || !mnav || bar.clientWidth === 0) return;
       const PADDING = 64; // px-8 left + right (clientWidth includes padding)
-      // search + bag + account + logout icon cluster + gaps; +44 for the
-      // wishlist heart when it's shown (one 20px icon + a gap-6).
-      const RIGHT_RESERVE = 190 + (canWishlist ? 44 : 0);
+      // search + bag + account + logout icon cluster + gaps; +88 for the
+      // customer-only Orders + Wishlist icons when shown (two 20px icons +
+      // their gap-6 each).
+      const RIGHT_RESERVE = 190 + (canWishlist ? 88 : 0);
       const LOGO_RESERVE = hideDesktopLogo ? 0 : 88; // centered logo lane
       const GAP = 24; // breathing room so labels never touch
       const available = bar.clientWidth - PADDING;
@@ -169,6 +170,32 @@ export default function ShopHeader({ categories = [] }) {
           </span>
         )}
       </Link>
+
+      {/* Orders — customer-only shortcut to /account/orders. The mobile
+          Sidebar already lists Orders; this gives the desktop bar the same
+          direct access. */}
+      {canWishlist && (
+        <Link
+          href="/account/orders"
+          aria-label="Orders"
+          className="grid size-5 place-items-center"
+        >
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.6"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className="size-5 text-[#11191f]"
+            aria-hidden
+          >
+            <path d="M6 2h9l5 5v13a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1z" />
+            <path d="M14 2v6h6" />
+            <path d="M9 13h6M9 17h6" />
+          </svg>
+        </Link>
+      )}
 
       {/* Wishlist — customer-only shortcut to /account/wishlist */}
       {canWishlist && (

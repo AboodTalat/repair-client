@@ -100,11 +100,32 @@ export function useAddresses() {
     [refetch]
   );
 
+  // Delete an address (myAppDeleteAddress auto-promotes a remaining default).
+  const deleteAddress = useCallback(
+    async (id) => {
+      await repairCall("myAppDeleteAddress", { id }, { isQuery: false });
+      await refetch();
+    },
+    [refetch]
+  );
+
+  // Set / unset the default. myAppUpdateAddress accepts a partial
+  // { id, is_default } and enforces the single-default invariant server-side.
+  const setDefault = useCallback(
+    async (id, isDefault = true) => {
+      await repairCall("myAppUpdateAddress", { id, is_default: isDefault }, { isQuery: false });
+      await refetch();
+    },
+    [refetch]
+  );
+
   return {
     addresses: isLoggedIn ? addresses : [],
     loading: !hydrated || (isLoggedIn && !loaded),
     error,
     saveAddress,
+    deleteAddress,
+    setDefault,
     refetch,
     clearError: () => setError(null),
   };

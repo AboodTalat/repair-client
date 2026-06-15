@@ -2,23 +2,23 @@
 
 import Image from "next/image";
 import { useRouter } from "next/navigation";
-import { CART_ITEMS, formatJOD } from "@/lib/mockCart";
+import { formatJOD } from "@/lib/mockCart";
 import { condensed } from "./CartPageClient";
+import { useCart } from "@/lib/useCart";
+import { useRepairStore, selectPaymentAttempt } from "@/lib/useRepairStore";
 
 // /checkout/failed — Payment-declined screen. Mobile matches Figma
 // 111:3587 exactly; desktop matches Figma 119:6627 exactly (two-column
 // layout with Payment Error card + items list on the left, Action Card
 // + help box on the right — no shipping address on desktop).
 //
-// Purely presentational. The transaction id / attempted amount / card
-// last4 are seeded constants — replace with the rejection payload
-// from `myAppCheckout` (or whatever payment-processor adapter lands)
-// once the mutation is wired.
-
-const TRANSACTION_ID = "#TXN-9284731";
-const ATTEMPTED_AMOUNT = 127.99;
-const CARD_LAST4 = "4532";
-const ATTEMPTED_CARD_BRAND = "Visa";
+// Reached when the DEMO payment gateway (DemoPaymentGateway.jsx) reports a
+// declined payment — no order was placed, so the cart is intact. The
+// transaction id / attempted amount / card last4 / reason come from the
+// store's transient `paymentAttempt` (set by the payment page on decline);
+// the item list is the live cart. Direct nav (no attempt) falls back to a
+// generic message + the current cart. When a real processor lands, this
+// payload is swapped for the gateway's rejection details.
 
 const FAIL_RED = "#ff6b6b"; // mobile error accent (Figma 111:4075)
 const FAIL_RED_DESKTOP = "#ef4444"; // desktop error accent (Figma 119:6634)
@@ -187,7 +187,7 @@ function FailHeading({ variant }) {
 // original single-card layout with the red icon tile inside the header.
 // ──────────────────────────────────────────────────────────────────────
 
-function MobilePaymentErrorCard() {
+function MobilePaymentErrorCard({ txnId, amount, last4, reason }) {
   return (
     <div
       className="mx-4 flex flex-col gap-3 overflow-hidden rounded-[4px] bg-white p-4"
@@ -202,8 +202,7 @@ function MobilePaymentErrorCard() {
             className="font-body text-[14px] leading-normal text-[#6b7280]"
             style={condensed}
           >
-            Your card was declined. This could be due to insufficient funds or
-            security restrictions.
+            {reason}
           </p>
         </div>
         <div
@@ -217,14 +216,14 @@ function MobilePaymentErrorCard() {
         </div>
       </div>
       <div className="flex w-full flex-col gap-2">
-        <MobileErrorRow label="Transaction ID" value={TRANSACTION_ID} />
+        <MobileErrorRow label="Transaction ID" value={txnId} />
         <MobileErrorRow
           label="Attempted Amount"
-          value={formatJOD(ATTEMPTED_AMOUNT)}
+          value={formatJOD(amount)}
           accent={FAIL_RED}
           valueLarger
         />
-        <MobileErrorRow label="Card Ending" value={`•••• ${CARD_LAST4}`} />
+        {last4 ? <MobileErrorRow label="Card Ending" value={`•••• ${last4}`} /> : null}
       </div>
     </div>
   );
@@ -253,7 +252,7 @@ function MobileErrorRow({ label, value, accent, valueLarger }) {
   );
 }
 
-function DesktopPaymentErrorCard() {
+function DesktopPaymentErrorCard({ txnId, amount, last4, reason }) {
   return (
     <div
       className="flex w-full flex-col overflow-hidden rounded-[12px] border bg-white"
@@ -275,8 +274,7 @@ function DesktopPaymentErrorCard() {
             Payment Error
           </h3>
           <p className="font-display text-[14px] leading-5 text-[#6b7280]">
-            Your card was declined. This could be due to insufficient funds or
-            security restrictions.
+            {reason}
           </p>
         </div>
         <div
@@ -288,25 +286,27 @@ function DesktopPaymentErrorCard() {
       </div>
       {/* Bottom section — meta rows */}
       <div className="flex w-full flex-col gap-4 bg-white p-6">
-        <DesktopErrorRow label="Transaction ID" value={TRANSACTION_ID} />
+        <DesktopErrorRow label="Transaction ID" value={txnId} />
         <DesktopErrorRow
           label="Attempted Amount"
-          value={formatJOD(ATTEMPTED_AMOUNT)}
+          value={formatJOD(amount)}
           accent={FAIL_RED_DESKTOP}
         />
-        <DesktopErrorRow
-          label="Card Ending"
-          renderValue={() => (
-            <span className="flex items-center gap-2">
-              <span className="font-display text-[12px] font-bold leading-4 text-[#1a1a1a]">
-                ●●●●
+        {last4 ? (
+          <DesktopErrorRow
+            label="Card Ending"
+            renderValue={() => (
+              <span className="flex items-center gap-2">
+                <span className="font-display text-[12px] font-bold leading-4 text-[#1a1a1a]">
+                  ●●●●
+                </span>
+                <span className="font-display text-[14px] font-bold leading-5 text-[#1a1a1a]">
+                  {last4}
+                </span>
               </span>
-              <span className="font-display text-[14px] font-bold leading-5 text-[#1a1a1a]">
-                {CARD_LAST4}
-              </span>
-            </span>
-          )}
-        />
+            )}
+          />
+        ) : null}
       </div>
     </div>
   );
@@ -502,7 +502,7 @@ function VisaChip() {
   );
 }
 
-function DesktopActionCard({ onTryAnother, onRetry, onReturnToCart }) {
+function DesktopActionCard({ brand, last4, amount, onTryAnother, onRetry, onReturnToCart }) {
   return (
     <div
       className="flex w-full flex-col gap-8 overflow-hidden rounded-[12px] border bg-white p-8"
@@ -542,7 +542,7 @@ function DesktopActionCard({ onTryAnother, onRetry, onReturnToCart }) {
           <span className="flex items-center gap-2">
             <VisaChip />
             <span className="font-display text-[16px] font-medium leading-6 text-[#1a1a1a]">
-              {ATTEMPTED_CARD_BRAND} ending {CARD_LAST4}
+              {brand}{last4 ? ` ending ${last4}` : ""}
             </span>
           </span>
         </div>
@@ -551,7 +551,7 @@ function DesktopActionCard({ onTryAnother, onRetry, onReturnToCart }) {
             Total Amount
           </span>
           <span className="font-display text-[24px] font-bold leading-8 text-[#1a1a1a]">
-            {formatJOD(ATTEMPTED_AMOUNT)}
+            {formatJOD(amount)}
           </span>
         </div>
       </div>
@@ -633,7 +633,18 @@ function DesktopHelpBox() {
 
 export default function OrderFailedClient() {
   const router = useRouter();
-  const items = CART_ITEMS;
+  const attempt = useRepairStore(selectPaymentAttempt);
+  const { items } = useCart(); // order wasn't placed → cart is intact
+
+  // Declined-attempt details from the demo gateway; sensible fallbacks for a
+  // direct visit (no attempt in the store).
+  const txnId = attempt?.txnId ?? "—";
+  const amount = Number(attempt?.amount ?? 0);
+  const last4 = attempt?.last4 ?? null;
+  const brand = attempt?.brand || attempt?.methodLabel || "Card";
+  const reason =
+    attempt?.reason ||
+    "Your payment could not be processed. Please check your payment details and try again.";
 
   const handleTryAnother = () => router.push("/checkout/payment");
   const handleRetry = () => router.push("/checkout/payment");
@@ -649,7 +660,7 @@ export default function OrderFailedClient() {
         </div>
 
         <div className="pt-8">
-          <MobilePaymentErrorCard />
+          <MobilePaymentErrorCard txnId={txnId} amount={amount} last4={last4} reason={reason} />
         </div>
 
         <MobileItemsSection items={items} />
@@ -676,13 +687,16 @@ export default function OrderFailedClient() {
             className="flex w-full min-w-0 flex-col gap-10 lg:flex-1"
             style={{ maxWidth: "577.33px" }}
           >
-            <DesktopPaymentErrorCard />
+            <DesktopPaymentErrorCard txnId={txnId} amount={amount} last4={last4} reason={reason} />
             <DesktopItemsSection items={items} />
           </div>
 
           {/* Right column: action card + help box */}
           <aside className="flex w-full flex-col gap-8 lg:w-[398.66px] lg:shrink-0">
             <DesktopActionCard
+              brand={brand}
+              last4={last4}
+              amount={amount}
               onTryAnother={handleTryAnother}
               onRetry={handleRetry}
               onReturnToCart={handleReturnToCart}
