@@ -1,6 +1,10 @@
 import Image from "next/image";
 import GlassButton from "./GlassButton";
 
+// Shown when a colorway section has no image set in the CMS, so the landing
+// never renders a broken/empty <Image>.
+const FALLBACK_IMAGE = "/home/bright-white.png";
+
 function Swatch({ color, name, tagline, size = "lg" }) {
   const isSm = size === "sm";
   return (
@@ -70,12 +74,14 @@ export default function ColorwaySection({
   badge,
   reversed = false,
 }) {
+  const img = image || FALLBACK_IMAGE;
+  const sw = Array.isArray(swatches) ? swatches : [];
   return (
     <>
       {/* Mobile (< md) — original full-bleed + bottom panel */}
       <section className="relative h-[700px] w-full overflow-hidden bg-black md:hidden">
         <Image
-          src={image}
+          src={img}
           alt={imageAlt}
           fill
           sizes="100vw"
@@ -97,10 +103,10 @@ export default function ColorwaySection({
             }`}
           >
             {multiSwatch ? (
-              swatches.map((s) => <Swatch key={s.name} {...s} size="sm" />)
+              sw.map((s) => <Swatch key={s.name} {...s} size="sm" />)
             ) : (
               <>
-                <Swatch {...swatches[0]} size="lg" />
+                {sw[0] ? <Swatch {...sw[0]} size="lg" /> : null}
                 {badge === "UNISEX" ? <UnisexBadge /> : null}
               </>
             )}
@@ -122,7 +128,7 @@ export default function ColorwaySection({
             }`}
           >
             <Image
-              src={image}
+              src={img}
               alt={imageAlt}
               fill
               sizes="(min-width: 1280px) 760px, 60vw"
@@ -153,12 +159,12 @@ export default function ColorwaySection({
 
             <h3 className="mt-4 font-display text-[40px] font-bold uppercase leading-[1.05] text-white lg:text-[52px]">
               {multiSwatch
-                ? swatches.map((s) => s.name).join(" / ")
-                : swatches[0].name}
+                ? sw.map((s) => s.name).join(" / ")
+                : sw[0]?.name ?? ""}
             </h3>
 
             <div className="mt-8 flex flex-col gap-5">
-              {(multiSwatch ? swatches : [swatches[0]]).map((s) => (
+              {(multiSwatch ? sw : sw.slice(0, 1)).map((s) => (
                 <DesktopSwatch key={s.name} {...s} />
               ))}
             </div>

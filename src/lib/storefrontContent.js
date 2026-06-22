@@ -8,12 +8,13 @@ import { repairQuery } from "@/lib/repairApi";
 //   - When an admin saves a section, only the fields they set override; the
 //     design (layout / styling / markup) is unchanged — only the content moves.
 //
-// Cached with a short ISR window so admin edits surface within the window
-// without hammering the backend on every landing hit (mirrors shopCatalog.js).
-// Any failure degrades to {} — the landing never breaks on a CMS outage.
+// Uncached (`revalidate: 0`) so a page refresh always reflects the admin's
+// latest saved content — no waiting out an ISR window after a Save. The CMS
+// changes rarely and the payload is small, so the per-request backend hit is
+// cheap. Any failure degrades to {} — the landing never breaks on a CMS outage.
 export async function fetchStorefrontContent() {
   try {
-    const res = await repairQuery("myAppGetStorefrontContent", {}, { revalidate: 60 });
+    const res = await repairQuery("myAppGetStorefrontContent", {}, { revalidate: 0 });
     return res && typeof res === "object" ? res : {};
   } catch {
     return {};

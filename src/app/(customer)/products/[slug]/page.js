@@ -1,6 +1,7 @@
 import Link from "next/link";
 import ProductPageClient from "@/components/customer/product/ProductPageClient";
 import { fetchProductDetail } from "@/lib/shopCatalog";
+import { fetchStorefrontContent } from "@/lib/storefrontContent";
 
 // Product detail route. The `[slug]` segment is the numeric product id
 // (storefront links are `/products/<id>`). Data comes live from the `repair`
@@ -23,7 +24,10 @@ export async function generateMetadata({ params }) {
 
 export default async function ProductPage({ params }) {
   const { slug } = await params;
-  const product = await fetchProductDetail(slug);
+  const [product, content] = await Promise.all([
+    fetchProductDetail(slug),
+    fetchStorefrontContent(),
+  ]);
 
   if (!product) {
     return (
@@ -44,5 +48,7 @@ export default async function ProductPage({ params }) {
     );
   }
 
-  return <ProductPageClient product={product} />;
+  return (
+    <ProductPageClient product={product} productSections={content?.product_sections} />
+  );
 }

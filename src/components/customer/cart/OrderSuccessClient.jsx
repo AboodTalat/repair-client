@@ -189,8 +189,22 @@ function SuccessHeading({ variant }) {
 // model photo bleeding off the right edge.
 // ──────────────────────────────────────────────────────────────────────
 
-function CoachingCard({ variant }) {
+function CoachingCard({ variant, cta }) {
   const desktop = variant === "desktop";
+  // CMS overlay — each field falls back to the current hardcoded copy so an
+  // empty CMS renders the card exactly as before.
+  const eyebrow = cta?.eyebrow || "";
+  const title = cta?.title || "You've taken the first step!";
+  const body = cta?.body || "Let's build the routine that gets results with Asaad Hamawi!";
+  const ctaLabel = cta?.ctaLabel || "APPLY FOR COACHING";
+  const ctaHref = cta?.ctaHref || "";
+  const image = cta?.image || COACHING_IMAGE;
+  const btnClass = desktop
+    ? "flex items-center justify-center rounded-[4px] bg-white px-4 py-3"
+    : "flex h-6 items-center justify-center rounded-[4px] bg-white px-4";
+  const btnSpanClass = desktop
+    ? "font-display text-[11px] font-black leading-5 text-[#11191f]"
+    : "font-display text-[9px] font-black leading-5 text-[#11191f]";
   return (
     <div
       className="relative flex w-full items-center justify-between overflow-hidden rounded-[8px] pl-4 pr-2 pt-6 md:pl-8"
@@ -202,6 +216,14 @@ function CoachingCard({ variant }) {
     >
       <div className="flex min-w-0 flex-1 flex-col items-start gap-3 pb-6">
         <div className="flex flex-col gap-1">
+          {eyebrow ? (
+            <p
+              className="font-body text-[10px] uppercase leading-normal tracking-[0.2em] text-white/60"
+              style={condensed}
+            >
+              {eyebrow}
+            </p>
+          ) : null}
           <p
             className={
               desktop
@@ -209,35 +231,24 @@ function CoachingCard({ variant }) {
                 : "font-display text-[11px] font-black uppercase leading-normal text-white"
             }
           >
-            You&apos;ve taken the first step!
+            {title}
           </p>
           <p
             className="font-body text-[12px] leading-normal"
             style={{ ...condensed, color: "rgba(255,255,255,0.7)" }}
           >
-            Let&apos;s build the routine that gets results
-            <br />
-            with Asaad Hamawi!
+            {body}
           </p>
         </div>
-        <button
-          type="button"
-          className={
-            desktop
-              ? "flex items-center justify-center rounded-[4px] bg-white px-4 py-3"
-              : "flex h-6 items-center justify-center rounded-[4px] bg-white px-4"
-          }
-        >
-          <span
-            className={
-              desktop
-                ? "font-display text-[11px] font-black leading-5 text-[#11191f]"
-                : "font-display text-[9px] font-black leading-5 text-[#11191f]"
-            }
-          >
-            APPLY FOR COACHING
-          </span>
-        </button>
+        {ctaHref ? (
+          <a href={ctaHref} target="_blank" rel="noopener noreferrer" className={btnClass}>
+            <span className={btnSpanClass}>{ctaLabel}</span>
+          </a>
+        ) : (
+          <button type="button" className={btnClass}>
+            <span className={btnSpanClass}>{ctaLabel}</span>
+          </button>
+        )}
       </div>
       <div
         className="relative shrink-0"
@@ -247,7 +258,7 @@ function CoachingCard({ variant }) {
         }}
       >
         <Image
-          src={COACHING_IMAGE}
+          src={image}
           alt=""
           fill
           sizes={desktop ? "180px" : "106px"}
@@ -651,8 +662,10 @@ function SuccessLoading() {
   );
 }
 
-export default function OrderSuccessClient() {
+export default function OrderSuccessClient({ coaching } = {}) {
   const router = useRouter();
+  // Hide the coaching card entirely when the admin toggled it off.
+  const showCoaching = coaching?.enabled !== false;
   const lastOrder = useRepairStore(selectLastPlacedOrder);
   const settings = useCommerceSettings();
 
@@ -755,9 +768,11 @@ export default function OrderSuccessClient() {
           <SuccessHeading variant="mobile" />
         </div>
 
-        <div className="px-4 pt-8">
-          <CoachingCard variant="mobile" />
-        </div>
+        {showCoaching ? (
+          <div className="px-4 pt-8">
+            <CoachingCard variant="mobile" cta={coaching} />
+          </div>
+        ) : null}
 
         <div className="px-4 pt-6">
           <button
@@ -801,7 +816,7 @@ export default function OrderSuccessClient() {
             className="flex w-full min-w-0 flex-col gap-10 lg:flex-1"
             style={{ maxWidth: "577.33px" }}
           >
-            <CoachingCard variant="desktop" />
+            {showCoaching ? <CoachingCard variant="desktop" cta={coaching} /> : null}
             <DesktopItemsSection items={items} />
             <DesktopShippingAddressSection address={shippingAddress} />
           </div>

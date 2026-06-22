@@ -208,11 +208,15 @@ function TrackingNotFound({ id }) {
   );
 }
 
+// Fallback labels for the activity timeline (used only when a history row has
+// no backend note). Keyed by raw status. `out_for_delivery` reads as the
+// "Dispatched" handover — NOT "out for delivery / on the way" — to match the
+// 3-state customer tracker.
 const STATUS_NOTE = {
   pending: "Order placed",
   processing: "Order placed — being prepared",
-  dispatched: "Packed and handed to the courier",
-  out_for_delivery: "Out for delivery",
+  dispatched: "Order prepared",
+  out_for_delivery: "Dispatched to our delivery partner",
   delivered: "Delivered",
   failed_delivery: "Delivery attempt failed",
   cancelled: "Order cancelled",

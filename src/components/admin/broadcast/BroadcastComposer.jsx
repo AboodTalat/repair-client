@@ -1,105 +1,268 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import Button from "@/components/admin/shared/Button";
 import DataTable from "@/components/admin/shared/DataTable";
 import Modal from "@/components/admin/shared/Modal";
-import StatusBadge from "@/components/admin/shared/StatusBadge";
 import { Field, TextInput, TextArea, Chip, Select } from "@/components/admin/shared/Form";
 import { IconSend, IconMail } from "@/components/admin/shared/Icons";
-import {
-  BROADCAST_HISTORY,
-  MARKETING_OPT_IN_COUNT,
-  NEWSLETTER_SUBSCRIBERS,
-  formatNumber,
-} from "@/lib/mockAdmin";
+import { formatNumber } from "@/lib/mockAdmin";
+import { repairCall } from "@/lib/repairAuthedApi";
+
+// Admin Broadcast Email — WIRED TO BACKEND.
+//   Q  myAppAdminBroadcastAudienceCounts  → live size of every segment
+//   Q  myAppAdminListBroadcasts           → past sends + per-send delivery counts
+//   M  myAppAdminBroadcastEmail           → queues the send, returns { queued, audience_size, truncated }
+//
+// Audiences are the segments the backend can serve truthfully: All customers,
+// behavioural segments derived from order history (Active / Lapsed / VIP), and
+// the newsletter list (optionally filtered by signup source). There are no
+// open/click metrics — the system has no open/click tracking, so showing them
+// would be fabricated.
+
+// Per-send recipient cap on the server. Surfaced so the admin knows a large
+// audience is queued in slices, never silently truncated.
+const SEND_CAP = 500;
 
 const AUDIENCE_LABELS = {
-  all: "All customers",
+  customers: "All customers",
   active: "Active",
+  lapsed: "Lapsed",
   vip: "VIP",
-  inactive: "Lapsed",
-  marketing: "Marketing",
   subscribers: "Newsletter subscribers",
+  all: "Everyone",
 };
 
-// Newsletter-subscriber source sub-filter — admins can narrow the
-// broadcast to just one signup channel when targeting subscribers.
+// Newsletter-subscriber source sub-filter — narrow the broadcast to one signup
+// channel. Values mirror the backend SUBSCRIBER_SOURCES (+ "all" = no filter).
 const SUBSCRIBER_SOURCES = [
-  { value: "all",      label: "All sources" },
-  { value: "footer",   label: "Footer signup" },
+  { value: "all", label: "All sources" },
+  { value: "footer", label: "Footer signup" },
   { value: "checkout", label: "Checkout opt-in" },
-  { value: "popup",    label: "Site popup" },
+  { value: "popup", label: "Site popup" },
 ];
 
+// Personalization merge tokens the backend substitutes per-recipient (see
+// resolvers/admin.ts). `userOnly` tokens have no backing data for the newsletter
+// `subscribers` audience (that table has no phone column) so they're hidden when
+// that audience is selected — never offer a token that resolves to nothing.
+const TOKENS = [
+  { token: "{{first_name}}", label: "First name" },
+  { token: "{{name}}", label: "Full name" },
+  { token: "{{email}}", label: "Email" },
+  { token: "{{phone}}", label: "Phone", userOnly: true },
+  { token: "{{store_url}}", label: "Store link" },
+  { token: "{{unsubscribe_url}}", label: "Unsubscribe link" },
+];
+
+// Strip the transport's "repairClientApi <op>: " prefix so the admin sees the
+// resolver's own message, not the wire wrapper.
+function cleanErr(err) {
+  return (
+    String(err?.message || "").replace(/^repairClientApi[^:]*:\s*/, "") ||
+    "Something went wrong, please try again."
+  );
+}
+
+function formatDate(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? "—" : d.toLocaleDateString("en-CA");
+}
+
+// One truthful delivery state per past broadcast, derived from the linked
+// email_notifications counts. With no SMTP configured (dev), rows stay pending
+// → "Queued"; once a worker/SMTP delivers them they flip to Delivered.
+function deliveryState(r) {
+  const sent = r.sent_count || 0;
+  const failed = r.failed_count || 0;
+  const pending = r.pending_count || 0;
+  if (failed > 0 && sent === 0 && pending === 0) return { label: "Failed", color: "#b91c1c" };
+  if (failed > 0) return { label: "Partial", color: "#b45309" };
+  if (sent > 0 && pending === 0) return { label: "Delivered", color: "#15803d" };
+  if (pending > 0 && sent === 0 && failed === 0) return { label: "Queued", color: "#6b7280" };
+  return { label: "—", color: "#9ca3af" };
+}
+
 export default function BroadcastComposer() {
-  const [audience, setAudience] = useState("all");
+  const [audienceCounts, setAudienceCounts] = useState(null);
+  const [history, setHistory] = useState([]);
+  const [loadingMeta, setLoadingMeta] = useState(true);
+  const [metaError, setMetaError] = useState("");
+
+  const [audience, setAudience] = useState("customers");
   const [subscriberSource, setSubscriberSource] = useState("all");
   const [subject, setSubject] = useState("");
   const [preheader, setPreheader] = useState("");
   const [body, setBody] = useState("");
+
   const [confirm, setConfirm] = useState(false);
-  const [sent, setSent] = useState(BROADCAST_HISTORY);
+  const [sending, setSending] = useState(false);
+  const [sendError, setSendError] = useState("");
+  const [toast, setToast] = useState("");
   const [historyFilter, setHistoryFilter] = useState("all");
 
-  // Live subscriber counts (active rows only — unsubscribed are excluded
-  // from every broadcast pick, per CAN-SPAM / unsubscribe respect).
-  const subscriberCounts = useMemo(() => {
-    const active = NEWSLETTER_SUBSCRIBERS.filter((s) => s.status === "active");
-    const bySource = { all: active.length };
-    for (const opt of SUBSCRIBER_SOURCES) {
-      if (opt.value === "all") continue;
-      bySource[opt.value] = active.filter((s) => s.source === opt.value).length;
-    }
-    return bySource;
+  // Live email preview — the backend renders the EXACT email a recipient gets
+  // (same template + token engine as the real send) so the panel can never drift
+  // from the delivered message.
+  const [previewHtml, setPreviewHtml] = useState("");
+  const [previewSubject, setPreviewSubject] = useState("");
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState("");
+
+  // Tokens to show as insert-chips — drop the user-only ones for the subscribers
+  // audience (no phone data for newsletter rows).
+  const visibleTokens = useMemo(
+    () => TOKENS.filter((t) => !(t.userOnly && audience === "subscribers")),
+    [audience]
+  );
+
+  const loadHistory = useCallback(async () => {
+    const data = await repairCall("myAppAdminListBroadcasts", { limit: 50 }, { isQuery: true });
+    setHistory(Array.isArray(data?.items) ? data.items : []);
   }, []);
 
-  const AUDIENCES = useMemo(() => [
-    { value: "all", label: "All customers (1,842)" },
-    { value: "active", label: "Active in last 30 days (954)" },
-    { value: "vip", label: "VIP — top 10% spend (184)" },
-    { value: "inactive", label: "Lapsed — no order in 90 days (412)" },
-    { value: "marketing", label: `Marketing — checkout opt-in (${formatNumber(MARKETING_OPT_IN_COUNT)})` },
-    { value: "subscribers", label: `Newsletter subscribers (${formatNumber(subscriberCounts.all)})` },
-  ], [subscriberCounts.all]);
-
-  const recipientCount =
-    audience === "all" ? 1842 :
-    audience === "active" ? 954 :
-    audience === "vip" ? 184 :
-    audience === "marketing" ? MARKETING_OPT_IN_COUNT :
-    audience === "subscribers" ? (subscriberCounts[subscriberSource] ?? 0) :
-    412;
-
-  function send() {
-    const entry = {
-      id: `b-${Date.now()}`,
-      subject,
-      sent: new Date().toISOString().replace("T", " ").slice(0, 16),
-      recipients: recipientCount,
-      audience,
-      // Source is only meaningful for subscriber broadcasts — null for
-      // customer-segment audiences (all/active/vip/inactive/marketing).
-      subscriberSource: audience === "subscribers" ? subscriberSource : null,
-      status: "delivered",
-      openRate: null,
-      clickRate: null,
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setLoadingMeta(true);
+      setMetaError("");
+      try {
+        const [counts, list] = await Promise.all([
+          repairCall("myAppAdminBroadcastAudienceCounts", {}, { isQuery: true }),
+          repairCall("myAppAdminListBroadcasts", { limit: 50 }, { isQuery: true }),
+        ]);
+        if (cancelled) return;
+        setAudienceCounts(counts || null);
+        setHistory(Array.isArray(list?.items) ? list.items : []);
+      } catch (err) {
+        if (!cancelled) setMetaError(cleanErr(err));
+      } finally {
+        if (!cancelled) setLoadingMeta(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
     };
-    setSent((prev) => [entry, ...prev]);
-    setSubject("");
-    setPreheader("");
-    setBody("");
-    setConfirm(false);
+  }, []);
+
+  // Auto-dismiss the success toast.
+  useEffect(() => {
+    if (!toast) return undefined;
+    const t = setTimeout(() => setToast(""), 6000);
+    return () => clearTimeout(t);
+  }, [toast]);
+
+  // Debounced live preview — re-render the real email as the admin types /
+  // changes audience (the audience affects token sample values + the appended
+  // subscriber unsubscribe line). 350ms keeps it responsive without a request
+  // per keystroke.
+  useEffect(() => {
+    let cancelled = false;
+    const t = setTimeout(async () => {
+      setPreviewLoading(true);
+      try {
+        const vars = { subject: subject.trim(), body: body.trim(), preheader: preheader.trim(), audience };
+        if (audience === "subscribers" && subscriberSource !== "all") vars.source = subscriberSource;
+        const res = await repairCall("myAppAdminPreviewBroadcast", vars, { isQuery: true });
+        if (!cancelled) {
+          setPreviewHtml(typeof res?.html === "string" ? res.html : "");
+          setPreviewSubject(typeof res?.subject === "string" ? res.subject : "");
+          setPreviewError("");
+        }
+      } catch (err) {
+        if (!cancelled) setPreviewError(cleanErr(err));
+      } finally {
+        if (!cancelled) setPreviewLoading(false);
+      }
+    }, 350);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [subject, body, preheader, audience, subscriberSource]);
+
+  const fmtCount = useCallback(
+    (n) => (audienceCounts ? formatNumber(Number(n) || 0) : "…"),
+    [audienceCounts]
+  );
+
+  const subCounts = useMemo(() => audienceCounts?.subscribers ?? {}, [audienceCounts]);
+
+  const recipientCount = useMemo(() => {
+    if (!audienceCounts) return 0;
+    if (audience === "subscribers") return Number(subCounts[subscriberSource]) || 0;
+    return Number(audienceCounts[audience]) || 0;
+  }, [audienceCounts, audience, subscriberSource, subCounts]);
+
+  const AUDIENCES = useMemo(
+    () => [
+      { value: "customers", label: `All customers (${fmtCount(audienceCounts?.customers)})` },
+      { value: "active", label: `Active — ordered in 30 days (${fmtCount(audienceCounts?.active)})` },
+      { value: "lapsed", label: `Lapsed — no order in 90 days (${fmtCount(audienceCounts?.lapsed)})` },
+      { value: "vip", label: `VIP — top 10% spend (${fmtCount(audienceCounts?.vip)})` },
+      { value: "subscribers", label: `Newsletter subscribers (${fmtCount(subCounts.all)})` },
+    ],
+    [audienceCounts, subCounts.all, fmtCount]
+  );
+
+  const willTruncate = recipientCount > SEND_CAP;
+  const canSend = !!subject.trim() && !!body.trim() && !!audienceCounts && recipientCount > 0;
+
+  async function send() {
+    if (sending) return;
+    setSending(true);
+    setSendError("");
+    try {
+      const vars = { subject: subject.trim(), body: body.trim(), preheader: preheader.trim(), audience };
+      if (audience === "subscribers" && subscriberSource !== "all") vars.source = subscriberSource;
+      const res = await repairCall("myAppAdminBroadcastEmail", vars, { isQuery: false });
+
+      const queued = Number(res?.queued) || 0;
+      const size = Number(res?.audience_size) || queued;
+      setToast(
+        res?.truncated
+          ? `Queued ${formatNumber(queued)} of ${formatNumber(size)} recipients (the cap is ${formatNumber(SEND_CAP)} per send). Send again to reach the rest.`
+          : `Broadcast queued to ${formatNumber(queued)} recipient${queued === 1 ? "" : "s"}.`
+      );
+      setConfirm(false);
+      setSubject("");
+      setPreheader("");
+      setBody("");
+      await loadHistory();
+    } catch (err) {
+      setSendError(cleanErr(err));
+    } finally {
+      setSending(false);
+    }
   }
 
-  const visibleHistory =
-    historyFilter === "marketing"   ? sent.filter((r) => r.audience === "marketing") :
-    historyFilter === "subscribers" ? sent.filter((r) => r.audience === "subscribers") :
-    sent;
+  const visibleHistory = useMemo(() => {
+    if (historyFilter === "newsletter") return history.filter((r) => r.target_audience === "subscribers");
+    if (historyFilter === "customers") return history.filter((r) => r.target_audience !== "subscribers");
+    return history;
+  }, [history, historyFilter]);
+
+  const audienceSummary = `${AUDIENCE_LABELS[audience] ?? audience}${
+    audience === "subscribers" && subscriberSource !== "all"
+      ? ` · ${SUBSCRIBER_SOURCES.find((s) => s.value === subscriberSource)?.label ?? subscriberSource}`
+      : ""
+  }`;
 
   return (
     <>
+      {toast && (
+        <div className="mb-4 rounded-[4px] border border-[#bbf7d0] bg-[#f0fdf4] px-4 py-3">
+          <p className="font-body text-[13px] text-[#15803d]">{toast}</p>
+        </div>
+      )}
+      {metaError && (
+        <div className="mb-4 rounded-[4px] border border-[#fecaca] bg-[#fef2f2] px-4 py-3">
+          <p className="font-body text-[13px] text-[#dc2626]">{metaError}</p>
+        </div>
+      )}
+
       <div className="grid grid-cols-1 gap-6 xl:grid-cols-5">
         <section className="xl:col-span-3">
           <div className="rounded-[4px] border border-[#e5e7eb] bg-white p-6">
@@ -120,24 +283,25 @@ export default function BroadcastComposer() {
             </div>
             <div className="flex flex-col gap-4">
               <Field label="Audience" required>
-                <Select
-                  value={audience}
-                  onChange={setAudience}
-                  options={AUDIENCES}
-                />
+                <Select value={audience} onChange={setAudience} options={AUDIENCES} />
               </Field>
-              {audience === "marketing" && (
+              {(audience === "active" || audience === "lapsed" || audience === "vip") && (
                 <div className="rounded-[2px] border border-[#dbeafe] bg-[#eff6ff] p-3">
-                  <p className="font-body text-[12px] text-[#1e40af]">
-                    Sending to <strong>{formatNumber(MARKETING_OPT_IN_COUNT)}</strong> customers who opted in to{" "}
-                    <em>"Email me with news and offers"</em> at checkout. These subscribers have consented to promotional emails.
+                  <p className="font-body text-[12px] leading-relaxed text-[#1e40af]">
+                    {audience === "active" &&
+                      "Customers who placed at least one order in the last 30 days. Computed live from order history."}
+                    {audience === "lapsed" &&
+                      "Customers who have ordered before but not in the last 90 days — a win-back audience. Computed live from order history."}
+                    {audience === "vip" &&
+                      "The top 10% of paying customers by lifetime spend (cancelled / returned / failed orders excluded). Computed live from order history."}
                   </p>
                 </div>
               )}
               {audience === "subscribers" && (
                 <div className="flex flex-col gap-3 rounded-[2px] border border-[#dbeafe] bg-[#eff6ff] p-3">
                   <p className="font-body text-[12px] leading-relaxed text-[#1e40af]">
-                    Sending to people who joined the newsletter via the storefront — not necessarily customers (some haven&apos;t placed an order yet). Unsubscribed rows are automatically excluded.{" "}
+                    People who joined the newsletter via the storefront — not necessarily customers. Unsubscribed
+                    rows are automatically excluded, and a one-click unsubscribe link is added to every send.{" "}
                     <Link
                       href="/r3pr-console/subscribers"
                       className="font-semibold underline-offset-2 hover:underline"
@@ -156,14 +320,11 @@ export default function BroadcastComposer() {
                           active={subscriberSource === opt.value}
                           onClick={() => setSubscriberSource(opt.value)}
                         >
-                          {opt.label} ({formatNumber(subscriberCounts[opt.value] ?? 0)})
+                          {opt.label} ({fmtCount(opt.value === "all" ? subCounts.all : subCounts[opt.value])})
                         </Chip>
                       ))}
                     </div>
                   </div>
-                  <p className="font-body text-[11px] text-[#1e40af]/80">
-                    <strong>Heads-up:</strong> newsletter rows only carry an email address, so the <code>{"{{first_name}}"}</code> token won&apos;t render personalised text — keep the greeting generic (e.g. <em>&ldquo;Hi there,&rdquo;</em>) when sending to this audience.
-                  </p>
                 </div>
               )}
               <Field label="Subject line" required hint="Keep it under 60 characters for best deliverability.">
@@ -180,12 +341,12 @@ export default function BroadcastComposer() {
                   placeholder="Just a few hours left to grab the warm-weather drop."
                 />
               </Field>
-              <Field label="Message" required hint="Plain text — line breaks become paragraphs in the email.">
+              <Field label="Message" required hint="Plain text — line breaks are preserved in the email.">
                 <TextArea
                   rows={10}
                   value={body}
                   onChange={(e) => setBody(e.target.value)}
-                  placeholder={`Hi {{first_name}},\n\nWrite something here.\n\n— The Repair team`}
+                  placeholder={`Hi there,\n\nWrite something here.\n\n— The Repair team`}
                 />
               </Field>
               <div>
@@ -193,64 +354,63 @@ export default function BroadcastComposer() {
                   Personalisation tokens
                 </p>
                 <div className="flex flex-wrap gap-2">
-                  <Chip onClick={() => setBody((b) => b + " {{first_name}}")}>{`Insert {{first_name}}`}</Chip>
-                  <Chip onClick={() => setBody((b) => b + " {{store_url}}")}>{`Insert {{store_url}}`}</Chip>
-                  <Chip onClick={() => setBody((b) => b + " {{unsubscribe_url}}")}>{`Insert {{unsubscribe_url}}`}</Chip>
+                  {visibleTokens.map((t) => (
+                    <Chip key={t.token} onClick={() => setBody((b) => `${b}${t.token}`)}>
+                      {t.label}
+                    </Chip>
+                  ))}
                 </div>
-                <p className="mt-2 font-body text-[11px] text-[#9ca3af]">
-                  {"Click a token to insert it at the end of your message. Each token is replaced with the recipient’s actual data before the email is sent — e.g. "}
+                <p className="mt-2 font-body text-[11px] leading-relaxed text-[#9ca3af]">
+                  {"Click a token to add it to the message — they work in the subject line too, and each is filled in per-recipient. "}
                   <em>{"{{first_name}}"}</em>
-                  {" becomes the customer’s first name."}
+                  {" / "}
+                  <em>{"{{name}}"}</em>
+                  {" are derived from the recipient's email (the store doesn't collect a name), falling back to “there”. "}
+                  <em>{"{{email}}"}</em>
+                  {" and "}
+                  <em>{"{{phone}}"}</em>
+                  {" use the saved account details"}
+                  {audience === "subscribers"
+                    ? " (phone isn't offered for newsletter subscribers — that list has no phone number)."
+                    : "."}
+                  {" "}
+                  <em>{"{{store_url}}"}</em>
+                  {" links to the storefront and "}
+                  <em>{"{{unsubscribe_url}}"}</em>
+                  {" becomes the unsubscribe link (added automatically for newsletter sends if you omit it)."}
                 </p>
               </div>
             </div>
             <div className="mt-6 border-t border-[#e5e7eb] pt-4">
+              {sendError && (
+                <div className="mb-3 rounded-[2px] border border-[#fecaca] bg-[#fef2f2] px-3 py-2">
+                  <p className="font-body text-[12px] text-[#dc2626]">{sendError}</p>
+                </div>
+              )}
               <div className="flex items-start justify-between gap-4">
                 <div className="flex flex-col">
-                  <span className="font-body text-[11px] uppercase tracking-[1px] text-[#6b7280]">
-                    Will send to
-                  </span>
+                  <span className="font-body text-[11px] uppercase tracking-[1px] text-[#6b7280]">Will send to</span>
                   <span className="font-display text-[18px] font-bold text-[#11191f]">
-                    {formatNumber(recipientCount)} recipients
+                    {audienceCounts ? `${formatNumber(recipientCount)} recipients` : "Loading…"}
                   </span>
                   <span className="mt-0.5 font-body text-[11px] text-[#6b7280]">
-                    {`${AUDIENCE_LABELS[audience] ?? audience}${
-                      audience === "subscribers" && subscriberSource !== "all"
-                        ? ` · ${SUBSCRIBER_SOURCES.find((s) => s.value === subscriberSource)?.label ?? subscriberSource}`
-                        : ""
-                    } · Delivered within minutes`}
+                    {`${audienceSummary} · Delivered within minutes`}
                   </span>
+                  {willTruncate && (
+                    <span className="mt-1 font-body text-[11px] text-[#b45309]">
+                      Over {formatNumber(SEND_CAP)} — this send queues the first {formatNumber(SEND_CAP)}; send again to reach the rest.
+                    </span>
+                  )}
                 </div>
                 <div className="flex flex-col items-end gap-2">
-                  <div className="flex items-center gap-2">
-                    <div className="group relative">
-                      <Button variant="secondary">Save as draft</Button>
-                      <div className="pointer-events-none absolute bottom-full right-0 mb-1.5 hidden w-52 rounded-[2px] border border-[#e5e7eb] bg-white p-2 shadow-sm group-hover:block">
-                        <p className="font-body text-[11px] leading-relaxed text-[#6b7280]">
-                          Saves your subject and message so you can return to it later. Drafts are not sent until you click <strong>Send broadcast</strong>.
-                        </p>
-                      </div>
-                    </div>
-                    <div className="group relative">
-                      <Button
-                        icon={<IconSend />}
-                        disabled={!subject || !body}
-                        onClick={() => setConfirm(true)}
-                      >
-                        Send broadcast
-                      </Button>
-                      {(!subject || !body) && (
-                        <div className="pointer-events-none absolute bottom-full right-0 mb-1.5 hidden w-52 rounded-[2px] border border-[#e5e7eb] bg-white p-2 shadow-sm group-hover:block">
-                          <p className="font-body text-[11px] leading-relaxed text-[#6b7280]">
-                            Fill in a subject line and message body before sending.
-                          </p>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                  <p className="font-body text-[11px] text-[#9ca3af]">
-                    Emails send immediately and cannot be recalled.
-                  </p>
+                  <Button
+                    icon={<IconSend />}
+                    disabled={!canSend || sending}
+                    onClick={() => setConfirm(true)}
+                  >
+                    Send broadcast
+                  </Button>
+                  <p className="font-body text-[11px] text-[#9ca3af]">Emails send immediately and cannot be recalled.</p>
                 </div>
               </div>
             </div>
@@ -259,34 +419,51 @@ export default function BroadcastComposer() {
 
         <section className="xl:col-span-2">
           <div className="rounded-[4px] border border-[#e5e7eb] bg-white p-6">
-            <h3 className="mb-4 font-display text-[13px] font-bold uppercase tracking-[1.2px] text-[#11191f]">
-              Preview
-            </h3>
-            <div className="overflow-hidden rounded-[4px] border border-[#e5e7eb] bg-[#fafafa]">
-              <div className="border-b border-[#e5e7eb] bg-white px-4 py-3">
-                <p className="font-body text-[11px] text-[#6b7280]">
-                  From: Repair &lt;hello@repair.app&gt;
-                </p>
-                <p className="font-display text-[14px] font-bold text-[#11191f]">
-                  {subject || "Subject preview"}
-                </p>
-                <p className="font-body text-[11px] text-[#6b7280]">
-                  {preheader || "Preheader preview"}
-                </p>
-              </div>
-              <div className="grid place-items-center bg-[#11191f] py-8 text-white">
-                <span className="font-display text-[20px] font-bold uppercase tracking-[2px]">
-                  REPAIR
-                </span>
-              </div>
-              <div className="whitespace-pre-wrap bg-white p-5 font-body text-[13px] leading-relaxed text-[#11191f]">
-                {body ||
-                  "Your message will appear here as you type."}
-              </div>
-              <div className="border-t border-[#e5e7eb] bg-white px-5 py-3 text-center font-body text-[10px] text-[#6b7280]">
-                You're receiving this because you signed up at repair.app · Unsubscribe
-              </div>
+            <div className="mb-4 flex items-center justify-between gap-2">
+              <h3 className="font-display text-[13px] font-bold uppercase tracking-[1.2px] text-[#11191f]">
+                Preview
+              </h3>
+              <span className="flex items-center gap-1.5 font-body text-[10px] uppercase tracking-[1px] text-[#6b7280]">
+                {previewLoading ? (
+                  <>
+                    <span className="size-2.5 animate-spin rounded-full border border-[#e5e7eb] border-t-[#11191f]" />
+                    Updating…
+                  </>
+                ) : (
+                  <>
+                    <span className="size-1.5 rounded-full bg-[#16a34a]" />
+                    Exact recipient view
+                  </>
+                )}
+              </span>
             </div>
+            <div className="overflow-hidden rounded-[4px] border border-[#e5e7eb] bg-[#fafafa]">
+              {/* Inbox-row chrome (the mail-client metadata, not part of the email body). */}
+              <div className="border-b border-[#e5e7eb] bg-white px-4 py-3">
+                <p className="font-body text-[11px] text-[#6b7280]">From: Repair &lt;hello@repair.app&gt;</p>
+                <p className="font-display text-[14px] font-bold text-[#11191f]">
+                  {previewSubject || subject || "Subject preview"}
+                </p>
+                <p className="font-body text-[11px] text-[#6b7280]">{preheader || "Inbox preview text"}</p>
+              </div>
+              {/* The actual rendered email — same template + tokens a recipient receives. */}
+              {previewError ? (
+                <div className="bg-white px-5 py-10 text-center">
+                  <p className="font-body text-[12px] text-[#dc2626]">{previewError}</p>
+                </div>
+              ) : (
+                <iframe
+                  title="Email preview"
+                  sandbox=""
+                  srcDoc={previewHtml}
+                  className="h-[620px] w-full border-0 bg-white"
+                />
+              )}
+            </div>
+            <p className="mt-2 font-body text-[11px] leading-relaxed text-[#9ca3af]">
+              Rendered by the mail server with sample personalisation values — the
+              real send fills each token from the recipient&apos;s own details.
+            </p>
           </div>
         </section>
       </div>
@@ -300,78 +477,72 @@ export default function BroadcastComposer() {
             <Chip active={historyFilter === "all"} onClick={() => setHistoryFilter("all")}>
               All
             </Chip>
-            <Chip active={historyFilter === "marketing"} onClick={() => setHistoryFilter("marketing")}>
-              Marketing campaigns
+            <Chip active={historyFilter === "customers"} onClick={() => setHistoryFilter("customers")}>
+              Customers
             </Chip>
-            <Chip active={historyFilter === "subscribers"} onClick={() => setHistoryFilter("subscribers")}>
+            <Chip active={historyFilter === "newsletter"} onClick={() => setHistoryFilter("newsletter")}>
               Newsletter
             </Chip>
           </div>
         </div>
-        <DataTable
-          columns={[
-            {
-              key: "subject",
-              label: "Subject",
-              render: (r) => (
-                <div className="flex flex-col gap-0.5">
-                  <span className="font-body font-medium text-[#11191f]">{r.subject}</span>
-                  {r.audience === "marketing" && (
+        {loadingMeta ? (
+          <div className="grid place-items-center rounded-[4px] border border-[#e5e7eb] bg-white px-6 py-16">
+            <div className="flex items-center gap-3">
+              <div className="size-5 animate-spin rounded-full border-2 border-[#e5e7eb] border-t-[#11191f]" />
+              <p className="font-body text-[13px] text-[#6b7280]">Loading broadcasts…</p>
+            </div>
+          </div>
+        ) : (
+          <DataTable
+            columns={[
+              {
+                key: "subject",
+                label: "Subject",
+                render: (r) => (
+                  <div className="flex flex-col gap-0.5">
+                    <span className="font-body font-medium text-[#11191f]">{r.subject}</span>
                     <span className="font-body text-[10px] uppercase tracking-[0.8px] text-[#1d4ed8]">
-                      Marketing opt-in
+                      {AUDIENCE_LABELS[r.target_audience] ?? r.target_audience}
+                      {r.target_audience === "subscribers" && r.target_source ? ` · ${r.target_source}` : ""}
                     </span>
-                  )}
-                  {r.audience === "subscribers" && (
-                    <span className="font-body text-[10px] uppercase tracking-[0.8px] text-[#1d4ed8]">
-                      Newsletter
-                      {r.subscriberSource && r.subscriberSource !== "all"
-                        ? ` · ${r.subscriberSource}`
-                        : ""}
+                  </div>
+                ),
+              },
+              {
+                key: "sent_by_email",
+                label: "Sent by",
+                render: (r) => (
+                  <span className="font-body text-[12px] text-[#6b7280]">{r.sent_by_email || "—"}</span>
+                ),
+              },
+              {
+                key: "recipient_count",
+                label: "Recipients",
+                align: "right",
+                render: (r) => formatNumber(r.recipient_count || 0),
+              },
+              {
+                key: "delivery",
+                label: "Delivery",
+                render: (r) => {
+                  const d = deliveryState(r);
+                  return (
+                    <span className="font-body text-[12px] font-medium" style={{ color: d.color }}>
+                      {d.label}
                     </span>
-                  )}
-                </div>
-              ),
-            },
-            {
-              key: "audience",
-              label: "Audience",
-              render: (r) => (
-                <span className="font-body text-[12px] text-[#6b7280]">
-                  {AUDIENCE_LABELS[r.audience] ?? r.audience}
-                  {r.audience === "subscribers" && r.subscriberSource && r.subscriberSource !== "all"
-                    ? ` · ${r.subscriberSource}`
-                    : ""}
-                </span>
-              ),
-            },
-            { key: "recipients", label: "Recipients", align: "right", render: (r) => formatNumber(r.recipients) },
-            {
-              key: "openRate",
-              label: "Open rate",
-              align: "right",
-              render: (r) =>
-                r.openRate != null ? (
-                  <span className="font-body text-[13px] text-[#11191f]">{`${r.openRate}%`}</span>
-                ) : (
-                  <span className="font-body text-[12px] text-[#9ca3af]">Pending</span>
-                ),
-            },
-            {
-              key: "clickRate",
-              label: "Click rate",
-              align: "right",
-              render: (r) =>
-                r.clickRate != null ? (
-                  <span className="font-body text-[13px] text-[#11191f]">{`${r.clickRate}%`}</span>
-                ) : (
-                  <span className="font-body text-[12px] text-[#9ca3af]">Pending</span>
-                ),
-            },
-            { key: "status", label: "Status", render: (r) => <StatusBadge status="delivered" label={r.status} /> },
-            { key: "sent", label: "Sent" },
-          ]}
-          rows={visibleHistory}
-        />
+                  );
+                },
+              },
+              { key: "sent_at", label: "Sent", render: (r) => formatDate(r.sent_at || r.created_at) },
+            ]}
+            rows={visibleHistory}
+            empty={
+              <p className="font-body text-[13px] text-[#6b7280]">
+                No broadcasts sent yet. Compose one above to reach your audience.
+              </p>
+            }
+          />
+        )}
       </div>
 
       <Modal
@@ -380,11 +551,11 @@ export default function BroadcastComposer() {
         title="Review and send"
         footer={
           <>
-            <Button variant="secondary" onClick={() => setConfirm(false)}>
+            <Button variant="secondary" onClick={() => setConfirm(false)} disabled={sending}>
               Go back and edit
             </Button>
-            <Button icon={<IconSend />} onClick={send}>
-              Confirm — send to {formatNumber(recipientCount)}
+            <Button icon={<IconSend />} onClick={send} disabled={sending}>
+              {sending ? "Sending…" : `Confirm — send to ${formatNumber(Math.min(recipientCount, SEND_CAP))}`}
             </Button>
           </>
         }
@@ -397,21 +568,23 @@ export default function BroadcastComposer() {
             </div>
             <div className="flex items-center justify-between gap-4 px-4 py-2.5">
               <span className="font-body text-[11px] uppercase tracking-[0.8px] text-[#6b7280]">Audience</span>
-              <span className="font-body text-[12px] font-medium text-[#11191f]">
-                {AUDIENCE_LABELS[audience] ?? audience}
-                {audience === "subscribers" && subscriberSource !== "all"
-                  ? ` · ${SUBSCRIBER_SOURCES.find((s) => s.value === subscriberSource)?.label ?? subscriberSource}`
-                  : ""}
-              </span>
+              <span className="font-body text-[12px] font-medium text-[#11191f]">{audienceSummary}</span>
             </div>
             <div className="flex items-center justify-between gap-4 px-4 py-2.5">
               <span className="font-body text-[11px] uppercase tracking-[0.8px] text-[#6b7280]">Recipients</span>
               <span className="font-display text-[14px] font-bold text-[#11191f]">{formatNumber(recipientCount)}</span>
             </div>
           </div>
+          {willTruncate && (
+            <p className="rounded-[2px] border border-[#fde68a] bg-[#fffbeb] px-3 py-2 font-body text-[12px] leading-relaxed text-[#92400e]">
+              This audience is over the {formatNumber(SEND_CAP)}-recipient cap. Only the first {formatNumber(SEND_CAP)} will be
+              queued now — run the broadcast again to reach the remaining {formatNumber(recipientCount - SEND_CAP)}.
+            </p>
+          )}
           <p className="font-body text-[13px] leading-relaxed text-[#6b7280]">
-            Clicking <strong className="text-[#11191f]">Confirm</strong> will queue this email for immediate delivery through the mailer.
-            Recipients will receive it within minutes. <strong className="text-[#11191f]">This cannot be undone</strong> — there is no way to cancel or recall a broadcast once it is sent.
+            Clicking <strong className="text-[#11191f]">Confirm</strong> queues this email for immediate delivery through
+            the mailer. <strong className="text-[#11191f]">This cannot be undone</strong> — there is no way to recall a
+            broadcast once it is sent.
           </p>
         </div>
       </Modal>

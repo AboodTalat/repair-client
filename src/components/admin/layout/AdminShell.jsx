@@ -1,12 +1,26 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { usePathname } from "next/navigation";
 import SideNav from "./SideNav";
 import TopBar from "./TopBar";
 import { IconClose } from "@/components/admin/shared/Icons";
+import { repairCall } from "@/lib/repairAuthedApi";
 
 export default function AdminShell({ children }) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  // Live sidebar badge counts (Orders / Stock Alerts / Contact Messages).
+  // Fetched once here at the shell level so BOTH SideNav instances (desktop +
+  // mobile off-canvas) share the same numbers; the per-page managers are wired
+  // to the backend, so the badges have to come from the backend too (not the
+  // mock arrays they used to read). Refetched on navigation so actioning an
+  // item and moving on updates the pill.
+  const [badgeCounts, setBadgeCounts] = useState({
+    processingOrders: 0,
+    pendingStockAlerts: 0,
+    unreadMessages: 0,
+  });
+  const pathname = usePathname();
 
   // Lock body scroll while the off-canvas sidebar is open on mobile.
   useEffect(() => {
@@ -18,11 +32,35 @@ export default function AdminShell({ children }) {
     };
   }, [sidebarOpen]);
 
+  // Fetch badge counts on mount + whenever the route changes (natural refresh
+  // points). setState only inside the promise callbacks so we never set state
+  // synchronously in the effect body; a cancelled flag drops a late response
+  // after navigation/unmount. Prior counts are kept on failure so the badges
+  // don't blink to zero on a transient error.
+  useEffect(() => {
+    let cancelled = false;
+    repairCall("myAppAdminBadgeCounts", {}, { isQuery: true })
+      .then((data) => {
+        if (cancelled || !data) return;
+        setBadgeCounts({
+          processingOrders: Number(data.processingOrders) || 0,
+          pendingStockAlerts: Number(data.pendingStockAlerts) || 0,
+          unreadMessages: Number(data.unreadMessages) || 0,
+        });
+      })
+      .catch(() => {
+        /* keep prior counts on error */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [pathname]);
+
   return (
     <div className="flex min-h-screen bg-[#f7f7f8] text-[#11191f]">
       {/* Desktop sidebar — always visible from lg up */}
       <aside className="sticky top-0 hidden h-screen lg:flex">
-        <SideNav />
+        <SideNav counts={badgeCounts} />
       </aside>
 
       {/* Mobile off-canvas sidebar */}
@@ -33,7 +71,7 @@ export default function AdminShell({ children }) {
             onClick={() => setSidebarOpen(false)}
           />
           <div className="absolute inset-y-0 left-0 flex h-full">
-            <SideNav onNavigate={() => setSidebarOpen(false)} />
+            <SideNav counts={badgeCounts} onNavigate={() => setSidebarOpen(false)} />
             <button
               type="button"
               aria-label="Close menu"

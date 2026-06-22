@@ -1,37 +1,45 @@
 // Customer-facing order display helpers (status vocabulary, filter axes,
 // tracking pipeline, server→card mapping).
 //
-// IMPORTANT: the keys here mirror the REAL backend `orders.status` enum
-// (servers/repair/.../models/orders.ts):
-//   pending, processing, dispatched, out_for_delivery,
-//   delivered, failed_delivery, cancelled, returned
-// (The admin UI relabels `dispatched`→"Prepared" and `out_for_delivery`→
-// "With Delivery" at its own wire boundary; customer-facing copy uses the
-// plain-English labels below.) Every enum value must map to a badge bucket,
-// a filter chip, and a pipeline step with no silent fall-through.
+// IMPORTANT: the backend `orders.status` enum (servers/repair/.../models/orders.ts)
+// still has 8 raw values — pending, processing, dispatched, out_for_delivery,
+// delivered, failed_delivery, cancelled, returned — but the CUSTOMER surface
+// collapses them onto a 3-state happy path: Processing → Dispatched → Delivered.
+// The mapping (used by badgeFor / trackingProgress / ORDER_STATUS_OPTIONS):
+//   pending / processing / dispatched → "Processing"
+//   out_for_delivery                  → "Dispatched"  (admin "With Delivery")
+//   delivered                         → "Delivered"
+// So the customer only sees "Dispatched" once the admin hands the order to
+// delivery; the admin UI keeps its 4-step Processing → Prepared → With Delivery
+// → Delivered pipeline (src/lib/adminOrders.js) at its own wire boundary.
+// Terminal states (failed_delivery / cancelled / returned) keep their own
+// badge/callout. Every enum value maps with no silent fall-through.
 
 import { formatJOD } from "@/lib/mockCart";
 
 const PLACEHOLDER_IMAGE = "/shop/model-1.png";
 
 // ── Status badge buckets ──────────────────────────────────────────────────
-// Every raw enum status maps to its OWN badge so the card reflects the order's
-// real state — a `processing` order (the default for a freshly-placed order)
-// must NOT read as "On the way". Customer-facing labels are plain English and
-// mirror TRACKING_PIPELINE (not the admin "Prepared" / "With Delivery"
-// relabels). The `default` is a NEUTRAL "Unknown" badge, never "On the way":
-// a silent fall-through to "on the way" is exactly what made every order look
+// The customer-facing tracker has exactly 3 happy-path states —
+// Processing → Dispatched → Delivered — so the badges collapse the 8 raw enum
+// values onto that vocabulary:
+//   • pending / processing / dispatched  → "Processing"  (admin "Prepared" is
+//     still internal prep — the customer doesn't see a separate step for it)
+//   • out_for_delivery                   → "Dispatched"  (admin "With Delivery"
+//     — the order is now on its way with the courier)
+//   • delivered                          → "Delivered"
+// Terminal exceptions (failed_delivery / cancelled / returned) keep their own
+// badge. The `default` is a NEUTRAL "Unknown" badge, never "On the way": a
+// silent fall-through to "on the way" is exactly what made every order look
 // in-transit, so an unexpected status now reads as unknown instead.
 export function badgeFor(status) {
   switch (status) {
     case "pending":
-      return { kind: "pending", label: "Pending" };
     case "processing":
-      return { kind: "processing", label: "Processing" };
     case "dispatched":
-      return { kind: "dispatched", label: "Dispatched" };
+      return { kind: "processing", label: "Processing" };
     case "out_for_delivery":
-      return { kind: "out-for-delivery", label: "Out for Delivery" };
+      return { kind: "dispatched", label: "Dispatched" };
     case "delivered":
       return { kind: "delivered", label: "Delivered" };
     case "failed_delivery":
@@ -57,34 +65,52 @@ export function isInFlight(status) {
 }
 
 // ── Tracking pipeline (detail page) ─────────────────────────────────────────
-// Order of keys = order of steps. Keys are raw status values so progress is
-// derived by index.
+// The customer tracker shows EXACTLY 3 steps. These are NOT 1:1 with the raw
+// enum — the backend's `dispatched` ("Prepared" internally) folds into the
+// "Processing" step, and the customer only advances to "Dispatched" once the
+// admin hands the order to delivery (`out_for_delivery`). The step `key`s are
+// display keys, so progress is resolved by `trackingProgress` (a switch), NOT
+// by matching a raw status against the key.
 export const TRACKING_PIPELINE = [
   { key: "processing", label: "Processing", description: "We received your order and are preparing it." },
-  { key: "dispatched", label: "Dispatched", description: "Packed and handed to the courier." },
-  { key: "out_for_delivery", label: "Out for Delivery", description: "On its way — heading to you now." },
+  { key: "dispatched", label: "Dispatched", description: "Dispatched and handed to our delivery partner." },
   { key: "delivered", label: "Delivered", description: "Your order has arrived." },
 ];
 
+// Map a raw `orders.status` onto the 3-step tracker:
+//   pending / processing / dispatched → step 0 (Processing)
+//   out_for_delivery                  → step 1 (Dispatched)
+//   delivered                         → step 2 (Delivered)
+// Terminal states return stepIndex -1 + the status key for the callout cards.
 export function trackingProgress(status) {
   if (status === "cancelled" || status === "returned" || status === "failed_delivery") {
     return { stepIndex: -1, terminal: status };
   }
-  if (status === "pending") return { stepIndex: 0, terminal: null };
-  const idx = TRACKING_PIPELINE.findIndex((s) => s.key === status);
-  return { stepIndex: idx >= 0 ? idx : 0, terminal: null };
+  switch (status) {
+    case "out_for_delivery":
+      return { stepIndex: 1, terminal: null };
+    case "delivered":
+      return { stepIndex: 2, terminal: null };
+    case "pending":
+    case "processing":
+    case "dispatched":
+    default:
+      return { stepIndex: 0, terminal: null };
+  }
 }
 
 // ── Filter axes ─────────────────────────────────────────────────────────────
-// Status filter slugs collapse the in-transit bucket. `rawStatuses` is the set
-// of raw status values a chip matches.
+// Status filter slugs mirror the customer's 3-state tracker vocabulary so the
+// list chips match the badges (`badgeFor`) and the tracking pipeline.
+// `rawStatuses` is the set of raw enum values a chip matches.
 export const ORDER_STATUS_OPTIONS = [
-  { slug: "delivered", label: "Delivered", rawStatuses: ["delivered"] },
   {
-    slug: "on-the-way",
-    label: "On the way",
-    rawStatuses: ["pending", "processing", "dispatched", "out_for_delivery"],
+    slug: "processing",
+    label: "Processing",
+    rawStatuses: ["pending", "processing", "dispatched"],
   },
+  { slug: "dispatched", label: "Dispatched", rawStatuses: ["out_for_delivery"] },
+  { slug: "delivered", label: "Delivered", rawStatuses: ["delivered"] },
   { slug: "failed", label: "Delivery failed", rawStatuses: ["failed_delivery"] },
   { slug: "cancelled", label: "Cancelled", rawStatuses: ["cancelled"] },
   { slug: "returned", label: "Returned", rawStatuses: ["returned"] },

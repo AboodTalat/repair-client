@@ -6,10 +6,11 @@ import DataTable from "@/components/admin/shared/DataTable";
 import Drawer from "@/components/admin/shared/Drawer";
 import Modal from "@/components/admin/shared/Modal";
 import StatusBadge from "@/components/admin/shared/StatusBadge";
-import { Chip, SearchInput } from "@/components/admin/shared/Form";
+import { Chip, SearchInput, Field, Select, NumberInput, TextArea } from "@/components/admin/shared/Form";
 import { IconCheck } from "@/components/admin/shared/Icons";
 import { formatCurrency, STATUS_TONE } from "@/lib/mockAdmin";
 import { repairCall } from "@/lib/repairAuthedApi";
+import { toOptions, formatThunderFee } from "@/lib/thunderDelivery";
 import { useCommerceSettings } from "@/lib/useCommerceSettings";
 import {
   ORDER_FILTER_CHIPS,
@@ -133,22 +134,94 @@ export default function OrderManager() {
     loadDetail(row.id);
   }
 
-  async function applyStatus(rawNext, note) {
+  // `deliveryUserId` is only meaningful on the Prepared → With Delivery
+  // (dispatched → out_for_delivery) handoff: a numeric id assigns + emails that
+  // delivery account, `null`/undefined leaves the order unassigned (admin keeps
+  // it). It's passed through to the resolver's optional `deliveryUserId`.
+  async function applyStatus(rawNext, note, deliveryUserId) {
     if (!selected || busy) return;
     setBusy(true);
     setActionError(null);
     try {
       await repairCall(
         "myAppAdminUpdateOrderStatus",
-        { orderId: Number(selected.id), status: rawNext, ...(note ? { note } : {}) },
+        {
+          orderId: Number(selected.id),
+          status: rawNext,
+          ...(note ? { note } : {}),
+          ...(deliveryUserId != null ? { deliveryUserId: Number(deliveryUserId) } : {}),
+        },
         { isQuery: false }
       );
       const display = rawToDisplayStatus(rawNext);
-      setSelected((s) => (s ? { ...s, status: display, rawStatus: rawNext } : s));
+      setSelected((s) =>
+        s
+          ? {
+              ...s,
+              status: display,
+              rawStatus: rawNext,
+              ...(deliveryUserId != null ? { deliveryUserId: Number(deliveryUserId) } : {}),
+            }
+          : s
+      );
       await loadDetail(selected.id); // refresh activity log
       await fetchOrders({ reset: true }); // refresh rows + chip counts
     } catch (err) {
       setActionError(err?.message || "Couldn't update the order status. The transition may not be allowed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // Hand the order to the EXTERNAL Thunder courier (creates the Thunder order
+  // and flips status to With Delivery in one resolver call). Returns true on
+  // success so the modal can close; a Thunder-side rejection throws with the
+  // courier's own message, which we surface inline.
+  async function dispatchToThunder(payload) {
+    if (!selected || busy) return false;
+    setBusy(true);
+    setActionError(null);
+    try {
+      const res = await repairCall(
+        "myAppAdminDispatchToThunder",
+        { orderId: Number(selected.id), ...payload },
+        { isQuery: false }
+      );
+      setSelected((s) =>
+        s
+          ? {
+              ...s,
+              status: "handed_to_delivery",
+              rawStatus: "out_for_delivery",
+              deliveryChannel: "thunder",
+              thunderOrderId: res?.thunderOrderId ?? s.thunderOrderId ?? null,
+              thunderLastError: null,
+            }
+          : s
+      );
+      await loadDetail(selected.id);
+      await fetchOrders({ reset: true });
+      return true;
+    } catch (err) {
+      setActionError(err?.message || "Couldn't hand the order to Thunder. Please retry or contact Thunder.");
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // Pull the latest status from Thunder for an already-dispatched order (the
+  // manual backstop to the inbound webhook).
+  async function syncThunder() {
+    if (!selected || busy) return;
+    setBusy(true);
+    setActionError(null);
+    try {
+      await repairCall("myAppAdminSyncThunderOrder", { orderId: Number(selected.id) }, { isQuery: false });
+      await loadDetail(selected.id);
+      await fetchOrders({ reset: true });
+    } catch (err) {
+      setActionError(err?.message || "Couldn't refresh from Thunder.");
     } finally {
       setBusy(false);
     }
@@ -284,6 +357,8 @@ export default function OrderManager() {
             busy={busy}
             settings={settings}
             onApplyStatus={applyStatus}
+            onDispatchThunder={dispatchToThunder}
+            onSyncThunder={syncThunder}
           />
         ) : null}
       </Drawer>
@@ -291,8 +366,122 @@ export default function OrderManager() {
   );
 }
 
-function OrderDetail({ order, items, history, detailLoading, actionError, busy, settings, onApplyStatus }) {
+function OrderDetail({
+  order,
+  items,
+  history,
+  detailLoading,
+  actionError,
+  busy,
+  settings,
+  onApplyStatus,
+  onDispatchThunder,
+  onSyncThunder,
+}) {
   const [confirmNext, setConfirmNext] = useState(null);
+
+  // Prepared → With Delivery handoff: choose a delivery CHANNEL —
+  // "internal" (assign one of our delivery accounts) or "thunder" (push the
+  // order to the external Thunder courier). `assignSelection` is the chosen
+  // internal delivery user id, or null = "don't assign".
+  const [assignOpen, setAssignOpen] = useState(false);
+  const [channel, setChannel] = useState("internal");
+  const [deliveryUsers, setDeliveryUsers] = useState([]);
+  const [loadingUsers, setLoadingUsers] = useState(false);
+  const [usersError, setUsersError] = useState(null);
+  const [assignSelection, setAssignSelection] = useState(null);
+
+  // Thunder handoff fields.
+  const [thunderAreas, setThunderAreas] = useState([]);
+  const [thunderSubAreas, setThunderSubAreas] = useState([]);
+  const [thunderOrderTypes, setThunderOrderTypes] = useState([]);
+  const [thunderRefLoading, setThunderRefLoading] = useState(false);
+  const [thunderRefError, setThunderRefError] = useState(null);
+  const [areaId, setAreaId] = useState("");
+  const [subAreaId, setSubAreaId] = useState("");
+  const [orderTypeId, setOrderTypeId] = useState("");
+  const [codAmount, setCodAmount] = useState("");
+  const [thunderNote, setThunderNote] = useState("");
+  const [productNote, setProductNote] = useState("");
+
+  // Load active delivery accounts when the handoff modal opens.
+  useEffect(() => {
+    if (!assignOpen) return undefined;
+    let active = true;
+    repairCall("myAppAdminListUsers", { role: "delivery", isActive: true, limit: 200 }, { isQuery: true })
+      .then((data) => {
+        if (active) setDeliveryUsers(Array.isArray(data?.users) ? data.users : []);
+      })
+      .catch((err) => {
+        if (active) setUsersError(err?.message || "Couldn't load delivery accounts.");
+      })
+      .finally(() => {
+        if (active) setLoadingUsers(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [assignOpen]);
+
+  // Load Thunder reference data (areas / sub-areas / order types) — invoked
+  // from the channel selector (not an effect) so the synchronous loading
+  // setState doesn't trip the set-state-in-effect rule. Cached server-side.
+  async function loadThunderRef() {
+    setThunderRefLoading(true);
+    setThunderRefError(null);
+    try {
+      const [areas, types, subs] = await Promise.all([
+        repairCall("myAppAdminGetThunderAreas", {}, { isQuery: true }),
+        repairCall("myAppAdminGetThunderOrderTypes", {}, { isQuery: true }).catch(() => null),
+        repairCall("myAppAdminGetThunderSubAreas", {}, { isQuery: true }).catch(() => null),
+      ]);
+      setThunderAreas(toOptions(areas));
+      setThunderOrderTypes(toOptions(types));
+      setThunderSubAreas(toOptions(subs));
+    } catch (err) {
+      setThunderRefError(
+        err?.message || "Couldn't load Thunder areas. Check the delivery integration is configured."
+      );
+    } finally {
+      setThunderRefLoading(false);
+    }
+  }
+
+  function selectChannel(next) {
+    setChannel(next);
+    setThunderRefError(null);
+    if (next === "thunder") {
+      // Cash to collect defaults to the FULL order total (which already
+      // includes the delivery charge + tax) — Thunder collects this from the
+      // customer. The admin can still edit it (e.g. set 0 for a prepaid order).
+      if (codAmount === "") {
+        setCodAmount(String(order.total ?? ""));
+      }
+      if (!thunderAreas.length && !thunderRefLoading) loadThunderRef();
+    }
+  }
+
+  function confirmAssign() {
+    setAssignOpen(false);
+    // null selection → no deliveryUserId sent → order stays unassigned.
+    onApplyStatus("out_for_delivery", undefined, assignSelection);
+  }
+
+  async function confirmThunder() {
+    if (!areaId) {
+      setThunderRefError("Please choose a delivery area.");
+      return;
+    }
+    const ok = await onDispatchThunder({
+      areaId,
+      ...(subAreaId ? { subAreaId } : {}),
+      ...(orderTypeId ? { orderTypeId } : {}),
+      ...(codAmount !== "" ? { codAmount: Number(codAmount) } : {}),
+      ...(thunderNote ? { note: thunderNote } : {}),
+      ...(productNote ? { productNote } : {}),
+    });
+    if (ok) setAssignOpen(false);
+  }
 
   const shipping = resolveShippingMethod(settings, order.shippingMethodKey);
   const paymentLabel = resolvePaymentLabel(settings, order.paymentMethod);
@@ -309,6 +498,14 @@ function OrderDetail({ order, items, history, detailLoading, actionError, busy, 
     const raw = displayToRawStatus(displayNext);
     if (displayNext === "delivered") {
       setConfirmNext(raw);
+    } else if (displayNext === "handed_to_delivery") {
+      // Open the delivery-handoff modal instead of transitioning immediately.
+      setChannel("internal");
+      setAssignSelection(order.deliveryUserId ?? null);
+      setUsersError(null);
+      setThunderRefError(null);
+      setLoadingUsers(true);
+      setAssignOpen(true);
     } else {
       onApplyStatus(raw);
     }
@@ -343,6 +540,190 @@ function OrderDetail({ order, items, history, detailLoading, actionError, busy, 
         <p className="mt-2 font-body text-[12px] text-[#6b7280]">
           This confirms the customer has received their order.
         </p>
+      </Modal>
+
+      <Modal
+        open={assignOpen}
+        onClose={() => setAssignOpen(false)}
+        title="Hand to delivery"
+        width={480}
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setAssignOpen(false)} disabled={busy}>
+              Cancel
+            </Button>
+            {channel === "thunder" ? (
+              <Button onClick={confirmThunder} disabled={busy || thunderRefLoading || !areaId}>
+                {busy ? "Sending…" : "Create Thunder order"}
+              </Button>
+            ) : (
+              <Button onClick={confirmAssign} disabled={busy || loadingUsers}>
+                {assignSelection != null ? "Assign & hand over" : "Hand over anyway"}
+              </Button>
+            )}
+          </>
+        }
+      >
+        <p className="font-body text-[13px] text-[#11191f]">
+          Move order <strong>{order.orderNumber}</strong> to <strong>With Delivery</strong>. The customer is
+          emailed that their order has been dispatched.
+        </p>
+
+        {/* Channel selector — internal account vs external Thunder courier. */}
+        <div className="mt-4 grid grid-cols-2 gap-2">
+          <button
+            type="button"
+            onClick={() => selectChannel("internal")}
+            className="rounded-[3px] border p-3 text-left"
+            style={{
+              borderColor: channel === "internal" ? "#1d4ed8" : "#e5e7eb",
+              backgroundColor: channel === "internal" ? "#eff6ff" : "#ffffff",
+            }}
+          >
+            <span className="block font-body text-[13px] font-semibold text-[#11191f]">Internal account</span>
+            <span className="block font-body text-[11px] text-[#6b7280]">Our own delivery staff</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => selectChannel("thunder")}
+            className="rounded-[3px] border p-3 text-left"
+            style={{
+              borderColor: channel === "thunder" ? "#1d4ed8" : "#e5e7eb",
+              backgroundColor: channel === "thunder" ? "#eff6ff" : "#ffffff",
+            }}
+          >
+            <span className="block font-body text-[13px] font-semibold text-[#11191f]">Thunder courier</span>
+            <span className="block font-body text-[11px] text-[#6b7280]">External delivery company</span>
+          </button>
+        </div>
+
+        {channel === "internal" ? (
+          <div className="mt-4">
+            <p className="font-body text-[12px] text-[#6b7280]">
+              Optionally assign a delivery account — they&apos;ll be emailed the order and address and can update
+              its status. Or hand it over without assigning and manage delivery yourself.
+            </p>
+
+            {usersError ? (
+              <div className="mt-3 rounded-[4px] border border-[#fecaca] bg-[#fef2f2] p-2 font-body text-[12px] text-[#991b1b]">
+                {usersError}
+              </div>
+            ) : null}
+
+            <div className="mt-4 flex flex-col gap-2">
+              <label className="flex cursor-pointer items-center gap-2 rounded-[2px] border border-[#e5e7eb] p-3">
+                <input
+                  type="radio"
+                  name="deliveryAccount"
+                  checked={assignSelection == null}
+                  onChange={() => setAssignSelection(null)}
+                />
+                <span className="font-body text-[13px] text-[#11191f]">Don&apos;t assign — I&apos;ll handle delivery</span>
+              </label>
+
+              {loadingUsers ? (
+                <p className="font-body text-[12px] text-[#6b7280]">Loading delivery accounts…</p>
+              ) : deliveryUsers.length === 0 ? (
+                <p className="font-body text-[12px] text-[#6b7280]">No active delivery accounts found.</p>
+              ) : (
+                deliveryUsers.map((u) => (
+                  <label
+                    key={u.id}
+                    className="flex cursor-pointer items-center gap-2 rounded-[2px] border border-[#e5e7eb] p-3"
+                  >
+                    <input
+                      type="radio"
+                      name="deliveryAccount"
+                      checked={Number(assignSelection) === Number(u.id)}
+                      onChange={() => setAssignSelection(u.id)}
+                    />
+                    <span className="flex flex-col">
+                      <span className="font-body text-[13px] text-[#11191f]">{u.email}</span>
+                      {u.phone ? <span className="font-body text-[11px] text-[#6b7280]">{u.phone}</span> : null}
+                    </span>
+                  </label>
+                ))
+              )}
+            </div>
+          </div>
+        ) : (
+          <div className="mt-4">
+            <p className="font-body text-[12px] text-[#6b7280]">
+              Creates the order in Thunder and moves it to With Delivery. Thunder&apos;s drivers fulfil it and push
+              status updates back automatically.
+            </p>
+
+            {thunderRefError ? (
+              <div className="mt-3 rounded-[4px] border border-[#fecaca] bg-[#fef2f2] p-2 font-body text-[12px] text-[#991b1b]">
+                {thunderRefError}
+              </div>
+            ) : null}
+
+            {/* Address comes from the customer's saved shipping address — the
+                admin never re-types it; only the Thunder area is chosen. */}
+            <div className="mt-3 rounded-[3px] border border-[#e5e7eb] bg-white p-3">
+              <p className="font-body text-[11px] font-medium uppercase tracking-[1px] text-[#6b7280]">
+                Delivers to (customer&apos;s address)
+              </p>
+              <p className="mt-1 font-body text-[13px] text-[#11191f]">{order.customer?.name || "—"}</p>
+              <p className="font-body text-[12px] text-[#6b7280]">{order.address}</p>
+              {order.customer?.phone ? (
+                <p className="font-body text-[12px] text-[#6b7280]">{order.customer.phone}</p>
+              ) : null}
+            </div>
+
+            {thunderRefLoading ? (
+              <p className="mt-3 font-body text-[12px] text-[#6b7280]">Loading Thunder areas…</p>
+            ) : (
+              <div className="mt-4 flex flex-col gap-3">
+                <Field label="Delivery area" required>
+                  <Select
+                    options={thunderAreas}
+                    value={areaId}
+                    onChange={(v) => setAreaId(v)}
+                    placeholder="Select an area…"
+                  />
+                </Field>
+
+                {thunderSubAreas.length ? (
+                  <Field label="Sub-area (optional)">
+                    <Select
+                      options={thunderSubAreas}
+                      value={subAreaId}
+                      onChange={(v) => setSubAreaId(v)}
+                      placeholder="None"
+                    />
+                  </Field>
+                ) : null}
+
+                {thunderOrderTypes.length ? (
+                  <Field label="Order type">
+                    <Select
+                      options={thunderOrderTypes}
+                      value={orderTypeId}
+                      onChange={(v) => setOrderTypeId(v)}
+                      placeholder="Default"
+                    />
+                  </Field>
+                ) : null}
+
+                <Field
+                  label="Cash to collect (COD)"
+                  hint="Order total incl. delivery — Thunder collects this from the customer. Set 0 if already paid."
+                >
+                  <NumberInput value={codAmount} min="0" step="0.01" onChange={(e) => setCodAmount(e.target.value)} />
+                </Field>
+
+                <Field label="Note for the courier (optional)">
+                  <TextArea value={thunderNote} rows={2} onChange={(e) => setThunderNote(e.target.value)} />
+                </Field>
+                <Field label="Product note (optional)">
+                  <TextArea value={productNote} rows={2} onChange={(e) => setProductNote(e.target.value)} />
+                </Field>
+              </div>
+            )}
+          </div>
+        )}
       </Modal>
 
       {actionError ? (
@@ -428,6 +809,44 @@ function OrderDetail({ order, items, history, detailLoading, actionError, busy, 
           </div>
         ) : null}
       </section>
+
+      {order.deliveryChannel === "thunder" ? (
+        <section className="rounded-[2px] border border-[#e5e7eb] bg-[#fafafa] p-4">
+          <div className="flex items-center justify-between gap-2">
+            <p className="font-body text-[11px] font-medium uppercase tracking-[1px] text-[#6b7280]">
+              Thunder courier
+            </p>
+            <Button size="sm" variant="secondary" onClick={onSyncThunder} disabled={busy}>
+              Refresh from Thunder
+            </Button>
+          </div>
+          <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2">
+            <div>
+              <p className="font-body text-[11px] text-[#6b7280]">Thunder order #</p>
+              <p className="font-body text-[13px] font-medium text-[#11191f]">{order.thunderOrderId || "—"}</p>
+            </div>
+            <div>
+              <p className="font-body text-[11px] text-[#6b7280]">Thunder status</p>
+              <p className="font-body text-[13px] font-medium text-[#11191f]">{order.thunderStatus || "—"}</p>
+            </div>
+            {/* Thunder's delivery fee is set by Thunder and reported back — it's
+                only shown once Thunder provides it (the admin never enters it). */}
+            {order.thunderDeliveryFee != null ? (
+              <div>
+                <p className="font-body text-[11px] text-[#6b7280]">Thunder delivery fee</p>
+                <p className="font-body text-[13px] font-medium text-[#11191f]">
+                  {formatThunderFee(order.thunderDeliveryFee)}
+                </p>
+              </div>
+            ) : null}
+          </div>
+          {order.thunderLastError ? (
+            <div className="mt-3 rounded-[4px] border border-[#fecaca] bg-[#fef2f2] p-2 font-body text-[12px] text-[#991b1b]">
+              Last Thunder error: {order.thunderLastError}
+            </div>
+          ) : null}
+        </section>
+      ) : null}
 
       <section className="grid grid-cols-1 gap-4 md:grid-cols-2">
         <div className="rounded-[2px] border border-[#e5e7eb] bg-[#fafafa] p-4">

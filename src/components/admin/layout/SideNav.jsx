@@ -19,7 +19,6 @@ import {
   IconLogout,
   IconEdit,
 } from "@/components/admin/shared/Icons";
-import { ORDERS, CONTACT_MESSAGES, STOCK_ALERTS } from "@/lib/mockAdmin";
 
 const PREFIX = "/r3pr-console";
 
@@ -60,11 +59,13 @@ const SECTIONS = [
   },
 ];
 
-export default function SideNav({ onNavigate }) {
+export default function SideNav({ onNavigate, counts }) {
   const pathname = usePathname() || "";
-  const processingCount = ORDERS.filter((o) => o.status === "processing").length;
-  const unreadCount = CONTACT_MESSAGES.filter((m) => m.status === "unread").length;
-  const pendingAlertCount = STOCK_ALERTS.filter((a) => a.status === "pending").length;
+  // Live counts come from AdminShell (myAppAdminBadgeCounts); default to 0 so
+  // the nav still renders if it's ever mounted without the prop.
+  const processingCount = counts?.processingOrders ?? 0;
+  const unreadCount = counts?.unreadMessages ?? 0;
+  const pendingAlertCount = counts?.pendingStockAlerts ?? 0;
   return (
     <nav className="flex h-full w-[260px] shrink-0 flex-col bg-[#11191f] text-white">
       <div className="flex items-center gap-3 px-6 py-6">

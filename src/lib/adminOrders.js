@@ -129,6 +129,14 @@ export function mapAdminOrderRow(o) {
     promoDiscount: Number(o.promo_discount_amount) || 0,
     deliveryUserId: o.delivery_user_id ?? null,
     notes: o.notes ?? null,
+    // Thunder (external courier) link — present when the order was dispatched
+    // through Thunder (migration 0021). `deliveryChannel` is "thunder" |
+    // "internal" | null.
+    deliveryChannel: o.delivery_channel ?? null,
+    thunderOrderId: o.thunder_order_id ?? null,
+    thunderStatus: o.thunder_status ?? null,
+    thunderDeliveryFee: o.thunder_delivery_fee != null ? Number(o.thunder_delivery_fee) : null,
+    thunderLastError: o.thunder_last_error ?? null,
     total: Number(o.total) || 0,
     itemCount: Number(o.item_count) || 0,
     totalQty: Number(o.total_qty) || 0,

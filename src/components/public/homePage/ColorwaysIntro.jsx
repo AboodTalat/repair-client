@@ -1,4 +1,10 @@
-export default function ColorwaysIntro() {
+import { COLORWAYS_INTRO_DEFAULT } from "@/lib/storefrontDefaults";
+
+export default function ColorwaysIntro({ intro } = {}) {
+  // CMS overlay — falls back to the current copy so an empty CMS is identical.
+  const eyebrow = intro?.eyebrow || COLORWAYS_INTRO_DEFAULT.eyebrow;
+  const title = intro?.title || COLORWAYS_INTRO_DEFAULT.title;
+  const subtitle = intro?.subtitle || COLORWAYS_INTRO_DEFAULT.subtitle;
   return (
     <section
       id="colorways"
@@ -8,16 +14,16 @@ export default function ColorwaysIntro() {
         className="hidden font-body text-[14px] uppercase tracking-[0.4em] text-white/50 md:block"
         style={{ fontStretch: "75%" }}
       >
-        The Collection
+        {eyebrow}
       </p>
       <h2 className="font-display text-[21px] font-bold uppercase leading-normal text-white md:mt-5 md:max-w-[900px] md:text-[56px] md:leading-[1.1] lg:text-[72px] xl:text-[88px]">
-        Tailored to suit all CHARACTERS
+        {title}
       </h2>
       <p
         className="mt-2 font-body text-[18px] leading-normal text-[#d4d4d4] md:mt-6 md:max-w-[640px] md:text-[22px] lg:text-[24px]"
         style={{ fontStretch: "75%" }}
       >
-        Four Colorways. One Vision.
+        {subtitle}
       </p>
     </section>
   );

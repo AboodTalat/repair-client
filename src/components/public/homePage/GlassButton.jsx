@@ -1,3 +1,5 @@
+import Link from "next/link";
+
 const SHADOW =
   "inset -4.5px -4.5px 1.5px -5.25px rgba(255,255,255,0.5)," +
   "inset 4.5px 4.5px 1.5px -5.25px rgba(255,255,255,0.5)," +
@@ -10,12 +12,17 @@ export default function GlassButton({
   variant = "dark",
   className = "",
   type = "button",
+  href,
   ...props
 }) {
   const isDark = variant === "dark";
+  // When an href is supplied the CTA renders as a link (used by the admin-
+  // editable hero CTA); otherwise it stays a plain button — visually identical.
+  const Comp = href ? Link : "button";
+  const compProps = href ? { href } : { type };
   return (
-    <button
-      type={type}
+    <Comp
+      {...compProps}
       className={`relative flex h-10 w-full items-center justify-center overflow-hidden rounded-lg border-l border-t border-white/80 backdrop-blur-[2px] ${className}`}
       style={{ boxShadow: SHADOW }}
       {...props}
@@ -40,6 +47,6 @@ export default function GlassButton({
       >
         {children}
       </span>
-    </button>
+    </Comp>
   );
 }

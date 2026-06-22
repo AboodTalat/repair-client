@@ -1,18 +1,66 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Button, { IconButton } from "@/components/admin/shared/Button";
 import { TextInput, TextArea, Toggle } from "@/components/admin/shared/Form";
 import { IconCheck, IconTrash, IconPlus, IconChevronDown, IconEdit } from "@/components/admin/shared/Icons";
-import {
-  STOREFRONT_HERO,
-  STOREFRONT_COLORWAYS,
-  STOREFRONT_STATS,
-  STOREFRONT_BROWSE_TILES,
-  STOREFRONT_PRODUCT_SECTIONS,
-  STOREFRONT_FOOTER,
-  COACHING_CTA,
-} from "@/lib/mockAdmin";
+import { repairCall } from "@/lib/repairAuthedApi";
+import { useUploadThing } from "@/lib/uploadthing";
+import { useRepairStore, selectToken } from "@/lib/useRepairStore";
+import { STOREFRONT_DEFAULTS } from "@/lib/storefrontDefaults";
+
+// Strip the "repairClientApi <op>:" prefix the transport adds so the server's
+// human-readable reason surfaces cleanly.
+function cleanErr(e, fallback) {
+  const m = (e?.message || "").replace(/^repairClientApi \S+:\s*/, "");
+  return m || fallback;
+}
+
+// Storefront routes an admin can point a CTA / link at. Surfaced as a <datalist>
+// (autocomplete on the href inputs) + as helper text. Keep in sync with the
+// route map in repair/CLAUDE.md.
+const ROUTE_HINTS = [
+  "/",
+  "/shop",
+  "/shop?category=men",
+  "/shop?category=women",
+  "/shop?category=sale",
+  "/products/<id>",
+  "/cart",
+  "/checkout",
+  "/contact",
+  "/account",
+  "/account/orders",
+  "/account/wishlist",
+  "/terms",
+  "/privacy",
+];
+
+// Rendered once per page; href inputs reference it via list="sf-route-hints".
+function RouteHintsDatalist() {
+  return (
+    <datalist id="sf-route-hints">
+      {ROUTE_HINTS.map((r) => (
+        <option key={r} value={r} />
+      ))}
+    </datalist>
+  );
+}
+
+// Small helper line under a link field listing the routes the admin can use.
+function RouteHelp() {
+  return (
+    <p className="font-body text-[11px] leading-4 text-[#6b7280]">
+      Use an internal path like{" "}
+      <code className="rounded bg-[#f3f4f6] px-1">/shop</code>,{" "}
+      <code className="rounded bg-[#f3f4f6] px-1">/shop?category=men</code>,{" "}
+      <code className="rounded bg-[#f3f4f6] px-1">/products/&lt;id&gt;</code>,{" "}
+      <code className="rounded bg-[#f3f4f6] px-1">/cart</code>,{" "}
+      <code className="rounded bg-[#f3f4f6] px-1">/contact</code> — or a full
+      https:// URL for an external link.
+    </p>
+  );
+}
 
 function SectionCard({ title, description, children, defaultOpen = true }) {
   const [open, setOpen] = useState(defaultOpen);
@@ -68,27 +116,51 @@ function SavedPill() {
   );
 }
 
-function SaveBar({ onSave, saved, onTogglePreview, previewOpen }) {
+function SaveBar({ onSave, saving, saved, error, onTogglePreview, previewOpen }) {
   return (
     <div className="mt-4 flex flex-wrap items-center gap-3 border-t border-[#f3f4f6] pt-4">
-      <Button size="sm" onClick={onSave}>Save changes</Button>
+      <Button size="sm" onClick={onSave} disabled={saving}>
+        {saving ? "Saving…" : "Save changes"}
+      </Button>
       {onTogglePreview ? (
         <Button size="sm" variant="secondary" onClick={onTogglePreview}>
           {previewOpen ? "Hide preview" : "Show preview"}
         </Button>
       ) : null}
       {saved ? <SavedPill /> : null}
+      {error ? (
+        <span className="font-body text-[12px] text-[#dc2626]">{error}</span>
+      ) : null}
     </div>
   );
 }
 
-function useSavedFlag() {
+// Per-section save against the storefront-content CMS. `save(value)` upserts the
+// section row via myAppAdminUpdateStorefrontContent and surfaces real
+// saving / saved / error states (replaces the old no-op flag).
+function useSaveSection(section) {
+  const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
-  function trigger() {
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
+  const [error, setError] = useState(null);
+  async function save(value) {
+    setSaving(true);
+    setError(null);
+    setSaved(false);
+    try {
+      await repairCall(
+        "myAppAdminUpdateStorefrontContent",
+        { section, value },
+        { isQuery: false }
+      );
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2500);
+    } catch (e) {
+      setError(cleanErr(e, "Save failed. Please try again."));
+    } finally {
+      setSaving(false);
+    }
   }
-  return [saved, trigger];
+  return { save, saving, saved, error };
 }
 
 // (#20) Wraps a section preview block so every editor has the same chrome:
@@ -110,9 +182,9 @@ function PreviewPanel({ open, children }) {
   );
 }
 
-// (#2) ImageField — shows the current image preview, lets admin pick a
-// new file (URL.createObjectURL preview), edit the path manually, or
-// clear it. Pure UI: no real upload.
+// (#2) ImageField — shows the current image preview, lets the admin upload a new
+// file through the real `storefrontImage` UploadThing route (returns a hosted
+// utfs.io/ufs.sh URL), edit the path manually, or clear it.
 function ImageField({
   label = "Image",
   value,
@@ -122,17 +194,38 @@ function ImageField({
 }) {
   const fileRef = useRef(null);
   const [showPath, setShowPath] = useState(false);
+  const [uploadError, setUploadError] = useState(null);
+  const token = useRepairStore(selectToken);
+  // Reuses the existing repair sub-server upload route + the exact pattern the
+  // Products / Categories admin pages use (object headers, store token) — so
+  // storefront images go through `/repair/uploadthing` with admin auth, no new
+  // upload route required. `productImage` accepts up to 8 images @ 4MB; we send 1.
+  const { startUpload, isUploading } = useUploadThing("productImage", {
+    headers: { Authorization: `Bearer ${token}` },
+  });
 
   function pick() {
     if (fileRef.current) fileRef.current.click();
   }
 
-  function onFile(e) {
+  async function onFile(e) {
     const file = e.target.files && e.target.files[0];
-    if (!file) return;
-    const url = URL.createObjectURL(file);
-    onChange(url);
     e.target.value = "";
+    if (!file) return;
+    setUploadError(null);
+    try {
+      const uploaded = await startUpload([file]);
+      const url = uploaded?.[0]?.ufsUrl || uploaded?.[0]?.url;
+      if (!url) {
+        setUploadError("Upload failed. Please try again.");
+        return;
+      }
+      onChange(url);
+    } catch (err) {
+      // Surface the real reason (e.g. "file too large", "unauthorized") instead
+      // of a generic message so the issue is actionable.
+      setUploadError(cleanErr(err, "Upload failed. Please try again."));
+    }
   }
 
   function clear() {
@@ -178,8 +271,14 @@ function ImageField({
       />
 
       <div className="flex flex-wrap items-center gap-2">
-        <Button size="sm" variant="secondary" icon={<IconPlus />} onClick={pick}>
-          {value ? "Replace photo" : "Upload photo"}
+        <Button
+          size="sm"
+          variant="secondary"
+          icon={<IconPlus />}
+          onClick={pick}
+          disabled={isUploading}
+        >
+          {isUploading ? "Uploading…" : value ? "Replace photo" : "Upload photo"}
         </Button>
         <Button
           size="sm"
@@ -195,6 +294,10 @@ function ImageField({
           </IconButton>
         ) : null}
       </div>
+
+      {uploadError ? (
+        <span className="font-body text-[12px] text-[#dc2626]">{uploadError}</span>
+      ) : null}
 
       {showPath ? (
         <TextInput
@@ -215,13 +318,8 @@ function ImageField({
 // column colorways with badge/swatch panel) matches the real
 // design so admins can validate edits before clicking Save.
 //
-// Notes:
-//   - Backgrounds are #000 / #0f1112 to match the landing.
-//   - Type uses .font-display / .font-body tokens already wired
-//     in globals.css (Zalando Sans Expanded / Sans).
-//   - Body copy uses fontStretch:"75%" to approximate Zalando
-//     Sans Condensed (same trick the landing pages use).
-//   - GlassButton-style CTAs are reproduced inline.
+// When you change a live homePage/* component, mirror the change
+// here so the "PREVIEW — UNSAVED" panel stays accurate.
 // ============================================================
 
 // Glass-style CTA pill used across hero / colorways / stats.
@@ -297,7 +395,7 @@ function HeroPreview({ hero }) {
             </p>
           ) : null}
           <h1 className="mt-3 font-display text-[34px] font-bold uppercase leading-[1.05] text-white md:mt-4 md:text-[56px]">
-            {hero.title || <span className="text-white/40">Hero title</span>}
+            {hero.title || <span className="text-white/40">Step into Energy</span>}
           </h1>
           {hero.subtitle ? (
             <p
@@ -329,10 +427,65 @@ function HeroPreview({ hero }) {
   );
 }
 
+// ── Colorways-intro preview (matches ColorwaysIntro.jsx) ────────────────
+function ColorwaysIntroPreview({ intro }) {
+  return (
+    <div className="bg-black px-6 py-12 text-center md:py-16">
+      {intro.eyebrow ? (
+        <p
+          className="font-body text-[12px] uppercase tracking-[0.4em] text-white/50"
+          style={{ fontStretch: "75%" }}
+        >
+          {intro.eyebrow}
+        </p>
+      ) : null}
+      <h2 className="mt-3 font-display text-[24px] font-bold uppercase leading-tight text-white md:text-[44px] md:leading-[1.1]">
+        {intro.title || <span className="text-white/40">Section title</span>}
+      </h2>
+      {intro.subtitle ? (
+        <p
+          className="mt-3 font-body text-[16px] text-[#d4d4d4] md:text-[20px]"
+          style={{ fontStretch: "75%" }}
+        >
+          {intro.subtitle}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+// ── Crafted-to-Last preview (matches CraftedToLast.jsx) ─────────────────
+function CraftedToLastPreview({ content }) {
+  return (
+    <div className="bg-black px-6 py-12 text-center md:py-16">
+      {content.eyebrow ? (
+        <p
+          className="font-body text-[12px] uppercase tracking-[0.4em] text-white/50"
+          style={{ fontStretch: "75%" }}
+        >
+          {content.eyebrow}
+        </p>
+      ) : null}
+      <h2 className="mt-3 font-display text-[24px] font-bold uppercase leading-tight text-white md:text-[44px] md:leading-[1.1]">
+        {content.title || <span className="text-white/40">Section title</span>}
+      </h2>
+      {content.body ? (
+        <p
+          className="mx-auto mt-3 max-w-[640px] font-body text-[16px] text-[#d4d4d4] md:text-[20px]"
+          style={{ fontStretch: "75%" }}
+        >
+          {content.body}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 // ── Colorway preview (matches ColorwaySection.jsx desktop two-column) ───
 function ColorwayPreview({ row }) {
-  const main = row.swatches?.[0];
-  const swatches = row.multiSwatch ? row.swatches : (main ? [main] : []);
+  const swatchesAll = row.swatches || [];
+  const main = swatchesAll[0];
+  const swatches = row.multiSwatch ? swatchesAll : (main ? [main] : []);
   return (
     <div className="bg-black">
       <div className="mx-auto grid max-w-[1280px] grid-cols-12 items-stretch gap-0 px-6 py-10 md:px-10 md:py-14">
@@ -539,14 +692,14 @@ function BrowseTilesPreview({ tiles }) {
                       className="font-body text-[10px] text-white/50 md:text-[12px]"
                       style={{ fontStretch: "75%" }}
                     >
-                      Soft Cotton
+                      {t.subtitle || "—"}
                     </p>
                   </div>
                   <p
                     className="font-body text-[12px] font-semibold md:text-[14px]"
                     style={{ fontStretch: "75%" }}
                   >
-                    JOD 30
+                    {t.price || ""}
                   </p>
                 </div>
               </div>
@@ -559,8 +712,6 @@ function BrowseTilesPreview({ tiles }) {
 }
 
 // ── Product detail marketing sections preview ───────────────────────────
-// Single "Crafted to Last"-style centered block per enabled entry, on the
-// same black bg the landing's CraftedToLast section uses.
 function ProductSectionsPreview({ rows }) {
   const enabled = (rows || []).filter((r) => r.enabled);
   if (enabled.length === 0) {
@@ -585,15 +736,17 @@ function ProductSectionsPreview({ rows }) {
           >
             {r.key}
           </p>
-          <h2 className="mt-2 font-display text-[24px] font-bold uppercase leading-tight text-white md:mt-5 md:text-[44px] md:leading-[1.1] lg:text-[52px]">
+          <h2 className="mt-2 whitespace-pre-line font-display text-[24px] font-bold uppercase leading-tight text-white md:mt-5 md:text-[44px] md:leading-[1.1] lg:text-[52px]">
             {r.title}
           </h2>
-          <p
-            className="mt-3 max-w-[640px] font-body text-[14px] leading-normal text-[#d4d4d4] md:mt-5 md:text-[18px]"
-            style={{ fontStretch: "75%" }}
-          >
-            {r.body}
-          </p>
+          {r.body ? (
+            <p
+              className="mt-3 max-w-[640px] font-body text-[14px] leading-normal text-[#d4d4d4] md:mt-5 md:text-[18px]"
+              style={{ fontStretch: "75%" }}
+            >
+              {r.body}
+            </p>
+          ) : null}
         </section>
       ))}
     </div>
@@ -670,7 +823,7 @@ function FooterPreview({ footer }) {
               <span className="text-[#232323]/30">Brand copy goes here.</span>
             )}
           </p>
-          {footer.social?.length > 0 ? (
+          {(footer.social || []).length > 0 ? (
             <div className="flex gap-3">
               {footer.social.map((s) => (
                 <span
@@ -685,15 +838,26 @@ function FooterPreview({ footer }) {
           ) : null}
         </div>
 
-        {/* Link columns */}
+        {/* Link columns: Shop is category-driven on the live site (shown here as
+            a fixed sample) + the admin-editable columns. */}
         <div className="flex gap-8 md:col-span-4 md:gap-12">
+          <div className="flex flex-1 flex-col gap-3">
+            <h3 className="font-display text-[11px] font-bold uppercase leading-4 tracking-[0.6px] text-[#11191f]">
+              Shop
+            </h3>
+            <ul className="flex flex-col gap-2.5">
+              <li className="font-body text-[12px] leading-4 text-[#232323]/40" style={{ fontStretch: "75%" }}>
+                (from categories)
+              </li>
+            </ul>
+          </div>
           {(footer.columns || []).map((col) => (
             <div key={col.id} className="flex flex-1 flex-col gap-3">
               <h3 className="font-display text-[11px] font-bold uppercase leading-4 tracking-[0.6px] text-[#11191f]">
                 {col.heading || <span className="text-[#232323]/40">Column</span>}
               </h3>
               <ul className="flex flex-col gap-2.5">
-                {col.links.map((l) => (
+                {(col.links || []).map((l) => (
                   <li
                     key={l.id}
                     className="font-body text-[12px] leading-4 text-[#232323]/60"
@@ -702,7 +866,7 @@ function FooterPreview({ footer }) {
                     {l.label || <span className="text-[#232323]/30">—</span>}
                   </li>
                 ))}
-                {col.links.length === 0 ? (
+                {(col.links || []).length === 0 ? (
                   <li className="font-body text-[11px] text-[#232323]/30">No links</li>
                 ) : null}
               </ul>
@@ -751,9 +915,9 @@ function FooterPreview({ footer }) {
 }
 
 // ── Hero ──────────────────────────────────────────────────────────────────
-function HeroEditor() {
-  const [hero, setHero] = useState(STOREFRONT_HERO);
-  const [saved, trigger] = useSavedFlag();
+function HeroEditor({ initial }) {
+  const [hero, setHero] = useState(initial);
+  const { save, saving, saved, error } = useSaveSection("hero");
   const [previewOpen, setPreviewOpen] = useState(false);
   function set(patch) { setHero((h) => ({ ...h, ...patch })); }
   return (
@@ -764,9 +928,10 @@ function HeroEditor() {
       <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
         <FieldRow label="Eyebrow"><TextInput value={hero.eyebrow} onChange={(e) => set({ eyebrow: e.target.value })} /></FieldRow>
         <FieldRow label="CTA Label"><TextInput value={hero.ctaLabel} onChange={(e) => set({ ctaLabel: e.target.value })} /></FieldRow>
-        <FieldRow label="Title"><TextInput value={hero.title} onChange={(e) => set({ title: e.target.value })} /></FieldRow>
-        <FieldRow label="CTA Link"><TextInput value={hero.ctaHref} onChange={(e) => set({ ctaHref: e.target.value })} /></FieldRow>
+        <FieldRow label="Title (blank = keep the styled “Step into Energy”)"><TextInput value={hero.title} onChange={(e) => set({ title: e.target.value })} /></FieldRow>
+        <FieldRow label="CTA Link (blank = no link)"><TextInput list="sf-route-hints" value={hero.ctaHref} onChange={(e) => set({ ctaHref: e.target.value })} placeholder="/shop" /></FieldRow>
       </div>
+      <div className="mt-2"><RouteHelp /></div>
       <div className="mt-3">
         <FieldRow label="Subtitle">
           <TextArea rows={2} value={hero.subtitle} onChange={(e) => set({ subtitle: e.target.value })} />
@@ -774,7 +939,7 @@ function HeroEditor() {
       </div>
       <div className="mt-3">
         <ImageField
-          label="Background image"
+          label="Hero image"
           value={hero.image}
           onChange={(url) => set({ image: url })}
           aspectRatio="16 / 9"
@@ -782,8 +947,10 @@ function HeroEditor() {
         />
       </div>
       <SaveBar
-        onSave={trigger}
+        onSave={() => save(hero)}
+        saving={saving}
         saved={saved}
+        error={error}
         previewOpen={previewOpen}
         onTogglePreview={() => setPreviewOpen((v) => !v)}
       />
@@ -794,10 +961,43 @@ function HeroEditor() {
   );
 }
 
+// ── Collection intro (ColorwaysIntro) ──────────────────────────────────────
+function ColorwaysIntroEditor({ initial }) {
+  const [intro, setIntro] = useState(initial);
+  const { save, saving, saved, error } = useSaveSection("colorways_intro");
+  const [previewOpen, setPreviewOpen] = useState(false);
+  function set(patch) { setIntro((s) => ({ ...s, ...patch })); }
+  return (
+    <SectionCard
+      title="Collection Intro"
+      description="The centered title block above the colorways (“Tailored to suit all CHARACTERS”)."
+    >
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+        <FieldRow label="Eyebrow"><TextInput value={intro.eyebrow} onChange={(e) => set({ eyebrow: e.target.value })} /></FieldRow>
+        <FieldRow label="Subtitle"><TextInput value={intro.subtitle} onChange={(e) => set({ subtitle: e.target.value })} /></FieldRow>
+      </div>
+      <div className="mt-3">
+        <FieldRow label="Title"><TextInput value={intro.title} onChange={(e) => set({ title: e.target.value })} /></FieldRow>
+      </div>
+      <SaveBar
+        onSave={() => save(intro)}
+        saving={saving}
+        saved={saved}
+        error={error}
+        previewOpen={previewOpen}
+        onTogglePreview={() => setPreviewOpen((v) => !v)}
+      />
+      <PreviewPanel open={previewOpen}>
+        <ColorwaysIntroPreview intro={intro} />
+      </PreviewPanel>
+    </SectionCard>
+  );
+}
+
 // ── Colorway sections ─────────────────────────────────────────────────────
-function ColorwaysEditor() {
-  const [rows, setRows] = useState(STOREFRONT_COLORWAYS);
-  const [saved, trigger] = useSavedFlag();
+function ColorwaysEditor({ initial }) {
+  const [rows, setRows] = useState(Array.isArray(initial) ? initial : []);
+  const { save, saving, saved, error } = useSaveSection("colorways");
   const [previewOpen, setPreviewOpen] = useState(false);
 
   function updateRow(id, patch) {
@@ -809,7 +1009,7 @@ function ColorwaysEditor() {
         r.id === rowId
           ? {
               ...r,
-              swatches: r.swatches.map((s, i) => (i === idx ? { ...s, ...patch } : s)),
+              swatches: (r.swatches || []).map((s, i) => (i === idx ? { ...s, ...patch } : s)),
             }
           : r
       )
@@ -821,7 +1021,7 @@ function ColorwaysEditor() {
         r.id === rowId
           ? {
               ...r,
-              swatches: [...r.swatches, { color: "#ffffff", name: "New Color", tagline: "" }],
+              swatches: [...(r.swatches || []), { color: "#ffffff", name: "New Color", tagline: "" }],
             }
           : r
       )
@@ -830,7 +1030,7 @@ function ColorwaysEditor() {
   function removeSwatch(rowId, idx) {
     setRows((arr) =>
       arr.map((r) =>
-        r.id === rowId ? { ...r, swatches: r.swatches.filter((_, i) => i !== idx) } : r
+        r.id === rowId ? { ...r, swatches: (r.swatches || []).filter((_, i) => i !== idx) } : r
       )
     );
   }
@@ -856,7 +1056,7 @@ function ColorwaysEditor() {
   return (
     <SectionCard
       title="Colorway Sections"
-      description="Featured colorway showcases between the hero and the stats. Add as many as you want; the order here is the order on the page."
+      description="Featured colorway showcases between the intro and the stats. Add as many as you want; the order here is the order on the page."
     >
       <div className="flex flex-col gap-4">
         {rows.map((r, idx) => (
@@ -890,6 +1090,13 @@ function ColorwaysEditor() {
               <FieldRow label="Image alt"><TextInput value={r.imageAlt} onChange={(e) => updateRow(r.id, { imageAlt: e.target.value })} /></FieldRow>
               <FieldRow label="CTA label"><TextInput value={r.ctaLabel} onChange={(e) => updateRow(r.id, { ctaLabel: e.target.value })} /></FieldRow>
               <FieldRow label="Badge (optional)"><TextInput value={r.badge} onChange={(e) => updateRow(r.id, { badge: e.target.value })} placeholder="UNISEX" /></FieldRow>
+              <div className="flex items-end">
+                <Toggle
+                  checked={r.multiSwatch}
+                  onChange={(v) => updateRow(r.id, { multiSwatch: v })}
+                  label="Show all swatches"
+                />
+              </div>
             </div>
 
             <div className="mt-3 flex items-center justify-between">
@@ -901,7 +1108,7 @@ function ColorwaysEditor() {
               </Button>
             </div>
             <div className="mt-2 flex flex-col gap-2">
-              {r.swatches.map((s, i) => (
+              {(r.swatches || []).map((s, i) => (
                 <div key={i} className="flex items-center gap-2 rounded-[2px] border border-[#f3f4f6] bg-white p-2">
                   <input
                     type="color"
@@ -924,8 +1131,10 @@ function ColorwaysEditor() {
         </Button>
       </div>
       <SaveBar
-        onSave={trigger}
+        onSave={() => save(rows)}
+        saving={saving}
         saved={saved}
+        error={error}
         previewOpen={previewOpen}
         onTogglePreview={() => setPreviewOpen((v) => !v)}
       />
@@ -945,10 +1154,43 @@ function ColorwaysEditor() {
   );
 }
 
+// ── Crafted to Last ────────────────────────────────────────────────────────
+function CraftedToLastEditor({ initial }) {
+  const [content, setContent] = useState(initial);
+  const { save, saving, saved, error } = useSaveSection("crafted_to_last");
+  const [previewOpen, setPreviewOpen] = useState(false);
+  function set(patch) { setContent((c) => ({ ...c, ...patch })); }
+  return (
+    <SectionCard
+      title="Crafted to Last"
+      description="The centered title block below the colorways (“crafted to last”)."
+    >
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+        <FieldRow label="Eyebrow"><TextInput value={content.eyebrow} onChange={(e) => set({ eyebrow: e.target.value })} /></FieldRow>
+        <FieldRow label="Title"><TextInput value={content.title} onChange={(e) => set({ title: e.target.value })} /></FieldRow>
+      </div>
+      <div className="mt-3">
+        <FieldRow label="Body"><TextArea rows={2} value={content.body} onChange={(e) => set({ body: e.target.value })} /></FieldRow>
+      </div>
+      <SaveBar
+        onSave={() => save(content)}
+        saving={saving}
+        saved={saved}
+        error={error}
+        previewOpen={previewOpen}
+        onTogglePreview={() => setPreviewOpen((v) => !v)}
+      />
+      <PreviewPanel open={previewOpen}>
+        <CraftedToLastPreview content={content} />
+      </PreviewPanel>
+    </SectionCard>
+  );
+}
+
 // ── Stats ─────────────────────────────────────────────────────────────────
-function StatsEditor() {
-  const [stats, setStats] = useState(STOREFRONT_STATS);
-  const [saved, trigger] = useSavedFlag();
+function StatsEditor({ initial }) {
+  const [stats, setStats] = useState(Array.isArray(initial) ? initial : []);
+  const { save, saving, saved, error } = useSaveSection("stats");
   const [previewOpen, setPreviewOpen] = useState(false);
   function update(id, patch) { setStats((arr) => arr.map((s) => (s.id === id ? { ...s, ...patch } : s))); }
   function add() { setStats((arr) => [...arr, { id: `stat-${Date.now()}`, value: "", label: "" }]); }
@@ -956,13 +1198,13 @@ function StatsEditor() {
   return (
     <SectionCard
       title="Stats Section"
-      description="Numbers shown on the landing page (Happy customers, Rating, etc.)."
+      description="The fabric-composition numbers on the landing stats band."
     >
       <div className="flex flex-col gap-2">
         {stats.map((s) => (
           <div key={s.id} className="flex items-center gap-2 rounded-[2px] border border-[#f3f4f6] bg-[#fafafa] p-2">
-            <TextInput value={s.value} onChange={(e) => update(s.id, { value: e.target.value })} className="!h-9 !w-32" placeholder="10K+" />
-            <TextInput value={s.label} onChange={(e) => update(s.id, { label: e.target.value })} className="!h-9" placeholder="Happy customers" />
+            <TextInput value={s.value} onChange={(e) => update(s.id, { value: e.target.value })} className="!h-9 !w-32" placeholder="78%" />
+            <TextInput value={s.label} onChange={(e) => update(s.id, { label: e.target.value })} className="!h-9" placeholder="Recycled Polyester" />
             <IconButton label="Remove stat" onClick={() => remove(s.id)}>
               <IconTrash />
             </IconButton>
@@ -973,8 +1215,10 @@ function StatsEditor() {
         </Button>
       </div>
       <SaveBar
-        onSave={trigger}
+        onSave={() => save(stats)}
+        saving={saving}
         saved={saved}
+        error={error}
         previewOpen={previewOpen}
         onTogglePreview={() => setPreviewOpen((v) => !v)}
       />
@@ -986,17 +1230,17 @@ function StatsEditor() {
 }
 
 // ── Browse collection tiles ───────────────────────────────────────────────
-function BrowseTilesEditor() {
-  const [tiles, setTiles] = useState(STOREFRONT_BROWSE_TILES);
-  const [saved, trigger] = useSavedFlag();
+function BrowseTilesEditor({ initial }) {
+  const [tiles, setTiles] = useState(Array.isArray(initial) ? initial : []);
+  const { save, saving, saved, error } = useSaveSection("browse_tiles");
   const [previewOpen, setPreviewOpen] = useState(false);
   function update(id, patch) { setTiles((arr) => arr.map((t) => (t.id === id ? { ...t, ...patch } : t))); }
-  function add() { setTiles((arr) => [...arr, { id: `bt-${Date.now()}`, title: "", image: "", href: "/shop" }]); }
+  function add() { setTiles((arr) => [...arr, { id: `bt-${Date.now()}`, title: "", subtitle: "", price: "", image: "", href: "/shop" }]); }
   function remove(id) { setTiles((arr) => arr.filter((t) => t.id !== id)); }
   return (
     <SectionCard
       title="Browse Collection"
-      description="Category tiles shown near the bottom of the landing page."
+      description="The product tiles near the bottom of the landing page."
     >
       <div className="flex flex-col gap-2">
         {tiles.map((t) => (
@@ -1010,10 +1254,18 @@ function BrowseTilesEditor() {
             />
             <div className="flex flex-col gap-2">
               <FieldRow label="Title">
-                <TextInput value={t.title} onChange={(e) => update(t.id, { title: e.target.value })} placeholder="Women" />
+                <TextInput value={t.title} onChange={(e) => update(t.id, { title: e.target.value })} placeholder="Sweat Pants" />
               </FieldRow>
+              <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+                <FieldRow label="Subtitle">
+                  <TextInput value={t.subtitle} onChange={(e) => update(t.id, { subtitle: e.target.value })} placeholder="Soft Cotton" />
+                </FieldRow>
+                <FieldRow label="Price">
+                  <TextInput value={t.price} onChange={(e) => update(t.id, { price: e.target.value })} placeholder="JOD 30" />
+                </FieldRow>
+              </div>
               <FieldRow label="Link href">
-                <TextInput value={t.href} onChange={(e) => update(t.id, { href: e.target.value })} placeholder="/shop?category=women" />
+                <TextInput list="sf-route-hints" value={t.href} onChange={(e) => update(t.id, { href: e.target.value })} placeholder="/products/sweat-pants" />
               </FieldRow>
             </div>
             <div className="flex items-start justify-end">
@@ -1028,8 +1280,10 @@ function BrowseTilesEditor() {
         </Button>
       </div>
       <SaveBar
-        onSave={trigger}
+        onSave={() => save(tiles)}
+        saving={saving}
         saved={saved}
+        error={error}
         previewOpen={previewOpen}
         onTogglePreview={() => setPreviewOpen((v) => !v)}
       />
@@ -1041,15 +1295,16 @@ function BrowseTilesEditor() {
 }
 
 // ── Product detail marketing sections ─────────────────────────────────────
-function ProductSectionsEditor() {
-  const [rows, setRows] = useState(STOREFRONT_PRODUCT_SECTIONS);
-  const [saved, trigger] = useSavedFlag();
+function ProductSectionsEditor({ initial }) {
+  const [rows, setRows] = useState(Array.isArray(initial) ? initial : []);
+  const { save, saving, saved, error } = useSaveSection("product_sections");
   const [previewOpen, setPreviewOpen] = useState(false);
   function update(id, patch) { setRows((arr) => arr.map((r) => (r.id === id ? { ...r, ...patch } : r))); }
   return (
     <SectionCard
       title="Product Page Sections"
-      description="Marketing sections rendered on every /products/[slug] page. Toggle visibility and edit copy."
+      description="Marketing sections rendered on every /products/[slug] page. Toggle visibility and edit copy. (The colorways & details sections keep their product-driven data — only the heading/visibility apply.)"
+      defaultOpen={false}
     >
       <div className="flex flex-col gap-3">
         {rows.map((r) => (
@@ -1064,16 +1319,25 @@ function ProductSectionsEditor() {
                 label={r.enabled ? "Visible" : "Hidden"}
               />
             </div>
-            <div className="grid grid-cols-1 gap-2">
-              <FieldRow label="Title"><TextInput value={r.title} onChange={(e) => update(r.id, { title: e.target.value })} /></FieldRow>
-              <FieldRow label="Body"><TextArea rows={2} value={r.body} onChange={(e) => update(r.id, { body: e.target.value })} /></FieldRow>
-            </div>
+            {r.key === "colorways" || r.key === "details" ? (
+              <p className="font-body text-[12px] text-[#6b7280]">
+                This section&apos;s heading &amp; content are product-driven — only the
+                <strong> show / hide </strong> toggle applies here.
+              </p>
+            ) : (
+              <div className="grid grid-cols-1 gap-2">
+                <FieldRow label="Title (line breaks allowed)"><TextArea rows={2} value={r.title} onChange={(e) => update(r.id, { title: e.target.value })} /></FieldRow>
+                <FieldRow label="Body"><TextArea rows={2} value={r.body} onChange={(e) => update(r.id, { body: e.target.value })} /></FieldRow>
+              </div>
+            )}
           </div>
         ))}
       </div>
       <SaveBar
-        onSave={trigger}
+        onSave={() => save(rows)}
+        saving={saving}
         saved={saved}
+        error={error}
         previewOpen={previewOpen}
         onTogglePreview={() => setPreviewOpen((v) => !v)}
       />
@@ -1084,10 +1348,66 @@ function ProductSectionsEditor() {
   );
 }
 
+// ── Coaching CTA (#14) ────────────────────────────────────────────────────
+function CoachingEditor({ initial }) {
+  const [cta, setCta] = useState(initial);
+  const { save, saving, saved, error } = useSaveSection("coaching");
+  const [previewOpen, setPreviewOpen] = useState(false);
+  function set(patch) { setCta((c) => ({ ...c, ...patch })); }
+  return (
+    <SectionCard
+      title="Coaching Cross-Sell"
+      description="The 'Apply for coaching' card shown on /checkout/success. Toggle off to hide it from customers."
+      defaultOpen={false}
+    >
+      <div className="mb-4">
+        <Toggle
+          checked={cta.enabled}
+          onChange={(v) => set({ enabled: v })}
+          label={cta.enabled ? "Shown on order success page" : "Hidden from order success page"}
+        />
+      </div>
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+        <FieldRow label="Eyebrow (optional)"><TextInput value={cta.eyebrow} onChange={(e) => set({ eyebrow: e.target.value })} /></FieldRow>
+        <FieldRow label="Title"><TextInput value={cta.title} onChange={(e) => set({ title: e.target.value })} /></FieldRow>
+        <FieldRow label="CTA label"><TextInput value={cta.ctaLabel} onChange={(e) => set({ ctaLabel: e.target.value })} /></FieldRow>
+        <FieldRow label="CTA link (blank = no link)"><TextInput list="sf-route-hints" value={cta.ctaHref} onChange={(e) => set({ ctaHref: e.target.value })} placeholder="/shop or https://…" /></FieldRow>
+      </div>
+      <div className="mt-3">
+        <FieldRow label="Body"><TextArea rows={2} value={cta.body} onChange={(e) => set({ body: e.target.value })} /></FieldRow>
+      </div>
+      <div className="mt-3">
+        <ImageField
+          label="Coach photo"
+          value={cta.image}
+          onChange={(url) => set({ image: url })}
+          aspectRatio="3 / 4"
+          height={220}
+        />
+      </div>
+      <SaveBar
+        onSave={() => save(cta)}
+        saving={saving}
+        saved={saved}
+        error={error}
+        previewOpen={previewOpen}
+        onTogglePreview={() => setPreviewOpen((v) => !v)}
+      />
+      <PreviewPanel open={previewOpen}>
+        <CoachingPreview cta={cta} />
+      </PreviewPanel>
+    </SectionCard>
+  );
+}
+
 // ── Footer ────────────────────────────────────────────────────────────────
-function FooterEditor() {
-  const [footer, setFooter] = useState(STOREFRONT_FOOTER);
-  const [saved, trigger] = useSavedFlag();
+function FooterEditor({ initial }) {
+  const [footer, setFooter] = useState(() => ({
+    brandCopy: initial?.brandCopy ?? "",
+    social: Array.isArray(initial?.social) ? initial.social : [],
+    columns: Array.isArray(initial?.columns) ? initial.columns : [],
+  }));
+  const { save, saving, saved, error } = useSaveSection("footer");
   const [previewOpen, setPreviewOpen] = useState(false);
 
   function setBrand(v) { setFooter((f) => ({ ...f, brandCopy: v })); }
@@ -1109,7 +1429,7 @@ function FooterEditor() {
     setFooter((f) => ({
       ...f,
       columns: f.columns.map((c) =>
-        c.id === colId ? { ...c, links: c.links.map((l) => (l.id === linkId ? { ...l, ...patch } : l)) } : c
+        c.id === colId ? { ...c, links: (c.links || []).map((l) => (l.id === linkId ? { ...l, ...patch } : l)) } : c
       ),
     }));
   }
@@ -1117,7 +1437,7 @@ function FooterEditor() {
     setFooter((f) => ({
       ...f,
       columns: f.columns.map((c) =>
-        c.id === colId ? { ...c, links: [...c.links, { id: `l-${Date.now()}`, label: "", href: "" }] } : c
+        c.id === colId ? { ...c, links: [...(c.links || []), { id: `l-${Date.now()}`, label: "", href: "" }] } : c
       ),
     }));
   }
@@ -1125,15 +1445,21 @@ function FooterEditor() {
     setFooter((f) => ({
       ...f,
       columns: f.columns.map((c) =>
-        c.id === colId ? { ...c, links: c.links.filter((l) => l.id !== linkId) } : c
+        c.id === colId ? { ...c, links: (c.links || []).filter((l) => l.id !== linkId) } : c
       ),
     }));
+  }
+  function addColumn() {
+    setFooter((f) => ({ ...f, columns: [...f.columns, { id: `col-${Date.now()}`, heading: "", links: [] }] }));
+  }
+  function removeColumn(colId) {
+    setFooter((f) => ({ ...f, columns: f.columns.filter((c) => c.id !== colId) }));
   }
 
   return (
     <SectionCard
       title="Footer"
-      description="Brand copy, social links, and footer columns shown across the customer storefront."
+      description="Brand copy, social links, and the link columns next to the (category-driven) Shop column."
       defaultOpen={false}
     >
       <FieldRow label="Brand copy">
@@ -1147,7 +1473,7 @@ function FooterEditor() {
         <div className="flex flex-col gap-2">
           {footer.social.map((s) => (
             <div key={s.id} className="flex items-center gap-2 rounded-[2px] border border-[#f3f4f6] bg-[#fafafa] p-2">
-              <TextInput value={s.network} onChange={(e) => updateSocial(s.id, { network: e.target.value })} className="!h-9 !w-40" placeholder="Network" />
+              <TextInput value={s.network} onChange={(e) => updateSocial(s.id, { network: e.target.value })} className="!h-9 !w-40" placeholder="Instagram" />
               <TextInput value={s.url} onChange={(e) => updateSocial(s.id, { url: e.target.value })} className="!h-9" placeholder="https://..." />
               <IconButton label="Remove social" onClick={() => removeSocial(s.id)}>
                 <IconTrash />
@@ -1166,15 +1492,20 @@ function FooterEditor() {
             <FieldRow label="Column heading">
               <TextInput value={col.heading} onChange={(e) => updateColumn(col.id, { heading: e.target.value })} className="!w-64" />
             </FieldRow>
-            <Button size="sm" variant="secondary" icon={<IconPlus />} onClick={() => addLink(col.id)}>
-              Add link
-            </Button>
+            <div className="flex items-center gap-2">
+              <Button size="sm" variant="secondary" icon={<IconPlus />} onClick={() => addLink(col.id)}>
+                Add link
+              </Button>
+              <IconButton label="Remove column" onClick={() => removeColumn(col.id)}>
+                <IconTrash />
+              </IconButton>
+            </div>
           </div>
           <div className="mt-2 flex flex-col gap-2">
-            {col.links.map((l) => (
+            {(col.links || []).map((l) => (
               <div key={l.id} className="flex items-center gap-2 rounded-[2px] border border-[#f3f4f6] bg-[#fafafa] p-2">
                 <TextInput value={l.label} onChange={(e) => updateLink(col.id, l.id, { label: e.target.value })} className="!h-9 !w-56" placeholder="Label" />
-                <TextInput value={l.href} onChange={(e) => updateLink(col.id, l.id, { href: e.target.value })} className="!h-9" placeholder="/path" />
+                <TextInput list="sf-route-hints" value={l.href} onChange={(e) => updateLink(col.id, l.id, { href: e.target.value })} className="!h-9" placeholder="/path" />
                 <IconButton label="Remove link" onClick={() => removeLink(col.id, l.id)}>
                   <IconTrash />
                 </IconButton>
@@ -1183,9 +1514,16 @@ function FooterEditor() {
           </div>
         </div>
       ))}
+      <div className="mt-4">
+        <Button size="sm" variant="secondary" icon={<IconPlus />} onClick={addColumn}>
+          Add column
+        </Button>
+      </div>
       <SaveBar
-        onSave={trigger}
+        onSave={() => save(footer)}
+        saving={saving}
         saved={saved}
+        error={error}
         previewOpen={previewOpen}
         onTogglePreview={() => setPreviewOpen((v) => !v)}
       />
@@ -1196,66 +1534,64 @@ function FooterEditor() {
   );
 }
 
-// ── Coaching CTA (#14) ────────────────────────────────────────────────────
-function CoachingEditor() {
-  const [cta, setCta] = useState(COACHING_CTA);
-  const [saved, trigger] = useSavedFlag();
-  const [previewOpen, setPreviewOpen] = useState(false);
-  function set(patch) { setCta((c) => ({ ...c, ...patch })); }
+function LoadingState() {
   return (
-    <SectionCard
-      title="Coaching Cross-Sell"
-      description="The 'Apply for coaching' card shown on /checkout/success. Toggle off to hide it from customers."
-      defaultOpen={false}
-    >
-      <div className="mb-4">
-        <Toggle
-          checked={cta.enabled}
-          onChange={(v) => set({ enabled: v })}
-          label={cta.enabled ? "Shown on order success page" : "Hidden from order success page"}
-        />
-      </div>
-      <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-        <FieldRow label="Eyebrow"><TextInput value={cta.eyebrow} onChange={(e) => set({ eyebrow: e.target.value })} /></FieldRow>
-        <FieldRow label="Title"><TextInput value={cta.title} onChange={(e) => set({ title: e.target.value })} /></FieldRow>
-        <FieldRow label="CTA label"><TextInput value={cta.ctaLabel} onChange={(e) => set({ ctaLabel: e.target.value })} /></FieldRow>
-        <FieldRow label="CTA link"><TextInput value={cta.ctaHref} onChange={(e) => set({ ctaHref: e.target.value })} /></FieldRow>
-      </div>
-      <div className="mt-3">
-        <FieldRow label="Body"><TextArea rows={2} value={cta.body} onChange={(e) => set({ body: e.target.value })} /></FieldRow>
-      </div>
-      <div className="mt-3">
-        <ImageField
-          label="Coach photo"
-          value={cta.image}
-          onChange={(url) => set({ image: url })}
-          aspectRatio="3 / 4"
-          height={220}
-        />
-      </div>
-      <SaveBar
-        onSave={trigger}
-        saved={saved}
-        previewOpen={previewOpen}
-        onTogglePreview={() => setPreviewOpen((v) => !v)}
-      />
-      <PreviewPanel open={previewOpen}>
-        <CoachingPreview cta={cta} />
-      </PreviewPanel>
-    </SectionCard>
+    <div className="grid place-items-center rounded-[4px] border border-[#e5e7eb] bg-white p-12">
+      <p className="font-body text-[13px] text-[#6b7280]">Loading storefront content…</p>
+    </div>
   );
 }
 
 export default function StorefrontManager() {
+  const [content, setContent] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(null);
+
+  // Single cancelled-flag guard (NOT paired with a run-once ref — that combo
+  // deadlocks under React strict-mode double-mount; see repair CLAUDE.md).
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await repairCall("myAppGetStorefrontContent", {});
+        if (!cancelled) setContent(res && typeof res === "object" ? res : {});
+      } catch (e) {
+        if (!cancelled) {
+          setLoadError(cleanErr(e, "Couldn't load saved content — showing current defaults."));
+          setContent({});
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  if (loading) return <LoadingState />;
+
+  // Seed each editor with the saved section value, falling back to the canonical
+  // current-design defaults so the first Save never changes the live page.
+  const seed = (section) => content?.[section] ?? STOREFRONT_DEFAULTS[section];
+
   return (
     <div className="flex flex-col gap-4">
-      <HeroEditor />
-      <ColorwaysEditor />
-      <StatsEditor />
-      <BrowseTilesEditor />
-      <ProductSectionsEditor />
-      <CoachingEditor />
-      <FooterEditor />
+      <RouteHintsDatalist />
+      {loadError ? (
+        <div className="rounded-[4px] border border-[#fde68a] bg-[#fffbeb] px-4 py-3 font-body text-[12px] text-[#92400e]">
+          {loadError}
+        </div>
+      ) : null}
+      <HeroEditor initial={seed("hero")} />
+      <ColorwaysIntroEditor initial={seed("colorways_intro")} />
+      <ColorwaysEditor initial={seed("colorways")} />
+      <CraftedToLastEditor initial={seed("crafted_to_last")} />
+      <StatsEditor initial={seed("stats")} />
+      <BrowseTilesEditor initial={seed("browse_tiles")} />
+      <ProductSectionsEditor initial={seed("product_sections")} />
+      <CoachingEditor initial={seed("coaching")} />
+      <FooterEditor initial={seed("footer")} />
     </div>
   );
 }

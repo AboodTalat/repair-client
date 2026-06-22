@@ -1,23 +1,24 @@
 import Image from "next/image";
 import GlassButton from "./GlassButton";
+import { HERO_DEFAULT } from "@/lib/storefrontDefaults";
 
 export default function HeroSection({ hero } = {}) {
   // CMS overlay — each field falls back to the current copy, so an empty CMS
   // renders the hero exactly as before. The bespoke two-line title markup is the
   // default; a CMS `title` replaces it with a single styled heading.
-  const eyebrow = hero?.eyebrow || "New Drop · SS26";
-  const subtitle =
-    hero?.subtitle ||
-    "Premium materials. Precision engineering. Built for thousands of workouts.";
-  const ctaLabel = hero?.ctaLabel || "GET YOURS NOW";
+  const eyebrow = hero?.eyebrow || HERO_DEFAULT.eyebrow;
+  const subtitle = hero?.subtitle || HERO_DEFAULT.subtitle;
+  const ctaLabel = hero?.ctaLabel || HERO_DEFAULT.ctaLabel;
   const title = hero?.title;
+  const image = hero?.image || HERO_DEFAULT.image;
+  const ctaHref = hero?.ctaHref || undefined; // unset → button stays a no-op (current behavior)
   return (
     <section className="relative min-h-[852px] w-full overflow-hidden bg-[linear-gradient(180deg,#0f1112_0%,#101011_54.5%,#101013_76.4%,#101014_100%)] md:min-h-screen">
       {/* Mobile layout (< md) — original design */}
       <div className="md:hidden">
         <div className="absolute left-1/2 top-[71px] aspect-[460/586] w-[117%] -translate-x-1/2">
           <Image
-            src="/home/hero-hoodie.png"
+            src={image}
             alt="Repair signature hoodie"
             fill
             priority
@@ -37,7 +38,7 @@ export default function HeroSection({ hero } = {}) {
             {subtitle}
           </p>
           <div className="mt-4 flex justify-center">
-            <GlassButton variant="dark" className="!w-[255px]">
+            <GlassButton variant="dark" href={ctaHref} className="!w-[255px]">
               {ctaLabel}
             </GlassButton>
           </div>
@@ -64,7 +65,7 @@ export default function HeroSection({ hero } = {}) {
               {subtitle}
             </p>
             <div className="mt-10 flex items-center gap-5">
-              <GlassButton variant="dark" className="!h-12 !w-[260px]">
+              <GlassButton variant="dark" href={ctaHref} className="!h-12 !w-[260px]">
                 {ctaLabel}
               </GlassButton>
               <a
@@ -79,7 +80,7 @@ export default function HeroSection({ hero } = {}) {
 
           <div className="relative h-full min-h-[640px] w-full">
             <Image
-              src="/home/hero-hoodie.png"
+              src={image}
               alt="Repair signature hoodie"
               fill
               priority

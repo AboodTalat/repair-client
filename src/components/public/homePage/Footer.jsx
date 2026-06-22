@@ -1,11 +1,40 @@
 import Image from "next/image";
 import Link from "next/link";
 import {
-  FOOTER_HELP_LINKS,
   FOOTER_LEGAL_LINKS,
   footerShopLinks,
 } from "@/lib/storeNav";
+import { FOOTER_DEFAULT } from "@/lib/storefrontDefaults";
 import NewsletterSignup from "@/components/shared/NewsletterSignup";
+
+// Known social icons so the default Instagram/Twitter render exactly as before;
+// any other network the admin adds falls back to a first-letter bubble.
+const SOCIAL_ICONS = {
+  instagram: { src: "/home/social-1.png", w: 22, h: 22 },
+  twitter: { src: "/home/social-2.svg", w: 16, h: 16 },
+  x: { src: "/home/social-2.svg", w: 16, h: 16 },
+};
+
+function SocialBubble({ network, url }) {
+  const icon = SOCIAL_ICONS[(network || "").trim().toLowerCase()];
+  return (
+    <a
+      href={url || "#"}
+      target="_blank"
+      rel="noopener noreferrer"
+      aria-label={network || "Social link"}
+      className="grid size-12 place-items-center rounded-full bg-[#11191f]"
+    >
+      {icon ? (
+        <Image src={icon.src} alt="" width={icon.w} height={icon.h} />
+      ) : (
+        <span className="font-display text-[12px] font-bold uppercase text-white">
+          {(network || "?").charAt(0)}
+        </span>
+      )}
+    </a>
+  );
+}
 
 function FooterLink({ href = "#", children }) {
   return (
@@ -29,7 +58,13 @@ function Heading({ children }) {
   );
 }
 
-export default function Footer({ categories = [] }) {
+export default function Footer({ categories = [], footer } = {}) {
+  // CMS overlay — brand copy, social links, and the extra (Help) columns are
+  // admin-editable; the Shop column stays category-driven and the legal bar
+  // stays constant. Falls back to the current values so an empty CMS matches.
+  const brandCopy = footer?.brandCopy || FOOTER_DEFAULT.brandCopy;
+  const social = Array.isArray(footer?.social) ? footer.social : FOOTER_DEFAULT.social;
+  const cmsColumns = Array.isArray(footer?.columns) ? footer.columns : FOOTER_DEFAULT.columns;
   const shopLinks = footerShopLinks(categories);
   return (
     <footer className="w-full bg-white px-4 pb-[102px] pt-8 text-[#11191f] sm:px-8 sm:pb-16 md:px-12 md:pt-16 lg:px-16">
@@ -50,29 +85,13 @@ export default function Footer({ categories = [] }) {
             className="font-body text-[14px] leading-[19.5px] text-[#232323]/50 md:max-w-[320px]"
             style={{ fontStretch: "75%" }}
           >
-            Engineered for performance, designed for life. We create premium athletic wear for the
-            modern mover.
+            {brandCopy}
           </p>
 
           <div className="flex gap-3">
-            <a
-              href="https://instagram.com"
-              target="_blank"
-              rel="noopener noreferrer"
-              aria-label="Instagram"
-              className="grid size-12 place-items-center rounded-full bg-[#11191f]"
-            >
-              <Image src="/home/social-1.png" color="white" alt="" width={22} height={22} />
-            </a>
-            <a
-              href="https://twitter.com"
-              target="_blank"
-              rel="noopener noreferrer"
-              aria-label="Twitter"
-              className="grid size-12 place-items-center rounded-full bg-[#11191f]"
-            >
-              <Image src="/home/social-2.svg" alt="" width={16} height={16} />
-            </a>
+            {social.map((s, i) => (
+              <SocialBubble key={s.id ?? i} network={s.network} url={s.url} />
+            ))}
           </div>
         </div>
 
@@ -87,16 +106,18 @@ export default function Footer({ categories = [] }) {
               ))}
             </ul>
           </div>
-          <div className="flex flex-1 flex-col gap-4">
-            <Heading>Help</Heading>
-            <ul className="flex flex-col gap-3">
-              {FOOTER_HELP_LINKS.map((link) => (
-                <FooterLink key={link.label} href={link.href}>
-                  {link.label}
-                </FooterLink>
-              ))}
-            </ul>
-          </div>
+          {cmsColumns.map((col, ci) => (
+            <div key={col.id ?? ci} className="flex flex-1 flex-col gap-4">
+              <Heading>{col.heading}</Heading>
+              <ul className="flex flex-col gap-3">
+                {(col.links || []).map((link, li) => (
+                  <FooterLink key={link.id ?? li} href={link.href}>
+                    {link.label}
+                  </FooterLink>
+                ))}
+              </ul>
+            </div>
+          ))}
         </div>
 
         <div className="flex flex-col gap-3 md:col-span-4">

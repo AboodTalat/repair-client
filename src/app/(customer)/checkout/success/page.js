@@ -1,4 +1,5 @@
 import OrderSuccessClient from "@/components/customer/cart/OrderSuccessClient";
+import { fetchStorefrontContent } from "@/lib/storefrontContent";
 
 // /checkout/success — Order confirmation screen reached after the
 // "PAY & CONFIRM ORDER" CTA on /checkout/payment. Matches Figma mobile
@@ -14,6 +15,9 @@ export const metadata = {
   title: "Order Confirmed — Repair",
 };
 
-export default function CheckoutSuccessPage() {
-  return <OrderSuccessClient />;
+export default async function CheckoutSuccessPage() {
+  // Admin-editable coaching cross-sell content (CMS overlay; undefined → the
+  // card falls back to its current hardcoded copy).
+  const content = await fetchStorefrontContent();
+  return <OrderSuccessClient coaching={content?.coaching} />;
 }

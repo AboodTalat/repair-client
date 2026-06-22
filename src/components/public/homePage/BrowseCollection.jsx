@@ -1,26 +1,25 @@
 import Image from "next/image";
 import Link from "next/link";
-
-const PRODUCTS = [
-  { slug: "sweat-pants", name: "Sweat Pants", subtitle: "Soft Cotton", price: "JOD 30", image: "/home/card-1.png" },
-  { slug: "sweat-pants", name: "Sweat Pants", subtitle: "Soft Cotton", price: "JOD 30", image: "/home/card-2.png" },
-  { slug: "sweat-pants", name: "Sweat Pants", subtitle: "Soft Cotton", price: "JOD 30", image: "/home/card-1.png" },
-  { slug: "sweat-pants", name: "Sweat Pants", subtitle: "Soft Cotton", price: "JOD 30", image: "/home/card-2.png" },
-];
+import { BROWSE_TILES_DEFAULT } from "@/lib/storefrontDefaults";
 
 const SWATCHES = ["#ede9dd", "#232323", "#12013f", "#3e0000"];
 
+// Shown when a browse tile has no image set in the CMS.
+const FALLBACK_IMAGE = "/home/card-1.png";
+
 function ProductCard({ product }) {
+  const href = product.href || "/shop";
+  const image = product.image || FALLBACK_IMAGE;
   return (
     <div className="flex w-[176px] shrink-0 snap-start flex-col gap-2 md:w-auto md:gap-3">
       <div className="relative h-[264px] w-full shadow-[0_0_10px_0_rgba(0,0,0,0.05)] md:aspect-[3/4] md:h-auto">
         <Link
-          href={`/products/${product.slug}`}
+          href={href}
           aria-label={`View ${product.name}`}
           className="absolute inset-0"
         >
           <Image
-            src={product.image}
+            src={image}
             alt={product.name}
             fill
             sizes="(min-width: 1024px) 280px, (min-width: 768px) 33vw, 176px"
@@ -70,7 +69,25 @@ function ProductCard({ product }) {
   );
 }
 
-export default function BrowseCollection() {
+export default function BrowseCollection({ tiles } = {}) {
+  // CMS overlay — admin-editable tiles (title / subtitle / price / image / href).
+  // Falls back to the current 4 cards so an empty CMS renders identically.
+  const items =
+    Array.isArray(tiles) && tiles.length
+      ? tiles.map((t) => ({
+          name: t.title,
+          subtitle: t.subtitle,
+          price: t.price,
+          image: t.image,
+          href: t.href,
+        }))
+      : BROWSE_TILES_DEFAULT.map((t) => ({
+          name: t.title,
+          subtitle: t.subtitle,
+          price: t.price,
+          image: t.image,
+          href: t.href,
+        }));
   return (
     <section className="mx-auto w-full max-w-[1280px] bg-black px-4 pb-12 pt-8 md:px-10 md:pb-20 md:pt-20 lg:px-16">
       <div className="flex items-end justify-between gap-4">
@@ -86,7 +103,7 @@ export default function BrowseCollection() {
         </Link>
       </div>
       <div className="mt-4 -mr-4 flex snap-x snap-mandatory gap-2 overflow-x-auto pb-2 pr-4 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden md:mr-0 md:mt-10 md:grid md:grid-cols-3 md:gap-6 md:overflow-visible md:pr-0 lg:grid-cols-4 lg:gap-8">
-        {PRODUCTS.map((p, i) => (
+        {items.map((p, i) => (
           <ProductCard key={i} product={p} />
         ))}
       </div>

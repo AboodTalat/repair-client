@@ -166,7 +166,7 @@ const DETAIL_ITEMS = [
 
 // ------------------------------------------------------------------
 
-export default function ProductPageClient({ product }) {
+export default function ProductPageClient({ product, productSections }) {
   // Wishlist is a user-scoped feature — the heart button only shows to
   // signed-in shoppers; guests don't see it (same rule applied wherever the
   // wishlist affordance appears).
@@ -226,6 +226,17 @@ export default function ProductPageClient({ product }) {
     { length: 3 },
     (_, i) => product.images?.[i] || FEATURE_FALLBACK_IMAGES[i]
   );
+
+  // Admin-editable marketing copy for the bands below (CMS overlay, keyed by
+  // section). Empty CMS / missing rows fall back to the on-page defaults, so the
+  // page renders identically until an admin edits a section. `psOn` honours the
+  // per-section visibility toggle; the colorways & details sections keep their
+  // product-driven data (only visibility / heading apply).
+  const ps = {};
+  for (const r of productSections || []) ps[r.key] = r;
+  const psOn = (key) => ps[key]?.enabled !== false;
+  const psTitle = (key, fb) => ps[key]?.title || fb;
+  const psBody = (key, fb) => ps[key]?.body || fb;
 
   // "Four Colorways. One Vision." section — now driven by the product's real
   // colors instead of a hardcoded palette. Each color carries its first
@@ -974,16 +985,17 @@ export default function ProductPageClient({ product }) {
           right size for every viewport between the mobile breakpoint and
           the Figma design width. Stats are a grid-cols-3 at md+ so the
           three columns stay equal regardless of label length. */}
+      {psOn("crafted") ? (
       <section className="flex flex-col items-center justify-center gap-6 bg-[#11191f] px-4 py-16 md:gap-10 md:px-8 md:py-20 lg:gap-12 lg:py-24 xl:gap-16 xl:py-32">
         <div className="flex flex-col items-center gap-2 text-center md:gap-3 lg:gap-4">
-          <h2 className="font-display text-[24px] font-bold leading-8 text-white md:text-[34px] md:leading-[40px] lg:text-[40px] lg:leading-[48px] xl:text-[48px] xl:leading-[48px]">
-            Crafted to Last
+          <h2 className="whitespace-pre-line font-display text-[24px] font-bold leading-8 text-white md:text-[34px] md:leading-[40px] lg:text-[40px] lg:leading-[48px] xl:text-[48px] xl:leading-[48px]">
+            {psTitle("crafted", "Crafted to Last")}
           </h2>
           <p
             className="font-body text-[14px] leading-normal text-[#9ca3af] md:max-w-[420px] md:text-[14px] md:leading-5 lg:max-w-[480px] lg:text-[15px] lg:leading-6 xl:max-w-[520px] xl:text-[16px]"
             style={{ fontStretch: "75%" }}
           >
-            Premium materials. Precision engineering. Built for thousands of workouts.
+            {psBody("crafted", "Premium materials. Precision engineering. Built for thousands of workouts.")}
           </p>
         </div>
         <div className="flex w-full flex-col gap-6 md:mx-auto md:max-w-[1120px] md:grid md:grid-cols-3 md:gap-6 lg:gap-10 xl:gap-12">
@@ -1005,10 +1017,12 @@ export default function ProductPageClient({ product }) {
           ))}
         </div>
       </section>
+      ) : null}
 
       {/* ── Stays Dry. Stays Fresh. ─────────────────────────────────── */}
       {/* Figma 2119:2611 — desktop: image LEFT 720x700, dark text RIGHT 720x700.
           Mobile: image full-width then dark text below. */}
+      {psOn("stays-dry") ? (
       <section className="flex flex-col md:flex-row md:h-[700px]">
         <div className="relative h-full w-full md:h-full md:w-1/2">
           <Image
@@ -1024,24 +1038,24 @@ export default function ProductPageClient({ product }) {
             <DropletIcon />
           </div>
           <div className="flex flex-col items-center gap-2 text-center md:gap-6">
-            <h2 className="font-display text-[24px] font-bold leading-normal text-[#11191f] md:text-[40px] md:leading-[48px]">
-              Stays Dry.
-              <br />
-              Stays Fresh.
+            <h2 className="whitespace-pre-line font-display text-[24px] font-bold leading-normal text-[#11191f] md:text-[40px] md:leading-[48px]">
+              {psTitle("stays-dry", "Stays Dry.\nStays Fresh.")}
             </h2>
             <p
               className="font-body text-[14px] leading-6 text-[#9ca3af] md:max-w-[520px] md:text-[16px] md:leading-6"
               style={{ fontStretch: "75%" }}
             >
-              Advanced moisture-wicking technology pulls sweat away from your skin, keeping you dry through the most intense workouts.
+              {psBody("stays-dry", "Advanced moisture-wicking technology pulls sweat away from your skin, keeping you dry through the most intense workouts.")}
             </p>
           </div>
         </div>
       </section>
+      ) : null}
 
       {/* ── Move Without Limits ─────────────────────────────────────── */}
       {/* Figma 2119:2625 — desktop: dark text LEFT 720x700, image RIGHT 720x700.
           Mobile: image full-width, dark text below (matches reading flow). */}
+      {psOn("move") ? (
       <section className="flex flex-col md:h-[700px] md:flex-row-reverse">
         <div className="relative h-[551px] w-full md:h-full md:w-1/2">
           <Image
@@ -1057,21 +1071,23 @@ export default function ProductPageClient({ product }) {
             <StretchIcon />
           </div>
           <div className="flex flex-col items-center gap-2 text-center md:gap-6">
-            <h2 className="font-display text-[24px] font-bold leading-8 text-white md:text-[40px] md:leading-[48px]">
-              Move Without Limits
+            <h2 className="whitespace-pre-line font-display text-[24px] font-bold leading-8 text-white md:text-[40px] md:leading-[48px]">
+              {psTitle("move", "Move Without Limits")}
             </h2>
             <p
               className="font-body text-[14px] leading-normal text-[#9ca3af] md:max-w-[520px] md:text-[16px] md:leading-6"
               style={{ fontStretch: "75%" }}
             >
-              Four-way stretch fabric moves with you in every direction. From yoga flows to explosive sprints.
+              {psBody("move", "Four-way stretch fabric moves with you in every direction. From yoga flows to explosive sprints.")}
             </p>
           </div>
         </div>
       </section>
+      ) : null}
 
       {/* ── Sculpted Support ────────────────────────────────────────── */}
       {/* Figma 2119:2639 — desktop: image LEFT 720x700, dark text RIGHT 720x700. */}
+      {psOn("sculpted") ? (
       <section className="flex flex-col md:flex-row md:h-[700px]">
         <div className="relative h-[551px] w-full md:h-full md:w-1/2">
           <Image
@@ -1087,25 +1103,26 @@ export default function ProductPageClient({ product }) {
             <BodyIcon />
           </div>
           <div className="flex flex-col items-center gap-2 text-center md:gap-6">
-            <h2 className="font-display text-[24px] font-bold leading-8 text-white md:text-[40px] md:leading-[48px]">
-              Sculpted Support
+            <h2 className="whitespace-pre-line font-display text-[24px] font-bold leading-8 text-white md:text-[40px] md:leading-[48px]">
+              {psTitle("sculpted", "Sculpted Support")}
             </h2>
             <p
               className="font-body text-[14px] leading-normal text-[#9ca3af] md:max-w-[520px] md:text-[16px] md:leading-6"
               style={{ fontStretch: "75%" }}
             >
-              Compression fit that supports your muscles and enhances your natural shape. Feel confident, perform better.
+              {psBody("sculpted", "Compression fit that supports your muscles and enhances your natural shape. Feel confident, perform better.")}
             </p>
           </div>
         </div>
       </section>
+      ) : null}
 
       {/* ── Four Colorways. One Vision. ─────────────────────────────── */}
       {/* Figma 2119:2653 — desktop: two-column 1376 wide. LEFT = color list
           (4 rows, each 424x176 with 112-square swatch + heading/desc).
           RIGHT = 2x2 lifestyle grid (296x371 each, 16px gap).
           Mobile: stacked list + horizontal-scroll lifestyle row. */}
-      {colorways.length > 0 ? (
+      {colorways.length > 0 && psOn("colorways") ? (
         <section className="flex flex-col gap-4 bg-[#fafafa] px-4 py-12 md:gap-12 md:px-8 md:py-24">
           <div className="flex flex-col items-center text-center md:gap-1">
             <h2 className="font-display text-[20px] font-bold leading-7 text-[#11191f] md:text-[36px] md:leading-[44px]">
@@ -1159,7 +1176,7 @@ export default function ProductPageClient({ product }) {
       {/* Figma node 35:2449 — lifestyle cards 280x350, rounded-lg, 12px gap, first card 16px from edge.
           Hidden on desktop because the colorway lifestyle grid above takes over.
           Same images as the desktop grid (per-color photos, else the shared set). */}
-      {colorways.length > 0 ? (
+      {colorways.length > 0 && psOn("colorways") ? (
         <section
           className="no-scrollbar overflow-x-auto pl-4 mb-12 md:hidden"
           style={{ height: 350 }}
@@ -1189,9 +1206,10 @@ export default function ProductPageClient({ product }) {
       {/* Figma 2119:2706 — desktop: centered 704-wide column, 3 detail rows
           stacked vertically. 64x64 icon tile (rgba white 0.1) + 28px heading
           + 23px description. Mobile keeps the compact 14px / 12px scale. */}
+      {psOn("details") ? (
       <section className="flex flex-col gap-8 bg-[#11191f] px-4 py-16 md:gap-12 md:py-24">
-        <h2 className="font-display text-[24px] font-bold leading-8 text-white text-center md:text-[36px] md:leading-[44px]">
-          The Details
+        <h2 className="whitespace-pre-line font-display text-[24px] font-bold leading-8 text-white text-center md:text-[36px] md:leading-[44px]">
+          {psTitle("details", "The Details")}
         </h2>
         <div className="flex flex-col gap-8 md:mx-auto md:w-full md:max-w-[704px] md:gap-12">
           {DETAIL_ITEMS.map(({ Icon, title, desc }) => (
@@ -1217,6 +1235,7 @@ export default function ProductPageClient({ product }) {
           ))}
         </div>
       </section>
+      ) : null}
 
       {/* ── Complete Your Set ───────────────────────────────────────── */}
       {/* Figma 2119:2741 — desktop: 1376-wide section, title 36px + subtitle

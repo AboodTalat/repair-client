@@ -44,11 +44,14 @@ export default function Modal({ open, onClose, title, children, footer, width = 
       <div
         data-state={dataState}
         className="filter-card-desktop relative flex w-full flex-col overflow-hidden rounded-[4px] bg-white shadow-2xl"
-        style={{ maxWidth: width }}
+        // maxHeight via inline style (arbitrary `max-h-[…]` classes get dropped
+        // by the Turbopack scanner — see the Tailwind v4 gotcha in CLAUDE.md).
+        // 2rem = the outer p-4 (1rem top + 1rem bottom); dvh tracks mobile chrome.
+        style={{ maxWidth: width, maxHeight: "calc(100dvh - 2rem)" }}
         role="dialog"
         aria-modal="true"
       >
-        <header className="flex items-center justify-between border-b border-[#e5e7eb] px-5 py-4">
+        <header className="flex shrink-0 items-center justify-between border-b border-[#e5e7eb] px-5 py-4">
           <h2 className="font-display text-[14px] font-bold uppercase tracking-[1.4px] text-[#11191f]">
             {title}
           </h2>
@@ -56,16 +59,20 @@ export default function Modal({ open, onClose, title, children, footer, width = 
             type="button"
             onClick={onClose}
             aria-label="Close"
-            className="grid size-7 place-items-center rounded-[2px] hover:bg-[#f3f4f6]"
+            className="grid size-7 shrink-0 place-items-center rounded-[2px] hover:bg-[#f3f4f6]"
           >
             <span className="grid size-4 place-items-center">
               <IconClose />
             </span>
           </button>
         </header>
-        <div className="px-5 py-4">{children}</div>
+        <div className="drawer-scroll flex-1 overflow-y-auto px-5 py-4">{children}</div>
         {footer ? (
-          <footer className="flex items-center justify-end gap-3 border-t border-[#e5e7eb] bg-[#fafafa] px-5 py-3">
+          // Stacks full-width on mobile (so long button labels never overflow),
+          // back to a right-aligned row at sm+. `sm:flex-wrap` is the desktop
+          // safety net: if two nowrap buttons can't fit the modal width, they
+          // wrap onto stacked right-aligned lines instead of overflowing.
+          <footer className="flex shrink-0 flex-col gap-2 border-t border-[#e5e7eb] bg-[#fafafa] px-5 py-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-end sm:gap-3">
             {footer}
           </footer>
         ) : null}

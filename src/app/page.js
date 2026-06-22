@@ -9,42 +9,13 @@ import BrowseCollection from "@/components/public/homePage/BrowseCollection";
 import Footer from "@/components/public/homePage/Footer";
 import { fetchCategories } from "@/lib/storeNav";
 import { fetchStorefrontContent } from "@/lib/storefrontContent";
+import { COLORWAYS_DEFAULT } from "@/lib/storefrontDefaults";
 
-// Current-design colorway defaults. These mirror the original hardcoded
-// <ColorwaySection> calls EXACTLY, so when the CMS has no `colorways` section
-// (ships empty) the landing renders identically. An admin editing colorways on
-// /r3pr-console/storefront overlays this same shape (the StorefrontManager
-// fields map 1:1 to ColorwaySection's props).
-const DEFAULT_COLORWAYS = [
-  {
-    id: "cw-1",
-    image: "/home/bright-white.png",
-    imageAlt: "Bright White colorway",
-    multiSwatch: true,
-    ctaLabel: "SELECT YOUR COLOR",
-    swatches: [
-      { color: "#11191f", name: "Midnight Black", tagline: "Timeless. Versatile. Essential." },
-      { color: "#ffffff", name: "Bright White", tagline: "Bold. Modern. Dynamic." },
-    ],
-  },
-  {
-    id: "cw-2",
-    image: "/home/deep-blue.png",
-    imageAlt: "Deep Blue colorway",
-    ctaLabel: "ADD TO CART",
-    badge: "UNISEX",
-    reversed: true,
-    swatches: [{ color: "#11233f", name: "Deep Blue", tagline: "Pure. Clean. Confident." }],
-  },
-  {
-    id: "cw-3",
-    image: "/home/fresh-green.png",
-    imageAlt: "Fresh Green colorway",
-    ctaLabel: "ADD TO CART",
-    badge: "UNISEX",
-    swatches: [{ color: "#a8c0b2", name: "Fresh Green", tagline: "Sleek. Sophisticated. Powerful." }],
-  },
-];
+// Single source of the current-design colorway defaults (shared with the admin
+// editor seed). When the CMS has no `colorways` section the landing renders
+// identically; an admin editing colorways on /r3pr-console/storefront overlays
+// this same shape (the StorefrontManager fields map 1:1 to ColorwaySection's props).
+const DEFAULT_COLORWAYS = COLORWAYS_DEFAULT;
 
 export default async function Home() {
   const [categories, content] = await Promise.all([
@@ -65,7 +36,7 @@ export default async function Home() {
       <main className="w-full overflow-x-hidden bg-black text-white">
         <div className="mx-auto w-full">
           <HeroSection hero={content?.hero} />
-        <ColorwaysIntro />
+        <ColorwaysIntro intro={content?.colorways_intro} />
         {colorways.map((cw, i) => (
           <ColorwaySection
             key={cw.id ?? i}
@@ -78,10 +49,10 @@ export default async function Home() {
             reversed={cw.reversed}
           />
         ))}
-        <CraftedToLast />
+        <CraftedToLast content={content?.crafted_to_last} />
         <StatsSection stats={content?.stats} />
-          <BrowseCollection />
-          <Footer categories={categories} />
+          <BrowseCollection tiles={content?.browse_tiles} />
+          <Footer categories={categories} footer={content?.footer} />
         </div>
       </main>
     </>
