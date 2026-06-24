@@ -45,10 +45,11 @@ import {
 //
 // "Confirm & Pay" places the order via myAppCheckout (transactional, decrements
 // stock, clears the cart server-side), persists the result to the store's
-// lastOrder, and routes to /checkout/success. Recoverable failures (out of
-// stock, promo no longer valid, a disabled method) surface inline so the user
-// can fix them — there's no payment processor that can "decline", so we don't
-// route to the /checkout/failed screen.
+// lastOrder, and routes to /checkout/success. An OUT-OF-STOCK failure routes
+// back to /cart?stock=oos (where the offending lines are badged + the Continue
+// CTA is gated) so the user can fix them; other recoverable failures (promo no
+// longer valid, a disabled method) surface inline. There's no payment processor
+// that can "decline", so we don't route to the /checkout/failed screen.
 //
 // The shared chrome (Stepper, PromoCodeSection, trust/payment/support rows,
 // sticky mobile CTA) comes from CartPageClient so the visual language stays
@@ -605,6 +606,7 @@ function PaymentOrderSummaryCard({
   onToggleTerms,
   onPlaceOrder,
   submitting,
+  confirmLabel = "Confirm & Pay",
 }) {
   const { subtotal, discount, shipping, tax, total, itemCount } = totals;
   const taxInclusive = !!totals.taxInclusive;
@@ -671,7 +673,7 @@ function PaymentOrderSummaryCard({
         style={{ backgroundColor: disabled ? "rgba(17,25,31,0.5)" : "#11191f" }}
       >
         <span className="font-display text-[14px] font-bold uppercase leading-6 tracking-[0.8px]">
-          {submitting ? "Processing…" : "Confirm & Pay"}
+          {submitting ? "Processing…" : confirmLabel}
         </span>
       </button>
 
@@ -861,6 +863,12 @@ export default function PaymentPageClient() {
     options[0] ??
     null;
 
+  // Cash on Delivery places the order directly (nothing is charged now), so the
+  // CTA drops the "Pay" wording: "Confirm Order" instead of "Confirm & Pay".
+  const isCodSelected = selectedOption?.kind === "cod";
+  const confirmLabelDesktop = isCodSelected ? "Confirm Order" : "Confirm & Pay";
+  const confirmLabelMobile = isCodSelected ? "CONFIRM ORDER" : "PAY & CONFIRM ORDER";
+
   const [termsAccepted, setTermsAccepted] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState(null);
@@ -920,6 +928,18 @@ export default function PaymentPageClient() {
     } catch (err) {
       const raw = String(err?.message || "");
       const msg = raw.replace(/^repairClientApi \S+:\s*/, "") || "Checkout failed, please try again.";
+      // Stock changed under us between cart and checkout. Rather than only
+      // showing the generic error here, send the user back to the cart, where
+      // the offending lines are highlighted (badged + the Continue CTA gated)
+      // so they can fix them. Keep `submitting` true — we navigate away, and
+      // leaving it true stops the empty-cart gate flashing before the route
+      // change lands. Match a stable substring so a server copy tweak doesn't
+      // silently break the redirect (backend: "One or more items are no longer
+      // in stock", orders.ts).
+      if (/no longer in stock/i.test(msg)) {
+        router.push("/cart?stock=oos");
+        return;
+      }
       setFormError(msg);
       setSubmitting(false);
     }
@@ -1085,7 +1105,7 @@ export default function PaymentPageClient() {
         <StickyCheckoutBar
           total={totals.total}
           onContinue={startPayment}
-          ctaText={submitting ? "Processing…" : "PAY & CONFIRM ORDER"}
+          ctaText={submitting ? "Processing…" : confirmLabelMobile}
         />
       </div>
 
@@ -1130,6 +1150,7 @@ export default function PaymentPageClient() {
               onToggleTerms={() => setTermsAccepted((v) => !v)}
               onPlaceOrder={startPayment}
               submitting={submitting}
+              confirmLabel={confirmLabelDesktop}
             />
             <TrustBadgesRow variant="desktop" />
             <PaymentMethodsRow variant="desktop" />

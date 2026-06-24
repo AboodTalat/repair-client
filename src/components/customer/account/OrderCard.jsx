@@ -29,7 +29,9 @@ function captionFor(order) {
 // forcing both into a single responsive tree.
 
 function MobileOrderCard({ order, onBuyAgain, buyAgainBusy = false }) {
-  const badge = badgeFor(order.status);
+  const badge = badgeFor(order.status, {
+    isPickup: String(order.shippingMethodKey || "").toLowerCase() === "pickup",
+  });
   return (
     <article
       className="flex w-full flex-col gap-4 rounded bg-white p-4"
@@ -139,7 +141,9 @@ function MobileOrderCard({ order, onBuyAgain, buyAgainBusy = false }) {
 }
 
 function DesktopOrderCard({ order, onBuyAgain, buyAgainBusy = false }) {
-  const badge = badgeFor(order.status);
+  const badge = badgeFor(order.status, {
+    isPickup: String(order.shippingMethodKey || "").toLowerCase() === "pickup",
+  });
   return (
     <article
       className="flex w-full flex-col rounded bg-white p-[25px]"

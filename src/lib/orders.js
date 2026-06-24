@@ -32,7 +32,29 @@ const PLACEHOLDER_IMAGE = "/shop/model-1.png";
 // badge. The `default` is a NEUTRAL "Unknown" badge, never "On the way": a
 // silent fall-through to "on the way" is exactly what made every order look
 // in-transit, so an unexpected status now reads as unknown instead.
-export function badgeFor(status) {
+export function badgeFor(status, { isPickup = false } = {}) {
+  // Store-pickup orders have no courier leg: "Prepared" (raw `dispatched`) is the
+  // customer's "Ready for pickup" milestone, and "delivered" reads as "Picked up".
+  if (isPickup) {
+    switch (status) {
+      case "pending":
+      case "processing":
+        return { kind: "processing", label: "Processing" };
+      case "dispatched":
+      case "out_for_delivery": // defensive — pickup orders never reach this raw state
+        return { kind: "dispatched", label: "Ready for pickup" };
+      case "delivered":
+        return { kind: "delivered", label: "Picked up" };
+      case "failed_delivery":
+        return { kind: "failed", label: "Delivery failed" };
+      case "cancelled":
+        return { kind: "cancelled", label: "Cancelled" };
+      case "returned":
+        return { kind: "returned", label: "Returned" };
+      default:
+        return { kind: "unknown", label: "Unknown" };
+    }
+  }
   switch (status) {
     case "pending":
     case "processing":
@@ -77,14 +99,40 @@ export const TRACKING_PIPELINE = [
   { key: "delivered", label: "Delivered", description: "Your order has arrived." },
 ];
 
-// Map a raw `orders.status` onto the 3-step tracker:
-//   pending / processing / dispatched → step 0 (Processing)
-//   out_for_delivery                  → step 1 (Dispatched)
-//   delivered                         → step 2 (Delivered)
+// Store-pickup orders have no courier leg, so the middle step is "Ready for
+// Pickup" (the customer collects in store) instead of "Dispatched".
+export const PICKUP_TRACKING_PIPELINE = [
+  { key: "processing", label: "Processing", description: "We received your order and are preparing it." },
+  { key: "ready_pickup", label: "Ready for Pickup", description: "Your order is prepared — come collect it in store." },
+  { key: "picked_up", label: "Picked Up", description: "You've collected your order. Enjoy!" },
+];
+
+// The 3-step pipeline for an order, by fulfilment type.
+export function trackingPipeline(isPickup = false) {
+  return isPickup ? PICKUP_TRACKING_PIPELINE : TRACKING_PIPELINE;
+}
+
+// Map a raw `orders.status` onto the 3-step tracker. The SAME raw `dispatched`
+// maps to a DIFFERENT step by fulfilment type:
+//   delivery: pending/processing/dispatched → 0 (Processing); out_for_delivery → 1; delivered → 2
+//   pickup:   pending/processing → 0 (Processing); dispatched → 1 (Ready for Pickup); delivered → 2
 // Terminal states return stepIndex -1 + the status key for the callout cards.
-export function trackingProgress(status) {
+export function trackingProgress(status, { isPickup = false } = {}) {
   if (status === "cancelled" || status === "returned" || status === "failed_delivery") {
     return { stepIndex: -1, terminal: status };
+  }
+  if (isPickup) {
+    switch (status) {
+      case "delivered":
+        return { stepIndex: 2, terminal: null };
+      case "dispatched":
+      case "out_for_delivery": // defensive — pickup orders never reach this raw state
+        return { stepIndex: 1, terminal: null };
+      case "pending":
+      case "processing":
+      default:
+        return { stepIndex: 0, terminal: null };
+    }
   }
   switch (status) {
     case "out_for_delivery":
@@ -210,6 +258,7 @@ export function mapServerOrderToCard(o) {
     id: o.id,
     orderNumber: o.order_number,
     status: o.status, // raw enum value
+    shippingMethodKey: o.shipping_method_key ?? null, // "pickup" → pickup-aware badge/tracking
     purchasedAt: createdAt, // ISO — drives the date filter
     purchaseDate: formatOrderDate(createdAt),
     total: Number(o.total) || 0,

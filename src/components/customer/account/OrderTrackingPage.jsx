@@ -4,7 +4,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
-import { TRACKING_PIPELINE, trackingProgress, badgeFor, formatOrderDate, formatJOD } from "@/lib/orders";
+import { trackingPipeline, trackingProgress, badgeFor, formatOrderDate, formatJOD } from "@/lib/orders";
 import { buildAddressLine } from "@/lib/mockCart";
 import OrderStatusBadge from "@/components/customer/account/OrderStatusBadge";
 import ReorderResultDrawer from "@/components/customer/account/ReorderResultDrawer";
@@ -44,8 +44,9 @@ function StepIcon({ status }) {
   );
 }
 
-function Pipeline({ status }) {
-  const { stepIndex, terminal } = trackingProgress(status);
+function Pipeline({ status, isPickup = false }) {
+  const { stepIndex, terminal } = trackingProgress(status, { isPickup });
+  const pipeline = trackingPipeline(isPickup);
 
   if (terminal === "cancelled") {
     return (
@@ -93,7 +94,7 @@ function Pipeline({ status }) {
     <div>
       {/* Desktop: horizontal step line */}
       <ol className="hidden md:flex md:items-start md:justify-between md:gap-2">
-        {TRACKING_PIPELINE.map((step, i) => {
+        {pipeline.map((step, i) => {
           const state = i < stepIndex ? "done" : i === stepIndex ? "current" : "todo";
           return (
             <li key={step.key} className="flex flex-1 flex-col items-center text-center">
@@ -110,7 +111,7 @@ function Pipeline({ status }) {
                 <div
                   className="h-0.5 flex-1"
                   style={{
-                    backgroundColor: i === TRACKING_PIPELINE.length - 1 ? "transparent" : i < stepIndex ? "#11191f" : "#e5e7eb",
+                    backgroundColor: i === pipeline.length - 1 ? "transparent" : i < stepIndex ? "#11191f" : "#e5e7eb",
                   }}
                 />
               </div>
@@ -127,9 +128,9 @@ function Pipeline({ status }) {
 
       {/* Mobile: vertical step list */}
       <ol className="flex flex-col gap-4 md:hidden">
-        {TRACKING_PIPELINE.map((step, i) => {
+        {pipeline.map((step, i) => {
           const state = i < stepIndex ? "done" : i === stepIndex ? "current" : "todo";
-          const isLast = i === TRACKING_PIPELINE.length - 1;
+          const isLast = i === pipeline.length - 1;
           return (
             <li key={step.key} className="flex gap-3">
               <div className="flex flex-col items-center">
@@ -335,6 +336,17 @@ export default function OrderTrackingPage({ orderId }) {
     return rows.find((m) => String(m.key).toLowerCase() === key)?.name || order?.payment_method || "—";
   }, [settings, order]);
 
+  // Store-pickup orders: no courier leg, no shipping ETA. The tracker shows
+  // "Ready for Pickup" + the active pickup location(s) instead of a shipping
+  // address + estimated delivery.
+  const isPickup = String(order?.shipping_method_key ?? "").toLowerCase() === "pickup";
+  const pickupLocations = useMemo(() => {
+    const rows = Array.isArray(settings?.pickupLocations) ? settings.pickupLocations : [];
+    return rows
+      .map((l) => ({ name: l.name, address: l.address, hours: l.hours }))
+      .filter((l) => l.name || l.address);
+  }, [settings]);
+
   if (!hydrated) {
     return <TrackingLoading />;
   }
@@ -348,7 +360,7 @@ export default function OrderTrackingPage({ orderId }) {
     return <TrackingNotFound id={orderId} />;
   }
 
-  const badge = badgeFor(order.status);
+  const badge = badgeFor(order.status, { isPickup });
   const total = Number(order.total) || 0;
 
   return (
@@ -376,14 +388,20 @@ export default function OrderTrackingPage({ orderId }) {
           Track your order
         </h1>
         <p className="font-body text-[13px] text-[#6b7280]">
-          Placed on {formatOrderDate(order.created_at ?? order.createdAt)}. Estimated arrival:{" "}
-          <strong>{estimatedDelivery}</strong>.
+          {isPickup ? (
+            <>Placed on {formatOrderDate(order.created_at ?? order.createdAt)}. We&apos;ll let you know when it&apos;s ready to collect in store.</>
+          ) : (
+            <>
+              Placed on {formatOrderDate(order.created_at ?? order.createdAt)}. Estimated arrival:{" "}
+              <strong>{estimatedDelivery}</strong>.
+            </>
+          )}
         </p>
       </div>
 
       {/* Pipeline */}
       <section className="rounded-[4px] border border-[#e5e7eb] bg-white p-5 md:p-8">
-        <Pipeline status={order.status} />
+        <Pipeline status={order.status} isPickup={isPickup} />
       </section>
 
       {/* Items + shipping/delivery */}
@@ -419,9 +437,34 @@ export default function OrderTrackingPage({ orderId }) {
           </div>
         </div>
 
-        {/* Shipping + delivery details */}
+        {/* Shipping + delivery details — OR pickup location(s) for store pickup */}
         <div className="flex flex-col gap-3 rounded-[4px] border border-[#e5e7eb] bg-white p-4">
-          {shippingAddress ? (
+          {isPickup ? (
+            <div>
+              <p className="font-body text-[10px] font-medium uppercase tracking-[1px] text-[#6b7280]">
+                Store pickup
+              </p>
+              {pickupLocations.length ? (
+                <div className="mt-1 flex flex-col gap-2">
+                  {pickupLocations.map((loc, i) => (
+                    <div key={i}>
+                      <p className="font-body text-[13px] font-medium text-[#11191f]">{loc.name || "Our store"}</p>
+                      {loc.address ? (
+                        <p className="font-body text-[13px] text-[#6b7280]">{loc.address}</p>
+                      ) : null}
+                      {loc.hours ? (
+                        <p className="font-body text-[12px] text-[#6b7280]">Hours: {loc.hours}</p>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="mt-1 font-body text-[13px] text-[#6b7280]">
+                  Collect in store — we&apos;ll be in touch with the location once your order is ready.
+                </p>
+              )}
+            </div>
+          ) : shippingAddress ? (
             <div>
               <p className="font-body text-[10px] font-medium uppercase tracking-[1px] text-[#6b7280]">
                 Shipping address
@@ -435,9 +478,11 @@ export default function OrderTrackingPage({ orderId }) {
           <div className="grid grid-cols-2 gap-2 border-t border-[#f3f4f6] pt-3">
             <div>
               <p className="font-body text-[10px] font-medium uppercase tracking-[1px] text-[#6b7280]">
-                Estimated delivery
+                {isPickup ? "Fulfilment" : "Estimated delivery"}
               </p>
-              <p className="mt-1 font-body text-[13px] text-[#11191f]">{estimatedDelivery}</p>
+              <p className="mt-1 font-body text-[13px] text-[#11191f]">
+                {isPickup ? "Store pickup" : estimatedDelivery}
+              </p>
             </div>
             <div>
               <p className="font-body text-[10px] font-medium uppercase tracking-[1px] text-[#6b7280]">

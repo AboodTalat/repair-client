@@ -16,12 +16,29 @@ import { buildAddressLine } from "@/lib/mockCart";
 // The linear pipeline the admin drives (display keys).
 export const DISPLAY_PIPELINE = ["processing", "prepared", "handed_to_delivery", "delivered"];
 
+// Store-pickup orders are collected in store, so they SKIP the "With Delivery"
+// (handed_to_delivery) courier leg: Processing → Prepared → Picked Up. There's
+// no Thunder/internal handoff for these — the admin marks them picked up directly.
+export const PICKUP_PIPELINE = ["processing", "prepared", "delivered"];
+
+// Pick the pipeline for an order by its shipping method.
+export function pipelineFor(shippingMethodKey) {
+  return String(shippingMethodKey || "").toLowerCase() === "pickup" ? PICKUP_PIPELINE : DISPLAY_PIPELINE;
+}
+
 export const PIPELINE_LABEL = {
   processing: "Processing",
   prepared: "Prepared",
   handed_to_delivery: "With Delivery",
   delivered: "Delivered",
 };
+
+// Step/button label — on a pickup order the final "delivered" step reads as
+// "Picked Up" rather than "Delivered".
+export function pipelineLabel(displayKey, isPickup = false) {
+  if (isPickup && displayKey === "delivered") return "Picked Up";
+  return PIPELINE_LABEL[displayKey] ?? displayKey;
+}
 
 // raw enum value → display key. `pending` collapses into "processing" (the
 // admin pipeline intentionally omits a pending step; new checkouts start at

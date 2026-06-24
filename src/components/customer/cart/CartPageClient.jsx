@@ -460,10 +460,45 @@ function QtyStepper({ qty, onDec, onInc, variant }) {
   );
 }
 
+// Stock state per cart line. `maxQty` is the live `in_stock_quantity` the
+// server returns for logged-in carts; guest lines carry `maxQty: null`
+// (unknown) and are NEVER treated as out of stock. A line is "short" when the
+// variant is fully out of stock (maxQty <= 0) or the chosen qty exceeds what's
+// left (qty > maxQty) — the exact predicate myAppCheckout rejects on, so the
+// cart highlights every line that would fail checkout.
+export function stockShort(item) {
+  return item.maxQty != null && (item.maxQty <= 0 || item.qty > item.maxQty);
+}
+
+function stockLabel(item) {
+  if (item.maxQty == null) return null;
+  if (item.maxQty <= 0) return "Out of stock";
+  if (item.qty > item.maxQty) return `Only ${item.maxQty} left`;
+  return null;
+}
+
+// Small red pill marking an out-of-stock / insufficiently-stocked line.
+function StockBadge({ item }) {
+  const label = stockLabel(item);
+  if (!label) return null;
+  return (
+    <span
+      className="inline-flex w-fit items-center rounded-[3px] px-2 py-0.5 font-display text-[10px] font-bold uppercase leading-4 tracking-[0.4px] text-white"
+      style={{ backgroundColor: "#b91c1c" }}
+    >
+      {label}
+    </span>
+  );
+}
+
 function MobileCartItem({ item, onInc, onDec }) {
+  const short = stockShort(item);
   return (
     <div className="flex w-full items-start gap-3">
-      <div className="relative h-[126px] w-[84px] shrink-0 overflow-hidden bg-[#f3f4f6] shadow-[0_0_10px_0_rgba(0,0,0,0.05)]">
+      <div
+        className="relative h-[126px] w-[84px] shrink-0 overflow-hidden bg-[#f3f4f6] shadow-[0_0_10px_0_rgba(0,0,0,0.05)]"
+        style={short ? { outline: "2px solid #b91c1c", outlineOffset: "-2px" } : undefined}
+      >
         <Image src={item.image} alt={item.name} fill sizes="84px" className="object-cover" />
       </div>
       <div className="flex min-w-0 flex-1 flex-col justify-between self-stretch py-1">
@@ -474,6 +509,7 @@ function MobileCartItem({ item, onInc, onDec }) {
           <p className="font-body text-[12px] leading-4 text-[#6b7280]" style={condensed}>
             {item.variantLabel}
           </p>
+          <StockBadge item={item} />
         </div>
         <div className="flex items-end justify-between">
           <QtyStepper qty={item.qty} onInc={onInc} onDec={onDec} variant="mobile" />
@@ -487,11 +523,15 @@ function MobileCartItem({ item, onInc, onDec }) {
 }
 
 function DesktopCartItem({ item, onInc, onDec, onRemove, isFirst }) {
+  const short = stockShort(item);
   return (
     <div
       className={`flex w-full items-start gap-6 ${isFirst ? "py-4" : "border-t border-[#f3f4f6] pb-4 pt-[17px]"}`}
     >
-      <div className="relative h-36 w-24 shrink-0 overflow-hidden bg-[#f3f4f6] shadow-[0_0_18.523px_0_rgba(0,0,0,0.05)]">
+      <div
+        className="relative h-36 w-24 shrink-0 overflow-hidden bg-[#f3f4f6] shadow-[0_0_18.523px_0_rgba(0,0,0,0.05)]"
+        style={short ? { outline: "2px solid #b91c1c", outlineOffset: "-2px" } : undefined}
+      >
         <Image src={item.image} alt={item.name} fill sizes="96px" className="object-cover" />
       </div>
       <div className="flex min-w-0 flex-1 flex-col justify-between self-stretch">
@@ -503,6 +543,7 @@ function DesktopCartItem({ item, onInc, onDec, onRemove, isFirst }) {
             <p className="font-body text-[14px] leading-5 text-[#6b7280]" style={condensed}>
               {item.variantLabel}
             </p>
+            <StockBadge item={item} />
           </div>
           <span className="shrink-0 font-display text-[18px] font-bold leading-7 text-[#11191f]">
             {formatJOD(item.price * item.qty)}
@@ -786,7 +827,7 @@ function TotalsRow({ label, value, valueAccent, variant }) {
   );
 }
 
-export function OrderTotalsBlock({ totals, appliedPromo, variant, onContinue, isGuest = false }) {
+export function OrderTotalsBlock({ totals, appliedPromo, variant, onContinue, isGuest = false, blocked = false }) {
   const desktop = variant === "desktop";
   const { subtotal, discount, shipping, tax, total, itemCount } = totals;
   // Tax-inclusive display: when the store's prices already include tax, show
@@ -952,16 +993,24 @@ export function OrderTotalsBlock({ totals, appliedPromo, variant, onContinue, is
               </button>
             </>
           ) : (
-            <button
-              type="button"
-              onClick={onContinue}
-              className="mt-2 flex h-14 w-full items-center justify-center rounded-[4px] text-white shadow-[0_10px_15px_-3px_rgba(0,0,0,0.10),0_4px_6px_-4px_rgba(0,0,0,0.10)]"
-              style={{ backgroundColor: "#11191f" }}
-            >
-              <span className="font-display text-[14px] font-bold uppercase leading-6 tracking-[0.8px]">
-                Continue to Next Step
-              </span>
-            </button>
+            <>
+              <button
+                type="button"
+                onClick={onContinue}
+                disabled={blocked}
+                className="mt-2 flex h-14 w-full items-center justify-center rounded-[4px] text-white shadow-[0_10px_15px_-3px_rgba(0,0,0,0.10),0_4px_6px_-4px_rgba(0,0,0,0.10)] disabled:cursor-not-allowed"
+                style={{ backgroundColor: blocked ? "rgba(17,25,31,0.5)" : "#11191f" }}
+              >
+                <span className="font-display text-[14px] font-bold uppercase leading-6 tracking-[0.8px]">
+                  Continue to Next Step
+                </span>
+              </button>
+              {blocked ? (
+                <p className="text-center font-body text-[12px] leading-4 text-[#b91c1c]" style={condensed}>
+                  Update the quantity or remove the unavailable items to continue.
+                </p>
+              ) : null}
+            </>
           )}
           <p className="text-center font-body text-[10px] leading-[15px] text-[#9ca3af]" style={condensed}>
             By proceeding to payment, you agree to our{" "}
@@ -1187,7 +1236,7 @@ export function PoliciesFootnote() {
   );
 }
 
-export function StickyCheckoutBar({ total, onContinue, ctaText = "Continue to Next Step", isGuest = false }) {
+export function StickyCheckoutBar({ total, onContinue, ctaText = "Continue to Next Step", isGuest = false, blocked = false }) {
   return (
     <div
       className="fixed inset-x-0 bottom-0 z-20 border-t border-[#e5e7eb] px-5 pb-4 pt-[17px] shadow-[0_-4px_20px_-2px_rgba(0,0,0,0.1)] md:hidden"
@@ -1225,8 +1274,9 @@ export function StickyCheckoutBar({ total, onContinue, ctaText = "Continue to Ne
           <button
             type="button"
             onClick={onContinue}
-            className="flex h-14 w-full items-center justify-center rounded-[4px] text-white shadow-[0_10px_15px_-3px_rgba(0,0,0,0.10),0_4px_6px_-4px_rgba(0,0,0,0.10)]"
-            style={{ backgroundColor: "#11191f" }}
+            disabled={blocked}
+            className="flex h-14 w-full items-center justify-center rounded-[4px] text-white shadow-[0_10px_15px_-3px_rgba(0,0,0,0.10),0_4px_6px_-4px_rgba(0,0,0,0.10)] disabled:cursor-not-allowed"
+            style={{ backgroundColor: blocked ? "rgba(17,25,31,0.5)" : "#11191f" }}
           >
             <span className="font-display text-[16px] font-semibold leading-6">{ctaText}</span>
           </button>
@@ -1293,6 +1343,41 @@ function CartError({ message, onDismiss }) {
   );
 }
 
+// Banner shown when one or more cart lines are out of stock / short on stock —
+// the same red language as CartError, but with an optional one-click "Remove
+// unavailable items" action so the user can clear the blockers and proceed.
+// `fromCheckout` tailors the lead-in when the user was bounced here from a
+// failed checkout (so the redirect doesn't feel unexplained).
+function OutOfStockBanner({ count, onRemoveUnavailable, fromCheckout }) {
+  const lead = fromCheckout
+    ? "We couldn't complete your order — "
+    : "";
+  const noun = count === 1 ? "item is" : "items are";
+  return (
+    <div
+      role="alert"
+      className="mx-4 mt-4 flex flex-col gap-2 rounded-[4px] border border-[#fecaca] px-4 py-3 md:mx-8"
+      style={{ backgroundColor: "#fef2f2" }}
+    >
+      <span className="font-body text-[13px] leading-5 text-[#b91c1c]" style={condensed}>
+        {lead}
+        {count === 1 ? "one " : `${count} `}
+        {noun} no longer available at the chosen quantity. Update the quantity or remove the
+        highlighted {count === 1 ? "item" : "items"} below to continue.
+      </span>
+      {onRemoveUnavailable ? (
+        <button
+          type="button"
+          onClick={onRemoveUnavailable}
+          className="self-start font-display text-[12px] font-medium uppercase tracking-wide text-[#b91c1c] underline"
+        >
+          Remove unavailable {count === 1 ? "item" : "items"}
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
 export default function CartPageClient() {
   const router = useRouter();
   const {
@@ -1325,8 +1410,31 @@ export default function CartPageClient() {
     };
   }, []);
 
+  // Did we land here from a failed checkout stock-check? Read it from the URL
+  // directly (window, not useSearchParams) to avoid forcing a Suspense boundary
+  // on this page — same pattern as AuthGuard / StoreProvider. A lazy useState
+  // initializer (not an effect) keeps the value stable and dodges the
+  // set-state-in-effect lint; the banner only renders post-fetch on the client
+  // (during SSR/first paint the cart is in its loading state), so there's no
+  // hydration-mismatch concern. Used only to tailor the banner copy — the
+  // marking below is always-on for logged-in carts.
+  const [fromCheckoutStock] = useState(
+    () =>
+      typeof window !== "undefined" &&
+      new URLSearchParams(window.location.search).get("stock") === "oos"
+  );
+
+  // Lines that would fail checkout (out of stock, or qty above what's left).
+  // Guest lines carry maxQty: null and never trip this.
+  const outOfStockItems = items.filter(stockShort);
+  const hasOutOfStock = outOfStockItems.length > 0;
+
   const handleContinue = () => {
+    if (hasOutOfStock) return; // can't proceed while a line would fail checkout
     router.push("/checkout");
+  };
+  const removeUnavailable = () => {
+    outOfStockItems.forEach((it) => removeItem(it));
   };
   const onInc = (it) => updateQty(it, it.qty + 1);
   const onDec = (it) => updateQty(it, Math.max(1, it.qty - 1));
@@ -1354,6 +1462,13 @@ export default function CartPageClient() {
   return (
     <main className="flex flex-1 flex-col bg-white">
       {error ? <CartError message={error} onDismiss={clearError} /> : null}
+      {hasOutOfStock ? (
+        <OutOfStockBanner
+          count={outOfStockItems.length}
+          onRemoveUnavailable={removeUnavailable}
+          fromCheckout={fromCheckoutStock}
+        />
+      ) : null}
 
       {/* ============== MOBILE LAYOUT ============== */}
       <div className="flex flex-col md:hidden">
@@ -1411,7 +1526,12 @@ export default function CartPageClient() {
         {/* Bottom padding so the sticky CTA doesn't cover content */}
         <div className="h-32" />
 
-        <StickyCheckoutBar total={totals.total} onContinue={handleContinue} isGuest={isGuest} />
+        <StickyCheckoutBar
+          total={totals.total}
+          onContinue={handleContinue}
+          isGuest={isGuest}
+          blocked={hasOutOfStock}
+        />
       </div>
 
       {/* ============== DESKTOP LAYOUT ============== */}
@@ -1460,6 +1580,7 @@ export default function CartPageClient() {
               variant="desktop"
               onContinue={handleContinue}
               isGuest={isGuest}
+              blocked={hasOutOfStock}
             />
             <TrustBadgesRow variant="desktop" />
             <PaymentMethodsRow variant="desktop" />

@@ -14,8 +14,8 @@ import { toOptions, formatThunderFee } from "@/lib/thunderDelivery";
 import { useCommerceSettings } from "@/lib/useCommerceSettings";
 import {
   ORDER_FILTER_CHIPS,
-  DISPLAY_PIPELINE,
-  PIPELINE_LABEL,
+  pipelineFor,
+  pipelineLabel,
   chipCount,
   totalOrderCount,
   displayToRawStatus,
@@ -187,6 +187,11 @@ export default function OrderManager() {
         { orderId: Number(selected.id), ...payload },
         { isQuery: false }
       );
+      // Surface the exact create_order request we sent Thunder + their raw
+      // response in the browser console (the backend also pino-logs both). The
+      // request body carries NO auth creds (those are injected server-side).
+      console.log("[Thunder create_order] request →", res?.thunderRequest);
+      console.log("[Thunder create_order] response ←", res?.thunderResponse);
       setSelected((s) =>
         s
           ? {
@@ -195,6 +200,7 @@ export default function OrderManager() {
               rawStatus: "out_for_delivery",
               deliveryChannel: "thunder",
               thunderOrderId: res?.thunderOrderId ?? s.thunderOrderId ?? null,
+              thunderArea: res?.area ?? s.thunderArea ?? null,
               thunderLastError: null,
             }
           : s
@@ -217,7 +223,27 @@ export default function OrderManager() {
     setBusy(true);
     setActionError(null);
     try {
-      await repairCall("myAppAdminSyncThunderOrder", { orderId: Number(selected.id) }, { isQuery: false });
+      const res = await repairCall(
+        "myAppAdminSyncThunderOrder",
+        { orderId: Number(selected.id) },
+        { isQuery: false }
+      );
+      // Merge the freshly-polled Thunder status into the open drawer. fetchOrders
+      // refreshes the LIST rows, but the drawer renders `selected` (the row
+      // captured when it opened), so without this the "Thunder status" field
+      // stays "—" even though the sync succeeded. If Thunder's status also
+      // advanced our order, reflect the new main status too.
+      setSelected((s) =>
+        s
+          ? {
+              ...s,
+              ...(res?.thunderStatus ? { thunderStatus: res.thunderStatus } : {}),
+              ...(res?.applied && res?.newStatus
+                ? { status: rawToDisplayStatus(res.newStatus), rawStatus: res.newStatus }
+                : {}),
+            }
+          : s
+      );
       await loadDetail(selected.id);
       await fetchOrders({ reset: true });
     } catch (err) {
@@ -391,18 +417,22 @@ function OrderDetail({
   const [usersError, setUsersError] = useState(null);
   const [assignSelection, setAssignSelection] = useState(null);
 
-  // Thunder handoff fields.
-  const [thunderAreas, setThunderAreas] = useState([]);
-  const [thunderSubAreas, setThunderSubAreas] = useState([]);
+  // Thunder handoff fields. The delivery area + sub-area are NOT chosen here —
+  // they're auto-derived server-side from the customer's saved shipping address.
   const [thunderOrderTypes, setThunderOrderTypes] = useState([]);
   const [thunderRefLoading, setThunderRefLoading] = useState(false);
+  const [thunderRefLoaded, setThunderRefLoaded] = useState(false);
   const [thunderRefError, setThunderRefError] = useState(null);
-  const [areaId, setAreaId] = useState("");
-  const [subAreaId, setSubAreaId] = useState("");
   const [orderTypeId, setOrderTypeId] = useState("");
   const [codAmount, setCodAmount] = useState("");
+  // A single free-text note sent to Thunder (we no longer split it into a
+  // separate courier note vs. product note).
   const [thunderNote, setThunderNote] = useState("");
-  const [productNote, setProductNote] = useState("");
+
+  // Cash to collect only applies to Cash-on-Delivery orders. A prepaid (online)
+  // order has nothing for Thunder to collect, so the COD field is hidden and the
+  // backend sends cost = 0 / paid = true.
+  const isCod = String(order.paymentMethod || "").toLowerCase() === "cod";
 
   // Load active delivery accounts when the handoff modal opens.
   useEffect(() => {
@@ -423,26 +453,26 @@ function OrderDetail({
     };
   }, [assignOpen]);
 
-  // Load Thunder reference data (areas / sub-areas / order types) — invoked
-  // from the channel selector (not an effect) so the synchronous loading
-  // setState doesn't trip the set-state-in-effect rule. Cached server-side.
+  // Load Thunder order types — invoked from the channel selector (not an effect)
+  // so the synchronous loading setState doesn't trip the set-state-in-effect
+  // rule. Cached server-side. The delivery area/sub-area are NOT loaded here:
+  // they're auto-derived on the backend from the customer's shipping address.
+  //
+  // Order types are OPTIONAL — dispatch defaults to THUNDER_DEFAULT_ORDER_TYPE_ID
+  // server-side. Some Thunder deployments don't expose the order_types endpoint
+  // (it 404s), so a failure here is SWALLOWED: we just don't show the dropdown
+  // and never block the handoff. `thunderRefLoaded` gates re-fetching so a 404
+  // isn't re-requested every time the admin re-opens the Thunder tab.
   async function loadThunderRef() {
     setThunderRefLoading(true);
-    setThunderRefError(null);
     try {
-      const [areas, types, subs] = await Promise.all([
-        repairCall("myAppAdminGetThunderAreas", {}, { isQuery: true }),
-        repairCall("myAppAdminGetThunderOrderTypes", {}, { isQuery: true }).catch(() => null),
-        repairCall("myAppAdminGetThunderSubAreas", {}, { isQuery: true }).catch(() => null),
-      ]);
-      setThunderAreas(toOptions(areas));
+      const types = await repairCall("myAppAdminGetThunderOrderTypes", {}, { isQuery: true });
       setThunderOrderTypes(toOptions(types));
-      setThunderSubAreas(toOptions(subs));
-    } catch (err) {
-      setThunderRefError(
-        err?.message || "Couldn't load Thunder areas. Check the delivery integration is configured."
-      );
+    } catch {
+      // Order types unavailable on this Thunder instance — proceed without them.
+      setThunderOrderTypes([]);
     } finally {
+      setThunderRefLoaded(true);
       setThunderRefLoading(false);
     }
   }
@@ -451,13 +481,12 @@ function OrderDetail({
     setChannel(next);
     setThunderRefError(null);
     if (next === "thunder") {
-      // Cash to collect defaults to the FULL order total (which already
-      // includes the delivery charge + tax) — Thunder collects this from the
-      // customer. The admin can still edit it (e.g. set 0 for a prepaid order).
-      if (codAmount === "") {
+      // For a COD order, prefill cash-to-collect with the FULL order total
+      // (already includes delivery + tax). Prepaid orders collect nothing.
+      if (isCod && codAmount === "") {
         setCodAmount(String(order.total ?? ""));
       }
-      if (!thunderAreas.length && !thunderRefLoading) loadThunderRef();
+      if (!thunderRefLoaded && !thunderRefLoading) loadThunderRef();
     }
   }
 
@@ -468,17 +497,12 @@ function OrderDetail({
   }
 
   async function confirmThunder() {
-    if (!areaId) {
-      setThunderRefError("Please choose a delivery area.");
-      return;
-    }
+    // The delivery area is auto-derived server-side from the customer's saved
+    // shipping address — no area/sub-area is sent from here.
     const ok = await onDispatchThunder({
-      areaId,
-      ...(subAreaId ? { subAreaId } : {}),
       ...(orderTypeId ? { orderTypeId } : {}),
       ...(codAmount !== "" ? { codAmount: Number(codAmount) } : {}),
       ...(thunderNote ? { note: thunderNote } : {}),
-      ...(productNote ? { productNote } : {}),
     });
     if (ok) setAssignOpen(false);
   }
@@ -486,12 +510,15 @@ function OrderDetail({
   const shipping = resolveShippingMethod(settings, order.shippingMethodKey);
   const paymentLabel = resolvePaymentLabel(settings, order.paymentMethod);
 
-  const currentIdx = DISPLAY_PIPELINE.indexOf(order.status);
+  // Pickup orders run a shorter pipeline (no "With Delivery" leg) — see pipelineFor.
+  const isPickup = String(order.shippingMethodKey || "").toLowerCase() === "pickup";
+  const pipeline = pipelineFor(order.shippingMethodKey);
+  const currentIdx = pipeline.indexOf(order.status);
   const isTerminal =
     order.status === "cancelled" || order.status === "returned" || order.status === "failed_delivery";
   const nextDisplay =
-    !isTerminal && currentIdx >= 0 && currentIdx < DISPLAY_PIPELINE.length - 1
-      ? DISPLAY_PIPELINE[currentIdx + 1]
+    !isTerminal && currentIdx >= 0 && currentIdx < pipeline.length - 1
+      ? pipeline[currentIdx + 1]
       : null;
 
   function handleMarkAs(displayNext) {
@@ -516,7 +543,7 @@ function OrderDetail({
       <Modal
         open={!!confirmNext}
         onClose={() => setConfirmNext(null)}
-        title="Confirm delivery"
+        title={isPickup ? "Confirm pickup" : "Confirm delivery"}
         width={420}
         footer={
           <>
@@ -529,16 +556,19 @@ function OrderDetail({
                 setConfirmNext(null);
               }}
             >
-              Yes, mark as delivered
+              {isPickup ? "Yes, mark as picked up" : "Yes, mark as delivered"}
             </Button>
           </>
         }
       >
         <p className="font-body text-[14px] text-[#11191f]">
-          Are you sure you want to mark order <strong>{order.orderNumber}</strong> as delivered?
+          Are you sure you want to mark order <strong>{order.orderNumber}</strong> as{" "}
+          {isPickup ? "picked up" : "delivered"}?
         </p>
         <p className="mt-2 font-body text-[12px] text-[#6b7280]">
-          This confirms the customer has received their order.
+          {isPickup
+            ? "This confirms the customer has collected their order in store."
+            : "This confirms the customer has received their order."}
         </p>
       </Modal>
 
@@ -553,7 +583,7 @@ function OrderDetail({
               Cancel
             </Button>
             {channel === "thunder" ? (
-              <Button onClick={confirmThunder} disabled={busy || thunderRefLoading || !areaId}>
+              <Button onClick={confirmThunder} disabled={busy || thunderRefLoading}>
                 {busy ? "Sending…" : "Create Thunder order"}
               </Button>
             ) : (
@@ -660,7 +690,8 @@ function OrderDetail({
             ) : null}
 
             {/* Address comes from the customer's saved shipping address — the
-                admin never re-types it; only the Thunder area is chosen. */}
+                admin never re-types it, and the Thunder delivery area is
+                auto-detected from it server-side (no manual area picker). */}
             <div className="mt-3 rounded-[3px] border border-[#e5e7eb] bg-white p-3">
               <p className="font-body text-[11px] font-medium uppercase tracking-[1px] text-[#6b7280]">
                 Delivers to (customer&apos;s address)
@@ -670,32 +701,15 @@ function OrderDetail({
               {order.customer?.phone ? (
                 <p className="font-body text-[12px] text-[#6b7280]">{order.customer.phone}</p>
               ) : null}
+              <p className="mt-2 font-body text-[11px] text-[#6b7280]">
+                The Thunder delivery area is detected automatically from this address.
+              </p>
             </div>
 
             {thunderRefLoading ? (
-              <p className="mt-3 font-body text-[12px] text-[#6b7280]">Loading Thunder areas…</p>
+              <p className="mt-3 font-body text-[12px] text-[#6b7280]">Loading delivery options…</p>
             ) : (
               <div className="mt-4 flex flex-col gap-3">
-                <Field label="Delivery area" required>
-                  <Select
-                    options={thunderAreas}
-                    value={areaId}
-                    onChange={(v) => setAreaId(v)}
-                    placeholder="Select an area…"
-                  />
-                </Field>
-
-                {thunderSubAreas.length ? (
-                  <Field label="Sub-area (optional)">
-                    <Select
-                      options={thunderSubAreas}
-                      value={subAreaId}
-                      onChange={(v) => setSubAreaId(v)}
-                      placeholder="None"
-                    />
-                  </Field>
-                ) : null}
-
                 {thunderOrderTypes.length ? (
                   <Field label="Order type">
                     <Select
@@ -707,18 +721,21 @@ function OrderDetail({
                   </Field>
                 ) : null}
 
-                <Field
-                  label="Cash to collect (COD)"
-                  hint="Order total incl. delivery — Thunder collects this from the customer. Set 0 if already paid."
-                >
-                  <NumberInput value={codAmount} min="0" step="0.01" onChange={(e) => setCodAmount(e.target.value)} />
-                </Field>
+                {isCod ? (
+                  <Field
+                    label="Cash to collect (COD)"
+                    hint="Order total incl. delivery — Thunder collects this from the customer."
+                  >
+                    <NumberInput value={codAmount} min="0" step="0.01" onChange={(e) => setCodAmount(e.target.value)} />
+                  </Field>
+                ) : (
+                  <p className="rounded-[3px] border border-[#e5e7eb] bg-[#f0fdf4] p-2 font-body text-[12px] text-[#166534]">
+                    Paid online — no cash to collect.
+                  </p>
+                )}
 
-                <Field label="Note for the courier (optional)">
-                  <TextArea value={thunderNote} rows={2} onChange={(e) => setThunderNote(e.target.value)} />
-                </Field>
-                <Field label="Product note (optional)">
-                  <TextArea value={productNote} rows={2} onChange={(e) => setProductNote(e.target.value)} />
+                <Field label="Note for Thunder (optional)" hint="Sent to Thunder as the order note.">
+                  <TextArea value={thunderNote} rows={3} onChange={(e) => setThunderNote(e.target.value)} />
                 </Field>
               </div>
             )}
@@ -763,7 +780,7 @@ function OrderDetail({
           </div>
         ) : (
           <ol className="flex items-center justify-between gap-2">
-            {DISPLAY_PIPELINE.map((step, i) => {
+            {pipeline.map((step, i) => {
               const done = i <= currentIdx;
               const active = i === currentIdx;
               const tone = STATUS_TONE[step] || STATUS_TONE.processing;
@@ -786,7 +803,7 @@ function OrderDetail({
                         i + 1
                       )}
                     </span>
-                    {i < DISPLAY_PIPELINE.length - 1 ? (
+                    {i < pipeline.length - 1 ? (
                       <span
                         className="ml-1 h-0.5 flex-1 rounded-full"
                         style={{ backgroundColor: i < currentIdx ? tone.dot : "#e5e7eb" }}
@@ -794,7 +811,7 @@ function OrderDetail({
                     ) : null}
                   </div>
                   <span className="font-body text-[10px] font-medium uppercase tracking-[0.8px] text-[#11191f]">
-                    {PIPELINE_LABEL[step]}
+                    {pipelineLabel(step, isPickup)}
                   </span>
                 </li>
               );
@@ -804,7 +821,7 @@ function OrderDetail({
         {nextDisplay ? (
           <div className="mt-4">
             <Button size="sm" onClick={() => handleMarkAs(nextDisplay)} disabled={busy}>
-              Mark as {PIPELINE_LABEL[nextDisplay]}
+              Mark as {pipelineLabel(nextDisplay, isPickup)}
             </Button>
           </div>
         ) : null}
@@ -829,6 +846,12 @@ function OrderDetail({
               <p className="font-body text-[11px] text-[#6b7280]">Thunder status</p>
               <p className="font-body text-[13px] font-medium text-[#11191f]">{order.thunderStatus || "—"}</p>
             </div>
+            {order.thunderArea ? (
+              <div>
+                <p className="font-body text-[11px] text-[#6b7280]">Delivery area (auto)</p>
+                <p className="font-body text-[13px] font-medium text-[#11191f]">{order.thunderArea}</p>
+              </div>
+            ) : null}
             {/* Thunder's delivery fee is set by Thunder and reported back — it's
                 only shown once Thunder provides it (the admin never enters it). */}
             {order.thunderDeliveryFee != null ? (

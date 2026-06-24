@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { BuildingIcon, HomeIcon, LocationIcon } from "./AccountIcons";
+import { JORDAN_CITIES } from "@/lib/jordanCities";
 
 const KIND_OPTIONS = [
   { id: "home", label: "Home", Icon: HomeIcon },
@@ -338,11 +339,11 @@ function AddressForm({
         fontSize={fontSize}
         aria-label="Country"
       />
-      <DrawerInput
+      <DrawerSelect
         value={city}
         onChange={setCity}
         placeholder="City"
-        autoComplete="address-level2"
+        options={JORDAN_CITIES}
         height={inputHeight}
         fontSize={fontSize}
         aria-label="City"
@@ -443,6 +444,39 @@ function DrawerInput({ value, onChange, placeholder, height, fontSize, ...rest }
       }}
       {...rest}
     />
+  );
+}
+
+// City picker — a controlled <select> over the Jordan-cities list. The empty
+// placeholder option keeps the form's `city.trim().length > 0` validity check
+// honest (nothing chosen → invalid). A legacy free-text city on an existing
+// address (not in `options`) is injected as a selected fallback option so
+// edit-mode prefill still shows it until the user re-picks.
+function DrawerSelect({ value, onChange, placeholder, options, height, fontSize, ...rest }) {
+  const hasLegacy = value && !options.includes(value);
+  return (
+    <select
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      className="add-card-input font-display w-full rounded-[2px] border border-[#11191f] bg-white px-3 py-2 text-[#11191f] outline-none focus:ring-1 focus:ring-[#11191f]"
+      style={{
+        height,
+        fontSize,
+        fontWeight: 500,
+        color: value ? "#11191f" : "rgba(17,25,31,0.5)",
+      }}
+      {...rest}
+    >
+      <option value="" disabled>
+        {placeholder}
+      </option>
+      {hasLegacy ? <option value={value}>{value}</option> : null}
+      {options.map((opt) => (
+        <option key={opt} value={opt} style={{ color: "#11191f" }}>
+          {opt}
+        </option>
+      ))}
+    </select>
   );
 }
 
