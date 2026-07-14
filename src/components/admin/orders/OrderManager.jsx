@@ -416,6 +416,9 @@ function OrderDetail({
   const [loadingUsers, setLoadingUsers] = useState(false);
   const [usersError, setUsersError] = useState(null);
   const [assignSelection, setAssignSelection] = useState(null);
+  // Thunder handoff assignment — separate from the internal `assignSelection`.
+  // A Thunder dispatch MUST be routed to a Thunder-connected delivery account.
+  const [thunderAssignSelection, setThunderAssignSelection] = useState(null);
 
   // Thunder handoff fields. The delivery area + sub-area are NOT chosen here —
   // they're auto-derived server-side from the customer's saved shipping address.
@@ -497,9 +500,12 @@ function OrderDetail({
   }
 
   async function confirmThunder() {
+    // A Thunder-connected delivery account is required (the backend enforces it too).
+    if (thunderAssignSelection == null) return;
     // The delivery area is auto-derived server-side from the customer's saved
     // shipping address — no area/sub-area is sent from here.
     const ok = await onDispatchThunder({
+      deliveryUserId: thunderAssignSelection,
       ...(orderTypeId ? { orderTypeId } : {}),
       ...(codAmount !== "" ? { codAmount: Number(codAmount) } : {}),
       ...(thunderNote ? { note: thunderNote } : {}),
@@ -509,6 +515,12 @@ function OrderDetail({
 
   const shipping = resolveShippingMethod(settings, order.shippingMethodKey);
   const paymentLabel = resolvePaymentLabel(settings, order.paymentMethod);
+
+  // Split the fetched delivery accounts by Thunder connection. Thunder-connected
+  // accounts are assignable ONLY through a Thunder dispatch; the internal
+  // hand-over list shows only regular (non-Thunder) delivery accounts.
+  const internalDeliveryUsers = deliveryUsers.filter((u) => !u.thunder_connected);
+  const thunderDeliveryUsers = deliveryUsers.filter((u) => u.thunder_connected);
 
   // Pickup orders run a shorter pipeline (no "With Delivery" leg) — see pipelineFor.
   const isPickup = String(order.shippingMethodKey || "").toLowerCase() === "pickup";
@@ -529,6 +541,7 @@ function OrderDetail({
       // Open the delivery-handoff modal instead of transitioning immediately.
       setChannel("internal");
       setAssignSelection(order.deliveryUserId ?? null);
+      setThunderAssignSelection(null);
       setUsersError(null);
       setThunderRefError(null);
       setLoadingUsers(true);
@@ -583,7 +596,10 @@ function OrderDetail({
               Cancel
             </Button>
             {channel === "thunder" ? (
-              <Button onClick={confirmThunder} disabled={busy || thunderRefLoading}>
+              <Button
+                onClick={confirmThunder}
+                disabled={busy || thunderRefLoading || loadingUsers || thunderAssignSelection == null}
+              >
                 {busy ? "Sending…" : "Create Thunder order"}
               </Button>
             ) : (
@@ -653,10 +669,10 @@ function OrderDetail({
 
               {loadingUsers ? (
                 <p className="font-body text-[12px] text-[#6b7280]">Loading delivery accounts…</p>
-              ) : deliveryUsers.length === 0 ? (
-                <p className="font-body text-[12px] text-[#6b7280]">No active delivery accounts found.</p>
+              ) : internalDeliveryUsers.length === 0 ? (
+                <p className="font-body text-[12px] text-[#6b7280]">No internal delivery accounts found. (Thunder-connected accounts appear under the Thunder courier tab.)</p>
               ) : (
-                deliveryUsers.map((u) => (
+                internalDeliveryUsers.map((u) => (
                   <label
                     key={u.id}
                     className="flex cursor-pointer items-center gap-2 rounded-[2px] border border-[#e5e7eb] p-3"
@@ -682,6 +698,49 @@ function OrderDetail({
               Creates the order in Thunder and moves it to With Delivery. Thunder&apos;s drivers fulfil it and push
               status updates back automatically.
             </p>
+
+            {/* Required: assign to a Thunder-CONNECTED delivery account. Only
+                accounts flagged "Connect to Thunder" on the Users page can take a
+                Thunder handoff (the backend enforces this too). */}
+            <div className="mt-4">
+              <p className="font-body text-[12px] font-semibold text-[#11191f]">Assign to Thunder-connected account</p>
+              <p className="mt-0.5 font-body text-[11px] text-[#6b7280]">
+                Only delivery accounts connected to Thunder can take a Thunder handoff. Toggle &quot;Connect to Thunder&quot; on a
+                delivery account on the Users page.
+              </p>
+
+              {usersError ? (
+                <div className="mt-2 rounded-[4px] border border-[#fecaca] bg-[#fef2f2] p-2 font-body text-[12px] text-[#991b1b]">
+                  {usersError}
+                </div>
+              ) : loadingUsers ? (
+                <p className="mt-2 font-body text-[12px] text-[#6b7280]">Loading accounts…</p>
+              ) : thunderDeliveryUsers.length === 0 ? (
+                <div className="mt-2 rounded-[4px] border border-[#fed7aa] bg-[#fff7ed] p-2 font-body text-[12px] text-[#9a3412]">
+                  No Thunder-connected delivery accounts. Connect one on the Users page before dispatching to Thunder.
+                </div>
+              ) : (
+                <div className="mt-2 flex flex-col gap-2">
+                  {thunderDeliveryUsers.map((u) => (
+                    <label
+                      key={u.id}
+                      className="flex cursor-pointer items-center gap-2 rounded-[2px] border border-[#e5e7eb] p-3"
+                    >
+                      <input
+                        type="radio"
+                        name="thunderAccount"
+                        checked={Number(thunderAssignSelection) === Number(u.id)}
+                        onChange={() => setThunderAssignSelection(u.id)}
+                      />
+                      <span className="flex flex-col">
+                        <span className="font-body text-[13px] text-[#11191f]">{u.email}</span>
+                        {u.phone ? <span className="font-body text-[11px] text-[#6b7280]">{u.phone}</span> : null}
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              )}
+            </div>
 
             {thunderRefError ? (
               <div className="mt-3 rounded-[4px] border border-[#fecaca] bg-[#fef2f2] p-2 font-body text-[12px] text-[#991b1b]">
@@ -734,7 +793,10 @@ function OrderDetail({
                   </p>
                 )}
 
-                <Field label="Note for Thunder (optional)" hint="Sent to Thunder as the order note.">
+                <Field
+                  label="Note for Thunder (optional)"
+                  hint="Sent to Thunder as the order note. Express orders are tagged for the courier automatically."
+                >
                   <TextArea value={thunderNote} rows={3} onChange={(e) => setThunderNote(e.target.value)} />
                 </Field>
               </div>
@@ -876,7 +938,17 @@ function OrderDetail({
           <p className="mb-2 font-body text-[11px] font-medium uppercase tracking-[1px] text-[#6b7280]">
             Customer
           </p>
-          <p className="font-body text-[14px] font-semibold text-[#11191f]">{order.customer.name}</p>
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="font-body text-[14px] font-semibold text-[#11191f]">{order.customer.name}</p>
+            {order.welcomeDiscount > 0 ? (
+              <span
+                className="inline-flex items-center rounded-full px-2 py-0.5 font-body text-[10px] font-semibold uppercase tracking-[0.5px]"
+                style={{ backgroundColor: "#f0fdf4", color: "#166534" }}
+              >
+                New customer · first order
+              </span>
+            ) : null}
+          </div>
           <p className="font-body text-[12px] text-[#6b7280]">{order.customer.email || "—"}</p>
           <p className="font-body text-[12px] text-[#6b7280]">{order.customer.phone || "—"}</p>
         </div>
@@ -937,6 +1009,9 @@ function OrderDetail({
           ) : null}
           {order.promoDiscount > 0 ? (
             <BreakdownRow label="Promo discount" value={`− ${formatCurrency(order.promoDiscount)}`} muted />
+          ) : null}
+          {order.welcomeDiscount > 0 ? (
+            <BreakdownRow label="Welcome discount (10% · first order)" value={`− ${formatCurrency(order.welcomeDiscount)}`} muted />
           ) : null}
           <BreakdownRow
             label={`Shipping${shipping.name && shipping.name !== "—" ? ` (${shipping.name})` : ""}`}

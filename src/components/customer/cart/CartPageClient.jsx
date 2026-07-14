@@ -647,10 +647,47 @@ export function PromoCodeSection({
   externalError = "",
   variant,
   suggestedCodes = SUGGESTED_PROMOS,
+  welcomeActive = false,
 }) {
   const [value, setValue] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const desktopWrap = variant === "desktop";
+
+  // First-order welcome discount can't be combined with a promo code — replace
+  // the input with a clear note instead of letting the user type a code that
+  // would always be rejected (the backend + useCart also block it).
+  if (welcomeActive) {
+    return (
+      <div
+        className={
+          desktopWrap
+            ? "flex w-full flex-col gap-3 rounded-lg border border-[#f3f4f6] bg-[#f9fafb] p-6"
+            : "flex flex-col gap-3 px-4 py-4"
+        }
+      >
+        <h2
+          className={
+            desktopWrap
+              ? "font-display text-[16px] font-bold uppercase leading-6 tracking-[0.4px] text-[#11191f]"
+              : "font-display text-[16px] font-semibold leading-6 text-[#11191f]"
+          }
+        >
+          Promo Code
+        </h2>
+        <div
+          className="flex items-start gap-2 rounded-[6px] p-3 font-body text-[13px] leading-5"
+          style={{ backgroundColor: "#f0fdf4", color: "#15803d" }}
+        >
+          <Icon name="check" className="mt-0.5 h-3 w-2.5 shrink-0" />
+          <span>
+            Your 10% first-order welcome discount is applied automatically. Promo codes can’t be
+            combined with it — you can use one on a future order.
+          </span>
+        </div>
+      </div>
+    );
+  }
 
   const submit = async (codeOverride) => {
     const raw = (codeOverride ?? value).trim().toUpperCase();
@@ -829,7 +866,7 @@ function TotalsRow({ label, value, valueAccent, variant }) {
 
 export function OrderTotalsBlock({ totals, appliedPromo, variant, onContinue, isGuest = false, blocked = false }) {
   const desktop = variant === "desktop";
-  const { subtotal, discount, shipping, tax, total, itemCount } = totals;
+  const { subtotal, discount, welcomeDiscount = 0, shipping, tax, total, itemCount } = totals;
   // Tax-inclusive display: when the store's prices already include tax, show
   // the embedded amount (display-only — not added to `total`) instead of the
   // misleading "Tax (Estimated): JOD 0.00". These fields are absent on the
@@ -928,6 +965,39 @@ export function OrderTotalsBlock({ totals, appliedPromo, variant, onContinue, is
               style={{ color: desktop ? "#16a34a" : "#15803d" }}
             >
               {desktop ? `-${formatJOD(discount)}` : `-JOD${discount.toFixed(2)}`}
+            </span>
+          </div>
+        ) : null}
+        {welcomeDiscount > 0 ? (
+          // First-order welcome discount pill — same green treatment as the
+          // promo discount pill, labelled so the customer sees the 10% applied.
+          <div
+            className={`flex w-full items-center justify-between self-stretch ${
+              desktop ? "rounded-[4px] p-2" : "rounded-[8px] px-2 py-1"
+            }`}
+            style={{ backgroundColor: "#f0fdf4" }}
+          >
+            <span
+              className={`flex items-center font-display font-medium leading-5 ${
+                desktop ? "gap-2" : "gap-1.5"
+              }`}
+              style={{ color: desktop ? "#16a34a" : "#15803d" }}
+            >
+              <Icon
+                name={desktop ? "check-success" : "check"}
+                className={desktop ? "h-3 w-[10.5px]" : "h-3 w-2.5"}
+              />
+              <span className={desktop ? "text-[14px]" : "text-[12px]"}>
+                Welcome discount (10%)
+              </span>
+            </span>
+            <span
+              className={`font-display leading-5 ${
+                desktop ? "text-[14px] font-medium" : "text-[12px] font-bold"
+              }`}
+              style={{ color: desktop ? "#16a34a" : "#15803d" }}
+            >
+              {desktop ? `-${formatJOD(welcomeDiscount)}` : `-JOD${welcomeDiscount.toFixed(2)}`}
             </span>
           </div>
         ) : null}
@@ -1510,6 +1580,7 @@ export default function CartPageClient() {
           externalError={promoError}
           variant="mobile"
           suggestedCodes={promoExamples}
+          welcomeActive={totals.welcomeDiscount > 0}
         />
 
         <OrderTotalsBlock totals={totals} appliedPromo={appliedPromo} variant="mobile" />
@@ -1573,6 +1644,7 @@ export default function CartPageClient() {
               externalError={promoError}
               variant="desktop"
               suggestedCodes={promoExamples}
+              welcomeActive={totals.welcomeDiscount > 0}
             />
             <OrderTotalsBlock
               totals={totals}

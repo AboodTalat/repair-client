@@ -7,7 +7,11 @@ import PasswordInput from "@/components/auth/PasswordInput";
 import PhoneInput from "@/components/auth/PhoneInput";
 import AuthButton from "@/components/auth/AuthButton";
 import { graphqlFetch } from "@/lib/repairClientApi";
-import { useRepairStore } from "@/lib/useRepairStore";
+import {
+  useRepairStore,
+  isWelcomeBannerDismissedOnDevice,
+  markWelcomeBannerDismissedOnDevice,
+} from "@/lib/useRepairStore";
 import { phoneLengthFor } from "@/lib/countryCodes";
 import { postAuthDestination } from "@/lib/authRedirect";
 
@@ -81,11 +85,18 @@ export default function SignUpForm() {
     try {
       // myAppSignUp is the one surviving generic-shaped mutation — it requires
       // tableName: "users" and the server hardcodes role: "customer".
+      // welcomeClaimedOnDevice: if this device already took the first-order
+      // welcome offer (registered/redeemed before), tell the server so it
+      // creates the account WITHOUT the 10% eligibility — a casual re-signup
+      // deterrent. The signal can only DOWNGRADE eligibility server-side.
       const data = await graphqlFetch(
         "myAppSignUp",
-        { email, password, phone },
+        { email, password, phone, welcomeClaimedOnDevice: isWelcomeBannerDismissedOnDevice() },
         { token: null, isQuery: false, tableName: "users" }
       );
+      // This device has now taken the welcome offer — block re-signups from
+      // re-claiming it (also hides the guest "GET 10% OFF" banner).
+      markWelcomeBannerDismissedOnDevice();
       const store = useRepairStore.getState();
       store.setAuthInfo(data);
       // Merge a pre-signup guest cart into the DB, then reconcile the badge.

@@ -3,6 +3,19 @@
 import { useEffect, useState } from "react";
 import { BuildingIcon, HomeIcon, LocationIcon } from "./AccountIcons";
 import { JORDAN_CITIES } from "@/lib/jordanCities";
+import CountryCodePicker from "@/components/customer/contact/CountryCodePicker";
+import { DEFAULT_COUNTRY, parseE164, phoneLengthFor } from "@/lib/countryCodes";
+
+// Strip a leading trunk-0 and any duplicated dial code, returning just the
+// national digits we measure + send. Same contract as SignUpForm /
+// EditProfileDrawer — the wire format is E.164 (`+<dial><national>`), and the
+// backend converts +962 numbers to Thunder's local 10-digit form at dispatch.
+function normalizeNational(localDigits, dial) {
+  let n = String(localDigits || "").replace(/\D/g, "");
+  if (dial && n.startsWith(dial) && n.length > dial.length) n = n.slice(dial.length);
+  n = n.replace(/^0+/, "");
+  return n;
+}
 
 const KIND_OPTIONS = [
   { id: "home", label: "Home", Icon: HomeIcon },
@@ -92,7 +105,14 @@ function DrawerBody({ onClose, onSubmit, dataState, initial }) {
   // address missing full_name/phone). `full_name` accepts the mock `fullName`
   // alias too so an edit pre-fills regardless of which side built the row.
   const [fullName, setFullName] = useState(initial?.full_name ?? initial?.fullName ?? "");
-  const [phone, setPhone] = useState(initial?.phone ?? "");
+  // Phone is stored as one E.164 string ("+962791234567"). Split it back into
+  // { country, local } to prefill the country picker + national field; rebuild
+  // "+<dial><national>" on submit. A legacy plain-digit phone (from the old
+  // free-text input) parses to no country → fall back to Jordan default and let
+  // normalizeNational clean the digits.
+  const parsedPhone = parseE164(initial?.phone || "");
+  const [phoneCountry, setPhoneCountry] = useState(parsedPhone.country || DEFAULT_COUNTRY);
+  const [phoneLocal, setPhoneLocal] = useState(parsedPhone.local || "");
   const [country, setCountry] = useState(initial?.country ?? "");
   const [city, setCity] = useState(initial?.city ?? "");
   const [neighborhood, setNeighborhood] = useState(initial?.neighborhood ?? "");
@@ -100,11 +120,24 @@ function DrawerBody({ onClose, onSubmit, dataState, initial }) {
   const [building, setBuilding] = useState(initial?.building ?? "");
   const [apartment, setApartment] = useState(initial?.apartment ?? "");
 
-  // Apartment is optional — title + every other field must be non-empty.
+  // Per-country phone length (Jordan = 9 subscriber digits, etc.). The number
+  // must clear its country's min/max AFTER stripping the trunk-0 + dup dial.
+  const phoneLen = phoneLengthFor(phoneCountry.iso2);
+  const phoneNational = normalizeNational(phoneLocal, phoneCountry.dial);
+  const phoneValid = phoneNational.length >= phoneLen.min && phoneNational.length <= phoneLen.max;
+
+  function handlePhoneCountryChange(c) {
+    const next = phoneLengthFor(c.iso2);
+    setPhoneLocal((v) => v.replace(/\D/g, "").slice(0, next.max + 1));
+    setPhoneCountry(c);
+  }
+
+  // Apartment is optional — title + every other field must be non-empty, and
+  // the phone must be a valid number for the selected country.
   const valid =
     label.trim().length > 0 &&
     fullName.trim().length > 0 &&
-    phone.trim().length > 0 &&
+    phoneValid &&
     country.trim().length > 0 &&
     city.trim().length > 0 &&
     neighborhood.trim().length > 0 &&
@@ -118,7 +151,8 @@ function DrawerBody({ onClose, onSubmit, dataState, initial }) {
       label: label.trim(),
       kind,
       full_name: fullName.trim(),
-      phone: phone.trim(),
+      // E.164 wire format — `+<dial><national>`.
+      phone: `+${phoneCountry.dial}${phoneNational}`,
       country: country.trim(),
       city: city.trim(),
       neighborhood: neighborhood.trim(),
@@ -156,8 +190,11 @@ function DrawerBody({ onClose, onSubmit, dataState, initial }) {
           setKind={setKind}
           fullName={fullName}
           setFullName={setFullName}
-          phone={phone}
-          setPhone={setPhone}
+          phoneCountry={phoneCountry}
+          onPhoneCountryChange={handlePhoneCountryChange}
+          phoneLocal={phoneLocal}
+          setPhoneLocal={setPhoneLocal}
+          phoneValid={phoneValid}
           country={country}
           setCountry={setCountry}
           city={city}
@@ -199,8 +236,11 @@ function DrawerBody({ onClose, onSubmit, dataState, initial }) {
           setKind={setKind}
           fullName={fullName}
           setFullName={setFullName}
-          phone={phone}
-          setPhone={setPhone}
+          phoneCountry={phoneCountry}
+          onPhoneCountryChange={handlePhoneCountryChange}
+          phoneLocal={phoneLocal}
+          setPhoneLocal={setPhoneLocal}
+          phoneValid={phoneValid}
           country={country}
           setCountry={setCountry}
           city={city}
@@ -282,8 +322,11 @@ function AddressForm({
   setKind,
   fullName,
   setFullName,
-  phone,
-  setPhone,
+  phoneCountry,
+  onPhoneCountryChange,
+  phoneLocal,
+  setPhoneLocal,
+  phoneValid,
   country,
   setCountry,
   city,
@@ -320,15 +363,14 @@ function AddressForm({
         fontSize={fontSize}
         aria-label="Recipient full name"
       />
-      <DrawerInput
-        value={phone}
-        onChange={setPhone}
-        placeholder="Phone Number"
-        autoComplete="tel"
-        inputMode="tel"
+      <PhoneField
+        country={phoneCountry}
+        onCountryChange={onPhoneCountryChange}
+        local={phoneLocal}
+        setLocal={setPhoneLocal}
+        valid={phoneValid}
         height={inputHeight}
         fontSize={fontSize}
-        aria-label="Phone number"
       />
       <DrawerInput
         value={country}
@@ -425,6 +467,51 @@ function KindPicker({ kind, setKind, height, fontSize }) {
           </button>
         );
       })}
+    </div>
+  );
+}
+
+// Recipient phone — country-code picker (default Jordan) + digit-only national
+// number. Any country is allowed at entry; the stored value is E.164 and the
+// backend converts +962 numbers to Thunder's local 10-digit form at dispatch.
+// Matches the surrounding inputs' height / 2px radius / #11191f border, with an
+// inline error once the user has typed something invalid.
+function PhoneField({ country, onCountryChange, local, setLocal, valid, height, fontSize }) {
+  const inputMax = phoneLengthFor(country.iso2).max + 1; // +1 absorbs the trunk-0
+  return (
+    <div className="flex w-full flex-col gap-1">
+      <div
+        className="flex w-full items-center rounded-[2px] border border-[#11191f] bg-white"
+        style={{ height }}
+      >
+        <div className="flex h-full shrink-0 items-center pl-3">
+          <CountryCodePicker value={country} onChange={onCountryChange} />
+          <span aria-hidden className="ml-2 h-3 w-px shrink-0 bg-[#d1d5db]" />
+        </div>
+        <input
+          type="tel"
+          value={local}
+          onChange={(e) => setLocal(e.target.value.replace(/\D/g, "").slice(0, inputMax))}
+          onKeyDown={(e) => {
+            if (e.key.length === 1 && !/\d/.test(e.key) && !e.ctrlKey && !e.metaKey) {
+              e.preventDefault();
+            }
+          }}
+          inputMode="numeric"
+          pattern="[0-9]*"
+          maxLength={inputMax}
+          autoComplete="tel-national"
+          aria-label="Phone number"
+          placeholder="Phone Number"
+          className="add-card-input h-full w-full bg-transparent pl-3 pr-3 font-display font-medium text-[#11191f] outline-none"
+          style={{ fontSize }}
+        />
+      </div>
+      {!valid && local.trim() !== "" ? (
+        <span className="font-body text-[11px] text-[#b91c1c]" style={{ fontStretch: "75%" }}>
+          Enter a valid phone number for the selected country.
+        </span>
+      ) : null}
     </div>
   );
 }

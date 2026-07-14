@@ -5,7 +5,11 @@ import { useRouter } from "next/navigation";
 import PhoneInput from "@/components/auth/PhoneInput";
 import AuthButton from "@/components/auth/AuthButton";
 import { graphqlFetch } from "@/lib/repairClientApi";
-import { useRepairStore } from "@/lib/useRepairStore";
+import {
+  useRepairStore,
+  isWelcomeBannerDismissedOnDevice,
+  markWelcomeBannerDismissedOnDevice,
+} from "@/lib/useRepairStore";
 import { phoneLengthFor } from "@/lib/countryCodes";
 import { homeForRole, isSameOriginPath } from "@/lib/authRedirect";
 
@@ -69,11 +73,20 @@ export default function CompleteProfileForm() {
 
     setSubmitting(true);
     try {
+      // welcomeClaimedOnDevice: a Google signup on a device that already took
+      // the first-order welcome offer is created without the 10% eligibility.
+      // Downgrade-only server-side; a fresh device (flag false) still gets it.
       const data = await graphqlFetch(
         "myAppCompleteGoogleSignUp",
-        { signupToken: pending.signupToken, phone },
+        {
+          signupToken: pending.signupToken,
+          phone,
+          welcomeClaimedOnDevice: isWelcomeBannerDismissedOnDevice(),
+        },
         { token: null, isQuery: false }
       );
+      // This device has now taken the welcome offer.
+      markWelcomeBannerDismissedOnDevice();
       try {
         window.sessionStorage.removeItem(PENDING_GOOGLE_SIGNUP_KEY);
       } catch {

@@ -9,7 +9,7 @@ export default function ReportsPage() {
       <PageHeader
         eyebrow="Insight"
         title="Reports"
-        description="Filter by date range, category, or product. Export any report as PDF or CSV."
+        description="Live data across sales, revenue, promos, inventory, customers, delivery, and returns. Filter by date range and export any report as CSV."
       />
       <ReportsView />
     </>

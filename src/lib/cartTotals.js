@@ -34,6 +34,14 @@
 
 const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 
+// First-order welcome discount rate. MIRRORS the server constant
+// WELCOME_DISCOUNT_PCT in Server/servers/repair/src/graphql/helpers.ts — keep
+// the two in lockstep. This is PREVIEW math only; myAppCheckout recomputes the
+// binding figure on the same post-product-discount subtotal, so the displayed
+// total matches the charge. Eligibility itself is NEVER assumed client-side —
+// it's the server-authoritative `welcome_discount_eligible` from myAppGetCart.
+export const WELCOME_DISCOUNT_PCT = 10;
+
 // Effective shipping cost for a given method key, on a given post-promo
 // subtotal. Mirrors myAppCheckout exactly (Server orders.ts ~445-460) so the
 // cart/checkout preview never disagrees with the final charge:
@@ -81,7 +89,8 @@ export function computeCartTotals(
   settings,
   subtotalOverride,
   promoDiscount = 0,
-  shippingMethodKey = "standard"
+  shippingMethodKey = "standard",
+  welcomeDiscountEligible = false
 ) {
   const ship = settings?.shipping ?? {};
   const tax = settings?.tax ?? {};
@@ -92,10 +101,23 @@ export function computeCartTotals(
       : items.reduce((sum, i) => sum + (Number(i.price) || 0) * (Number(i.qty) || 0), 0)
   );
 
+  // First-order welcome discount and promo codes are MUTUALLY EXCLUSIVE — on a
+  // first order the automatic 10% welcome discount wins and a promo code can't
+  // be combined (the backend ignores any promo while welcome-eligible and
+  // myAppValidatePromoCode rejects applying one). So when eligible we zero the
+  // promo here too, keeping the preview identical to what checkout charges.
+  const welcomeDiscount = welcomeDiscountEligible
+    ? Math.min(round2((subtotal * WELCOME_DISCOUNT_PCT) / 100), subtotal)
+    : 0;
+
   // Promo discount can never exceed the subtotal (the server caps it the same
-  // way — computePromoDiscount in helpers.ts).
-  const discount = Math.min(round2(promoDiscount), subtotal);
-  const afterPromo = round2(Math.max(0, subtotal - discount));
+  // way — computePromoDiscount in helpers.ts). Forced to 0 when the welcome
+  // discount applies (can't stack).
+  const discount = welcomeDiscountEligible ? 0 : Math.min(round2(promoDiscount), subtotal);
+
+  // Base for shipping threshold + tax + total = subtotal minus the applicable
+  // discount (welcome OR promo — never both).
+  const afterPromo = round2(Math.max(0, subtotal - discount - welcomeDiscount));
 
   const freeEnabled = !!ship.free_delivery_enabled;
   const threshold = Number(ship.free_delivery_threshold) || 0;
@@ -121,7 +143,8 @@ export function computeCartTotals(
   return {
     subtotal,
     discount, // server-computed promo discount (0 when none) — shows the pill
-    afterPromo, // subtotal − discount; the base buildDeliveryMethods prices on
+    welcomeDiscount, // first-order 10% welcome discount (0 when not eligible)
+    afterPromo, // subtotal − all discounts; the base buildDeliveryMethods prices on
     shipping,
     tax: taxAmount,
     // Tax-inclusive display fields — consumed only by the tax row renderer.

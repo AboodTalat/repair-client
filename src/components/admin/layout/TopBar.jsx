@@ -1,23 +1,97 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { IconBell, IconSearch, IconChevronDown } from "@/components/admin/shared/Icons";
 import NotificationPanel from "@/components/admin/layout/NotificationPanel";
-import { ORDERS, CONTACT_MESSAGES, STOCK_ALERTS, LOW_STOCK } from "@/lib/mockAdmin";
+import { useRepairStore } from "@/lib/useRepairStore";
+import { repairCall } from "@/lib/repairAuthedApi";
+import { fetchAdminNotifications, markAdminNotificationsRead } from "@/lib/adminNotifications";
+import { useAdminPush } from "@/lib/pwa";
 
-// Slices of mock data that are "actionable" and surface in the panel.
-const processingOrders = ORDERS.filter((o) => o.status === "processing");
-const unreadMessages = CONTACT_MESSAGES.filter((m) => m.status === "unread");
-const pendingAlerts = STOCK_ALERTS.filter((a) => a.status === "pending");
-const totalCount =
-  processingOrders.length + unreadMessages.length + pendingAlerts.length + LOW_STOCK.length;
+// How often the bell polls the backend for new notifications. Kept modest — the
+// real-time channel will be PWA web-push; this interval is just so the badge
+// stays reasonably fresh while an admin sits on a page.
+const NOTIFICATION_POLL_MS = 60000;
+
+// The users model has no display name — derive a friendly identity from the
+// signed-in account's email local-part (same approach as the delivery surface).
+function identityFromUser(user) {
+  const email = user?.email || "";
+  const local = email.split("@")[0] || "admin";
+  const parts = local.split(/[._-]/).filter(Boolean);
+  const initials = (parts.length >= 2 ? parts[0][0] + parts[1][0] : local.slice(0, 2) || "AD").toUpperCase();
+  const name = parts.map((p) => p.charAt(0).toUpperCase() + p.slice(1)).join(" ") || "Admin";
+  const role = (user?.role || "admin").toUpperCase();
+  return { initials, name, role };
+}
 
 export default function TopBar({ onOpenSidebar }) {
+  const router = useRouter();
+  const user = useRepairStore((s) => s.authInfo.user);
+  const { initials, name, role } = identityFromUser(user);
   const [profileOpen, setProfileOpen] = useState(false);
   const [notifOpen, setNotifOpen] = useState(false);
+  const [notifData, setNotifData] = useState({ unreadCount: 0, notifications: [] });
+  const push = useAdminPush();
 
   const notifRef = useRef(null);
   const profileRef = useRef(null);
+
+  // Fetch the notification feed on mount and poll it. Guarded by a `cancelled`
+  // flag ONLY — deliberately NOT paired with a run-once ref, which deadlocks
+  // under React Strict Mode's mount→unmount→remount (documented in the repair
+  // conventions). The double-mount fires two idempotent reads; the first is
+  // ignored, the second resolves normally.
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      try {
+        const d = await fetchAdminNotifications();
+        if (!cancelled) setNotifData(d);
+      } catch {
+        // Poll failures are non-fatal — keep the last good state.
+      }
+    }
+    load();
+    const timer = setInterval(load, NOTIFICATION_POLL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, []);
+
+  // Toggle the bell. Opening it refetches fresh, then marks everything read for
+  // THIS admin (per-admin watermark) so the badge clears — other admins keep
+  // their own unread state.
+  async function toggleNotifications() {
+    const next = !notifOpen;
+    setNotifOpen(next);
+    if (!next) return;
+    try {
+      const d = await fetchAdminNotifications();
+      setNotifData(d);
+      await markAdminNotificationsRead();
+      setNotifData((prev) => ({
+        unreadCount: 0,
+        notifications: prev.notifications.map((n) => ({ ...n, isRead: true })),
+      }));
+    } catch {
+      // best-effort — the badge will reconcile on the next poll
+    }
+  }
+
+  async function handleSignOut() {
+    setProfileOpen(false);
+    const refreshToken = useRepairStore.getState().authInfo.refreshToken;
+    try {
+      if (refreshToken) await repairCall("myAppLogout", { refreshToken });
+    } catch {
+      // Server-side revoke is best-effort; clearAuth always runs.
+    }
+    useRepairStore.getState().clearAuth();
+    router.push("/sign-in");
+  }
 
   // Close notification panel on outside click.
   useEffect(() => {
@@ -75,7 +149,7 @@ export default function TopBar({ onOpenSidebar }) {
           <button
             type="button"
             aria-label="Notifications"
-            onClick={() => setNotifOpen((v) => !v)}
+            onClick={toggleNotifications}
             className={
               "relative grid size-9 place-items-center rounded-[2px] border transition-colors " +
               (notifOpen
@@ -86,7 +160,7 @@ export default function TopBar({ onOpenSidebar }) {
             <span className="grid size-4 place-items-center">
               <IconBell />
             </span>
-            {totalCount > 0 ? (
+            {notifData.unreadCount > 0 ? (
               <span
                 className="absolute right-1 top-1 grid min-w-[14px] place-items-center rounded-full px-0.5 font-body font-bold text-white"
                 style={{
@@ -95,17 +169,15 @@ export default function TopBar({ onOpenSidebar }) {
                   lineHeight: "14px",
                 }}
               >
-                {totalCount > 99 ? "99+" : totalCount}
+                {notifData.unreadCount > 99 ? "99+" : notifData.unreadCount}
               </span>
             ) : null}
           </button>
 
           {notifOpen ? (
             <NotificationPanel
-              orders={processingOrders}
-              messages={unreadMessages}
-              stockAlerts={pendingAlerts}
-              lowStock={LOW_STOCK}
+              notifications={notifData.notifications}
+              push={push}
               onClose={() => setNotifOpen(false)}
             />
           ) : null}
@@ -119,11 +191,11 @@ export default function TopBar({ onOpenSidebar }) {
             className="flex h-9 items-center gap-2 rounded-[2px] border border-[#e5e7eb] pl-1 pr-2 hover:bg-[#f3f4f6]"
           >
             <span className="grid size-7 place-items-center rounded-[2px] bg-[#11191f] font-display text-[12px] font-bold text-white">
-              SA
+              {initials}
             </span>
             <span className="hidden text-left font-body sm:flex sm:flex-col">
-              <span className="text-[12px] font-semibold leading-none text-[#11191f]">Sarah Admin</span>
-              <span className="text-[10px] uppercase tracking-[1px] text-[#6b7280]">Admin</span>
+              <span className="text-[12px] font-semibold leading-none text-[#11191f]">{name}</span>
+              <span className="text-[10px] uppercase tracking-[1px] text-[#6b7280]">{role}</span>
             </span>
             <span className="grid size-4 place-items-center text-[#6b7280]">
               <IconChevronDown />
@@ -131,14 +203,17 @@ export default function TopBar({ onOpenSidebar }) {
           </button>
           {profileOpen ? (
             <div className="absolute right-0 top-11 z-30 w-48 rounded-[2px] border border-[#e5e7eb] bg-white py-1 shadow-lg">
-              <button className="block w-full px-4 py-2 text-left font-body text-[12px] text-[#11191f] hover:bg-[#f3f4f6]">
-                My profile
-              </button>
-              <button className="block w-full px-4 py-2 text-left font-body text-[12px] text-[#11191f] hover:bg-[#f3f4f6]">
-                Settings
-              </button>
-              <hr className="my-1 border-[#e5e7eb]" />
-              <button className="block w-full px-4 py-2 text-left font-body text-[12px] text-[#dc2626] hover:bg-[#fef2f2]">
+              {/* Identity header (name + role) so the menu still identifies who's
+                  signed in now that the My profile / Settings stubs are gone. */}
+              <div className="border-b border-[#e5e7eb] px-4 py-2">
+                <p className="truncate font-body text-[12px] font-semibold text-[#11191f]">{name}</p>
+                <p className="truncate font-body text-[10px] uppercase tracking-[1px] text-[#6b7280]">{role}</p>
+              </div>
+              <button
+                type="button"
+                onClick={handleSignOut}
+                className="block w-full px-4 py-2 text-left font-body text-[12px] text-[#dc2626] hover:bg-[#fef2f2]"
+              >
                 Sign out
               </button>
             </div>

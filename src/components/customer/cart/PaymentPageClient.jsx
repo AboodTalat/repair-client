@@ -923,6 +923,11 @@ export default function PaymentPageClient() {
         total: data?.total,
       });
       store.clearCheckout();
+      // The server consumed any first-order welcome discount on this order, so
+      // drop the locally-cached eligibility flag right away (cosmetic — keeps a
+      // returning user from briefly seeing the 10% line again before the next
+      // token refresh / cart fetch corrects it).
+      store.markWelcomeDiscountUsed();
       store.syncCart();
       router.push("/checkout/success");
     } catch (err) {
@@ -1076,6 +1081,7 @@ export default function PaymentPageClient() {
           externalError={promoError}
           variant="mobile"
           suggestedCodes={promoExamples}
+          welcomeActive={totals.welcomeDiscount > 0}
         />
 
         <div className="mx-4 h-px bg-[#f3f4f6]" />
@@ -1141,6 +1147,7 @@ export default function PaymentPageClient() {
               externalError={promoError}
               variant="desktop"
               suggestedCodes={promoExamples}
+              welcomeActive={totals.welcomeDiscount > 0}
             />
             <PaymentOrderSummaryCard
               items={items}

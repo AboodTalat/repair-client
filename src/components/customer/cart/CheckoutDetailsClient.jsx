@@ -22,6 +22,8 @@ import {
   selectIsLoggedIn,
   selectUser,
   selectCheckoutInfo,
+  isWelcomeBannerDismissedOnDevice,
+  markWelcomeBannerDismissedOnDevice,
 } from "@/lib/useRepairStore";
 import {
   BackStepLink,
@@ -835,11 +837,21 @@ export default function CheckoutDetailsClient() {
 
     setSubmitting(true);
     try {
+      // welcomeClaimedOnDevice: block a fresh guest-checkout signup on a device
+      // that already took the first-order welcome offer (register→redeem is the
+      // main abuse vector). Server can only DOWNGRADE eligibility from this.
       const data = await graphqlFetch(
         "myAppSignUp",
-        { email: email.trim(), password, phone },
+        {
+          email: email.trim(),
+          password,
+          phone,
+          welcomeClaimedOnDevice: isWelcomeBannerDismissedOnDevice(),
+        },
         { token: null, isQuery: false, tableName: "users" }
       );
+      // This device has now taken the welcome offer.
+      markWelcomeBannerDismissedOnDevice();
       const store = useRepairStore.getState();
       store.setAuthInfo(data);
       // Wait for the guest cart to land in the DB before navigating so the
@@ -969,6 +981,7 @@ export default function CheckoutDetailsClient() {
           externalError={promoError}
           variant="mobile"
           suggestedCodes={promoExamples}
+          welcomeActive={totals.welcomeDiscount > 0}
         />
 
         <div className="mx-4 h-px bg-[#f3f4f6]" />
@@ -1028,6 +1041,7 @@ export default function CheckoutDetailsClient() {
               externalError={promoError}
               variant="desktop"
               suggestedCodes={promoExamples}
+              welcomeActive={totals.welcomeDiscount > 0}
             />
             <DesktopOrderSummaryCard
               items={items}

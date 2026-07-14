@@ -1,11 +1,42 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { IconChevronDown } from "@/components/admin/shared/Icons";
+import { useRepairStore } from "@/lib/useRepairStore";
+import { repairCall } from "@/lib/repairAuthedApi";
+
+// The users model has no display name — derive a friendly identity from the
+// signed-in account's email local-part (same approach as the admin/delivery
+// surfaces).
+function identityFromUser(user) {
+  const email = user?.email || "";
+  const local = email.split("@")[0] || "accountant";
+  const parts = local.split(/[._-]/).filter(Boolean);
+  const initials = (parts.length >= 2 ? parts[0][0] + parts[1][0] : local.slice(0, 2) || "AC").toUpperCase();
+  const name = parts.map((p) => p.charAt(0).toUpperCase() + p.slice(1)).join(" ") || "Accountant";
+  const role = (user?.role || "accounting").toUpperCase();
+  return { initials, name, role };
+}
 
 export default function TopBar({ onOpenSidebar }) {
+  const router = useRouter();
+  const user = useRepairStore((s) => s.authInfo.user);
+  const { initials, name, role } = identityFromUser(user);
   const [profileOpen, setProfileOpen] = useState(false);
   const profileRef = useRef(null);
+
+  async function handleSignOut() {
+    setProfileOpen(false);
+    const refreshToken = useRepairStore.getState().authInfo.refreshToken;
+    try {
+      if (refreshToken) await repairCall("myAppLogout", { refreshToken });
+    } catch {
+      // Server-side revoke is best-effort; clearAuth always runs.
+    }
+    useRepairStore.getState().clearAuth();
+    router.push("/sign-in");
+  }
 
   useEffect(() => {
     if (!profileOpen) return;
@@ -68,14 +99,14 @@ export default function TopBar({ onOpenSidebar }) {
             className="flex h-9 items-center gap-2 rounded-[2px] border border-[#e5e7eb] pl-1 pr-2 hover:bg-[#f3f4f6]"
           >
             <span className="grid size-7 place-items-center rounded-[2px] bg-[#11191f] font-display text-[12px] font-bold text-white">
-              KA
+              {initials}
             </span>
             <span className="hidden text-left font-body sm:flex sm:flex-col">
               <span className="text-[12px] font-semibold leading-none text-[#11191f]">
-                Khaled Accountant
+                {name}
               </span>
               <span className="text-[10px] uppercase tracking-[1px] text-[#6b7280]">
-                Accountant
+                {role}
               </span>
             </span>
             <span className="grid size-4 place-items-center text-[#6b7280]">
@@ -84,14 +115,17 @@ export default function TopBar({ onOpenSidebar }) {
           </button>
           {profileOpen ? (
             <div className="absolute right-0 top-11 z-30 w-48 rounded-[2px] border border-[#e5e7eb] bg-white py-1 shadow-lg">
-              <button className="block w-full px-4 py-2 text-left font-body text-[12px] text-[#11191f] hover:bg-[#f3f4f6]">
-                My profile
-              </button>
-              <button className="block w-full px-4 py-2 text-left font-body text-[12px] text-[#11191f] hover:bg-[#f3f4f6]">
-                Settings
-              </button>
-              <hr className="my-1 border-[#e5e7eb]" />
-              <button className="block w-full px-4 py-2 text-left font-body text-[12px] text-[#dc2626] hover:bg-[#fef2f2]">
+              {/* Identity header (name + role) so the menu still identifies who's
+                  signed in now that the My profile / Settings stubs are gone. */}
+              <div className="border-b border-[#e5e7eb] px-4 py-2">
+                <p className="truncate font-body text-[12px] font-semibold text-[#11191f]">{name}</p>
+                <p className="truncate font-body text-[10px] uppercase tracking-[1px] text-[#6b7280]">{role}</p>
+              </div>
+              <button
+                type="button"
+                onClick={handleSignOut}
+                className="block w-full px-4 py-2 text-left font-body text-[12px] text-[#dc2626] hover:bg-[#fef2f2]"
+              >
                 Sign out
               </button>
             </div>

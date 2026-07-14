@@ -74,6 +74,10 @@ export function useCart({ shippingMethodKey = "standard" } = {}) {
   // Logged-in server cart.
   const [serverItems, setServerItems] = useState([]);
   const [serverSubtotal, setServerSubtotal] = useState(null);
+  // First-order welcome discount eligibility — read FRESH from myAppGetCart each
+  // fetch (server-authoritative), never from the persisted store flag, so the
+  // 10%-off preview line can't outlive the discount it represents.
+  const [serverWelcomeEligible, setServerWelcomeEligible] = useState(false);
   const [loaded, setLoaded] = useState(false); // first server fetch resolved
   const [error, setError] = useState(null);
 
@@ -98,6 +102,7 @@ export function useCart({ shippingMethodKey = "standard" } = {}) {
         const lines = Array.isArray(data?.items) ? data.items : [];
         setServerItems(lines.map(toDisplay));
         setServerSubtotal(Number(data?.subtotal) || 0);
+        setServerWelcomeEligible(!!data?.welcome_discount_eligible);
         setError(null);
       } catch (e) {
         if (!silent) setError(cleanMessage(e));
@@ -215,7 +220,10 @@ export function useCart({ shippingMethodKey = "standard" } = {}) {
     settings,
     isLoggedIn ? serverSubtotal : null,
     appliedPromo?.discount_amount ?? 0,
-    shippingMethodKey
+    shippingMethodKey,
+    // Guests can't earn it until they register at checkout, so only honour the
+    // server-provided eligibility for a logged-in cart.
+    isLoggedIn ? serverWelcomeEligible : false
   );
 
   // Plain functions (recreated each render) so they always close over the
@@ -223,6 +231,15 @@ export function useCart({ shippingMethodKey = "standard" } = {}) {
   // by identity, so no useCallback is needed.
   const applyPromo = async (code) => {
     if (!isLoggedIn) return { ok: false, error: "Sign in to apply a promo code." };
+    // Welcome discount and promo codes can't be combined — block early with the
+    // same message the server returns (defence-in-depth; the UI also hides the
+    // promo input while the welcome discount is active).
+    if (serverWelcomeEligible) {
+      return {
+        ok: false,
+        error: "Promo codes can't be combined with your first-order welcome discount.",
+      };
+    }
     const res = await validatePromoCode(code, totals.subtotal);
     if (res.ok) {
       useRepairStore.getState().applyPromoCode(res.promo);
@@ -242,6 +259,13 @@ export function useCart({ shippingMethodKey = "standard" } = {}) {
   const appliedCode = appliedPromo?.code ?? null;
   const promoSubtotal = totals.subtotal;
   useEffect(() => {
+    // No promo re-validation while the welcome discount is active (they can't
+    // be combined; the totals already zero the promo). Also drop any stale
+    // applied promo so it doesn't linger in the store.
+    if (serverWelcomeEligible && isLoggedIn) {
+      if (appliedCode) useRepairStore.getState().clearPromoCode();
+      return undefined;
+    }
     if (!appliedCode || !isLoggedIn) return undefined;
     let active = true;
     const t = setTimeout(async () => {
@@ -259,7 +283,7 @@ export function useCart({ shippingMethodKey = "standard" } = {}) {
       active = false;
       clearTimeout(t);
     };
-  }, [appliedCode, promoSubtotal, isLoggedIn]);
+  }, [appliedCode, promoSubtotal, isLoggedIn, serverWelcomeEligible]);
 
   return {
     items,

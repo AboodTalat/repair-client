@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import Image from "next/image";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import {
   IconDashboard,
   IconBox,
@@ -19,6 +19,8 @@ import {
   IconLogout,
   IconEdit,
 } from "@/components/admin/shared/Icons";
+import { useRepairStore } from "@/lib/useRepairStore";
+import { repairCall } from "@/lib/repairAuthedApi";
 
 const PREFIX = "/r3pr-console";
 
@@ -61,11 +63,28 @@ const SECTIONS = [
 
 export default function SideNav({ onNavigate, counts }) {
   const pathname = usePathname() || "";
+  const router = useRouter();
   // Live counts come from AdminShell (myAppAdminBadgeCounts); default to 0 so
   // the nav still renders if it's ever mounted without the prop.
   const processingCount = counts?.processingOrders ?? 0;
   const unreadCount = counts?.unreadMessages ?? 0;
   const pendingAlertCount = counts?.pendingStockAlerts ?? 0;
+
+  // Real sign-out: best-effort server-side refresh-token revoke, then always
+  // wipe the local auth slice and bounce to /sign-in (same pattern as the
+  // delivery + accountant shells). The old `<Link href="/">` only navigated
+  // home and left the session fully intact.
+  async function handleSignOut() {
+    if (onNavigate) onNavigate();
+    const refreshToken = useRepairStore.getState().authInfo.refreshToken;
+    try {
+      if (refreshToken) await repairCall("myAppLogout", { refreshToken });
+    } catch {
+      // Server-side revoke is best-effort; clearAuth always runs.
+    }
+    useRepairStore.getState().clearAuth();
+    router.push("/sign-in");
+  }
   return (
     <nav className="flex h-full w-[260px] shrink-0 flex-col bg-[#11191f] text-white">
       <div className="flex items-center gap-3 px-6 py-6">
@@ -161,15 +180,16 @@ export default function SideNav({ onNavigate, counts }) {
       </div>
 
       <div className="border-t border-white/10 px-3 py-4">
-        <Link
-          href="/"
-          className="flex h-10 items-center gap-3 rounded-[2px] px-3 font-body text-[13px] text-white/70 hover:bg-white/10 hover:text-white"
+        <button
+          type="button"
+          onClick={handleSignOut}
+          className="flex h-10 w-full items-center gap-3 rounded-[2px] px-3 font-body text-[13px] text-white/70 hover:bg-white/10 hover:text-white"
         >
           <span className="grid size-4 place-items-center">
             <IconLogout />
           </span>
           Sign Out
-        </Link>
+        </button>
       </div>
     </nav>
   );

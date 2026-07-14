@@ -960,6 +960,26 @@ export const useRepairStore = create(
         set({ checkoutInfo: { ...initialCheckoutInfo }, paymentAttempt: null });
       },
 
+      /** Flip the locally-cached first-order welcome-discount flag off after the
+       *  discount is consumed at checkout, so the cart line + landing banner
+       *  update instantly. PURELY COSMETIC — the server already flipped the
+       *  authoritative flag, and the cart self-corrects on its next
+       *  myAppGetCart (which reads it fresh); this just avoids a one-frame flash
+       *  of a now-spent discount. No broadcast (siblings refresh their own user
+       *  object on the next token refresh). */
+      markWelcomeDiscountUsed() {
+        // Remember on this device that the welcome discount has been redeemed,
+        // so the guest "GET 10% OFF ON YOUR FIRST ORDER" banner stays hidden
+        // even after the user logs out (a device-level flag that survives
+        // clearAuth — see markWelcomeBannerDismissedOnDevice).
+        markWelcomeBannerDismissedOnDevice();
+        set((s) => {
+          const user = s.authInfo?.user;
+          if (!user || !user.welcome_discount_eligible) return {};
+          return { authInfo: { ...s.authInfo, user: { ...user, welcome_discount_eligible: false } } };
+        });
+      },
+
       /**
        * Record a DEMO-gateway declined payment so /checkout/failed can show
        * the attempted amount / card last4 / txn id. Transient (not persisted)
@@ -1112,9 +1132,68 @@ export function initRepairStoreListener() {
 //
 //   const isWishlisted = useRepairStore((s) => s.wishlistInfo.productIds.includes(productId));
 
+// Device-level flag (plain, UNencrypted localStorage — deliberately NOT part of
+// the auth slice, so it SURVIVES clearAuth/logout) recording that someone on
+// this device has already TAKEN the first-order welcome offer — set at signup
+// (every signup call site marks it) AND at redemption (markWelcomeDiscountUsed).
+// Two consumers:
+//   1. The landing's guest banner reads it to stop re-promising "GET 10% OFF ON
+//      YOUR FIRST ORDER" to a device whose owner already used the offer.
+//   2. Every signup call site sends its current value to the server as
+//      `welcomeClaimedOnDevice`, and myAppSignUp / myAppCompleteGoogleSignUp
+//      create the account WITHOUT the 10% eligibility when it's set — a casual
+//      "log out, sign up again for another 10%" deterrent. The server only ever
+//      DOWNGRADES eligibility from this signal, never grants it.
+// NOTE: this is a deterrent, not enforcement — incognito / cleared storage / a
+// different browser all reset it. Real per-user enforcement is the server-side
+// users.welcome_discount_eligible flag (consumed once at checkout).
+// Non-sensitive (a single boolean), so it doesn't go through the encrypted
+// store. All access is try/guarded for private-mode / quota / SSR.
+const WELCOME_BANNER_DISMISSED_KEY = "repair_welcome_used_v1";
+const WELCOME_BANNER_EVENT = "repair-welcome-dismissed";
+export function markWelcomeBannerDismissedOnDevice() {
+  try {
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(WELCOME_BANNER_DISMISSED_KEY, "1");
+      // Notify any in-page subscriber (the landing banner) so it hides without
+      // a reload — `storage` only fires in OTHER tabs, so we need our own event
+      // for the current one.
+      window.dispatchEvent(new Event(WELCOME_BANNER_EVENT));
+    }
+  } catch {
+    /* private mode / quota — ignore; the banner just keeps showing */
+  }
+}
+export function isWelcomeBannerDismissedOnDevice() {
+  try {
+    return (
+      typeof window !== "undefined" &&
+      window.localStorage.getItem(WELCOME_BANNER_DISMISSED_KEY) === "1"
+    );
+  } catch {
+    return false;
+  }
+}
+// Subscribe form for useSyncExternalStore — fires on this-tab dismissals (the
+// custom event) and cross-tab ones (the native `storage` event).
+export function subscribeWelcomeBannerDismissed(cb) {
+  if (typeof window === "undefined") return () => {};
+  window.addEventListener(WELCOME_BANNER_EVENT, cb);
+  window.addEventListener("storage", cb);
+  return () => {
+    window.removeEventListener(WELCOME_BANNER_EVENT, cb);
+    window.removeEventListener("storage", cb);
+  };
+}
+
 export const selectIsLoggedIn = (s) => s.authInfo.isLoggedIn;
 export const selectUser = (s) => s.authInfo.user;
 export const selectToken = (s) => s.authInfo.token;
+// First-order welcome-discount eligibility from the cached user object. Used
+// ONLY for the cosmetic landing banner — the cart/checkout totals read the
+// server-authoritative flag from myAppGetCart, never this cached copy.
+export const selectWelcomeDiscountEligible = (s) =>
+  s.authInfo.isLoggedIn && !!s.authInfo.user?.welcome_discount_eligible;
 // Badge count is derived per mode — one source of truth each, so it can't drift
 // on rehydrate: the server-synced itemCount when signed in, the guest-cart sum
 // otherwise. Returns a primitive (referentially stable → no extra re-renders).

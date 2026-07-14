@@ -2,13 +2,15 @@
 
 import Link from "next/link";
 import Image from "next/image";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import {
   IconChart,
   IconCalendar,
   IconDownload,
   IconLogout,
 } from "@/components/admin/shared/Icons";
+import { useRepairStore } from "@/lib/useRepairStore";
+import { repairCall } from "@/lib/repairAuthedApi";
 
 const PREFIX = "/r3pr-ledger";
 
@@ -29,6 +31,22 @@ const SECTIONS = [
 
 export default function SideNav({ onNavigate }) {
   const pathname = usePathname() || "";
+  const router = useRouter();
+
+  // Real sign-out: best-effort server-side refresh-token revoke, then always
+  // wipe the local auth slice and bounce to /sign-in (same pattern as the admin
+  // + delivery shells). The old `<Link href="/">` only navigated home.
+  async function handleSignOut() {
+    if (onNavigate) onNavigate();
+    const refreshToken = useRepairStore.getState().authInfo.refreshToken;
+    try {
+      if (refreshToken) await repairCall("myAppLogout", { refreshToken });
+    } catch {
+      // Server-side revoke is best-effort; clearAuth always runs.
+    }
+    useRepairStore.getState().clearAuth();
+    router.push("/sign-in");
+  }
 
   return (
     <nav className="flex h-full w-[260px] shrink-0 flex-col bg-[#11191f] text-white">
@@ -117,15 +135,16 @@ export default function SideNav({ onNavigate }) {
           </span>
           You can view and export financial data, but cannot modify records.
         </div>
-        <Link
-          href="/"
-          className="flex h-10 items-center gap-3 rounded-[2px] px-3 font-body text-[13px] text-white/70 hover:bg-white/10 hover:text-white"
+        <button
+          type="button"
+          onClick={handleSignOut}
+          className="flex h-10 w-full items-center gap-3 rounded-[2px] px-3 font-body text-[13px] text-white/70 hover:bg-white/10 hover:text-white"
         >
           <span className="grid size-4 place-items-center">
             <IconLogout />
           </span>
           Sign Out
-        </Link>
+        </button>
       </div>
     </nav>
   );

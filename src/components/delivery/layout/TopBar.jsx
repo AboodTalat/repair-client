@@ -1,12 +1,41 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { IconChevronDown } from "@/components/admin/shared/Icons";
-import { DRIVER } from "@/lib/mockDelivery";
+import { useRepairStore } from "@/lib/useRepairStore";
+import { repairCall } from "@/lib/repairAuthedApi";
+
+// The users model has no display name — derive a friendly identity from the
+// signed-in delivery account's email local-part (same approach as the admin
+// surfaces).
+function identityFromUser(user) {
+  const email = user?.email || "";
+  const local = email.split("@")[0] || "driver";
+  const parts = local.split(/[._-]/).filter(Boolean);
+  const initials = (parts.length >= 2 ? parts[0][0] + parts[1][0] : local.slice(0, 2) || "DR").toUpperCase();
+  const name = parts.map((p) => p.charAt(0).toUpperCase() + p.slice(1)).join(" ") || "Driver";
+  return { initials, name, email };
+}
 
 export default function TopBar({ onOpenSidebar }) {
+  const router = useRouter();
+  const user = useRepairStore((s) => s.authInfo.user);
+  const { initials, name } = identityFromUser(user);
   const [profileOpen, setProfileOpen] = useState(false);
   const profileRef = useRef(null);
+
+  async function handleSignOut() {
+    setProfileOpen(false);
+    const refreshToken = useRepairStore.getState().authInfo.refreshToken;
+    try {
+      if (refreshToken) await repairCall("myAppLogout", { refreshToken });
+    } catch {
+      // Server-side revoke is best-effort; clearAuth always runs.
+    }
+    useRepairStore.getState().clearAuth();
+    router.push("/sign-in");
+  }
 
   useEffect(() => {
     if (!profileOpen) return;
@@ -39,7 +68,7 @@ export default function TopBar({ onOpenSidebar }) {
           Dispatch
         </span>
         <span className="font-body text-[10px] uppercase tracking-[1.2px] text-[#6b7280]">
-          Delivery · {DRIVER.zone}
+          Delivery account
         </span>
       </div>
 
@@ -64,11 +93,11 @@ export default function TopBar({ onOpenSidebar }) {
             className="flex h-9 items-center gap-2 rounded-[2px] border border-[#e5e7eb] pl-1 pr-2 hover:bg-[#f3f4f6]"
           >
             <span className="grid size-7 place-items-center rounded-[2px] bg-[#11191f] font-display text-[12px] font-bold text-white">
-              {DRIVER.initials}
+              {initials}
             </span>
             <span className="hidden text-left font-body sm:flex sm:flex-col">
               <span className="text-[12px] font-semibold leading-none text-[#11191f]">
-                {DRIVER.name}
+                {name}
               </span>
               <span className="text-[10px] uppercase tracking-[1px] text-[#6b7280]">
                 Delivery
@@ -80,14 +109,16 @@ export default function TopBar({ onOpenSidebar }) {
           </button>
           {profileOpen ? (
             <div className="absolute right-0 top-11 z-30 w-48 rounded-[2px] border border-[#e5e7eb] bg-white py-1 shadow-lg">
-              <button className="block w-full px-4 py-2 text-left font-body text-[12px] text-[#11191f] hover:bg-[#f3f4f6]">
-                My profile
-              </button>
-              <button className="block w-full px-4 py-2 text-left font-body text-[12px] text-[#11191f] hover:bg-[#f3f4f6]">
-                End shift
-              </button>
-              <hr className="my-1 border-[#e5e7eb]" />
-              <button className="block w-full px-4 py-2 text-left font-body text-[12px] text-[#dc2626] hover:bg-[#fef2f2]">
+              {user?.email ? (
+                <div className="border-b border-[#f3f4f6] px-4 py-2 font-body text-[11px] text-[#6b7280]">
+                  <span className="block truncate text-[#11191f]">{user.email}</span>
+                </div>
+              ) : null}
+              <button
+                type="button"
+                onClick={handleSignOut}
+                className="block w-full px-4 py-2 text-left font-body text-[12px] text-[#dc2626] hover:bg-[#fef2f2]"
+              >
                 Sign out
               </button>
             </div>

@@ -59,6 +59,8 @@ export default function UserManager() {
   const [query, setQuery] = useState("");
   const [editing, setEditing] = useState(null);
   const [confirmDelete, setConfirmDelete] = useState(null);
+  const [resetting, setResetting] = useState(null);
+  const [notice, setNotice] = useState(null);
   const [saving, setSaving] = useState(false);
 
   const me = useRepairStore(selectUser);
@@ -99,12 +101,16 @@ export default function UserManager() {
   async function save(values) {
     setSaving(true);
     try {
+      // The Thunder connection only applies to delivery accounts (the backend
+      // also enforces this); send false for any other role.
+      const thunderConnected = values.role === "delivery" ? !!values.thunder_connected : false;
       if (values.id) {
         await repairCall("myAppAdminUpdateUser", {
           userId: Number(values.id),
           email: values.email,
           phone: values.phone || null,
           role: values.role,
+          thunder_connected: thunderConnected,
         }, { isQuery: false });
       } else {
         const phone = buildPhone(values.phoneLocal, values.phoneDial);
@@ -114,6 +120,7 @@ export default function UserManager() {
           role: values.role,
           password: values.password,
           is_active: values.is_active ?? true,
+          thunder_connected: thunderConnected,
         }, { isQuery: false });
       }
       setEditing(null);
@@ -157,6 +164,20 @@ export default function UserManager() {
       {error && (
         <div className="mb-4 rounded-[4px] border border-[#fecaca] bg-[#fef2f2] px-4 py-3">
           <p className="font-body text-[13px] text-[#dc2626]">{error}</p>
+        </div>
+      )}
+
+      {notice && (
+        <div className="mb-4 flex items-start justify-between gap-3 rounded-[4px] border border-[#bbf7d0] bg-[#f0fdf4] px-4 py-3">
+          <p className="font-body text-[13px] text-[#166534]">{notice}</p>
+          <button
+            type="button"
+            aria-label="Dismiss"
+            onClick={() => setNotice(null)}
+            className="font-body text-[12px] text-[#166534] underline hover:no-underline"
+          >
+            Dismiss
+          </button>
         </div>
       )}
 
@@ -252,6 +273,20 @@ export default function UserManager() {
                   )}
                   <button
                     type="button"
+                    aria-label="Reset password"
+                    title="Reset password"
+                    onClick={() => {
+                      setNotice(null);
+                      setResetting(u);
+                    }}
+                    className="grid size-8 place-items-center rounded-[2px] text-[#11191f] hover:bg-[#f3f4f6]"
+                  >
+                    <span className="grid size-4 place-items-center">
+                      <KeyIcon />
+                    </span>
+                  </button>
+                  <button
+                    type="button"
                     aria-label="Edit"
                     onClick={() => setEditing(u)}
                     className="grid size-8 place-items-center rounded-[2px] text-[#11191f] hover:bg-[#f3f4f6]"
@@ -286,6 +321,15 @@ export default function UserManager() {
         onSave={save}
         saving={saving}
         isSelf={editing && me && Number(editing.id) === Number(me.id)}
+      />
+
+      <ResetPasswordModal
+        user={resetting}
+        onClose={() => setResetting(null)}
+        onDone={(msg) => {
+          setResetting(null);
+          setNotice(msg);
+        }}
       />
 
       <Modal
@@ -324,6 +368,161 @@ function EyeClosed() {
     <svg viewBox="0 0 18 16" fill="none" className="size-4" aria-hidden>
       <path d="M1 1l16 14M9 3.5c4 0 7.5 4.5 7.5 4.5s-.85 1.1-2.2 2.3M6.5 4.5C4.4 5.6 1.5 8 1.5 8s3.5 4.5 7.5 4.5c1 0 1.95-.2 2.8-.55M7.2 6.2A2.3 2.3 0 009 10.5c.55 0 1.05-.2 1.45-.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
     </svg>
+  );
+}
+
+function KeyIcon() {
+  return (
+    <svg viewBox="0 0 18 18" fill="none" className="size-4" aria-hidden>
+      <circle cx="6" cy="6" r="3.3" stroke="currentColor" strokeWidth="1.4" />
+      <path d="M8.3 8.3l6 6M12.3 12.3l1.6-1.6M11 11l1.6-1.6" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+// Admin password-reset dialog. Two modes ("offer both"):
+//   • link → myAppAdminSendPasswordReset (user picks their own password)
+//   • set  → myAppAdminSetUserPassword (admin sets it directly)
+// React-Compiler note: every `user?.x` access is optional-chained and the body
+// is gated `{open && user ? … : null}` because the compiler can pre-evaluate
+// both ternary branches during memoization analysis (see repair/CLAUDE.md).
+function ResetPasswordModal({ user, onClose, onDone }) {
+  const open = !!user;
+  const [mode, setMode] = useState("link");
+  const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [showConfirm, setShowConfirm] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const [fieldErrors, setFieldErrors] = useState({});
+
+  useEffect(() => {
+    if (user) {
+      setMode("link");
+      setPassword("");
+      setConfirmPassword("");
+      setShowPassword(false);
+      setShowConfirm(false);
+      setBusy(false);
+      setError(null);
+      setFieldErrors({});
+    }
+  }, [user]);
+
+  async function submit() {
+    if (!user) return;
+    setError(null);
+
+    if (mode === "set") {
+      const errs = {};
+      if (!password) errs.password = "Password is required.";
+      else if (password.length < 8) errs.password = "Password must be at least 8 characters.";
+      if (!confirmPassword) errs.confirmPassword = "Please confirm the password.";
+      else if (password && confirmPassword !== password) errs.confirmPassword = "Passwords do not match.";
+      setFieldErrors(errs);
+      if (Object.keys(errs).length > 0) return;
+    }
+
+    setBusy(true);
+    try {
+      if (mode === "link") {
+        await repairCall("myAppAdminSendPasswordReset", { userId: Number(user.id) }, { isQuery: false });
+        onDone(`Password reset link sent to ${user.email}.`);
+      } else {
+        await repairCall("myAppAdminSetUserPassword", { userId: Number(user.id), password }, { isQuery: false });
+        onDone(`Password updated for ${user.email}. A notification email was sent — share the new password with them directly.`);
+      }
+    } catch (err) {
+      setError(err?.message || "Something went wrong.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      title="Reset password"
+      footer={
+        <>
+          <Button variant="secondary" onClick={onClose} disabled={busy}>
+            Cancel
+          </Button>
+          <Button onClick={submit} disabled={busy}>
+            {busy ? "Working..." : mode === "link" ? "Send reset link" : "Set password"}
+          </Button>
+        </>
+      }
+    >
+      {open && user ? (
+        <div className="flex flex-col gap-4">
+          <p className="font-body text-[13px] text-[#11191f]">
+            Reset the password for <strong>{user?.email}</strong>.
+          </p>
+
+          {error && (
+            <div className="rounded-[2px] border border-[#fecaca] bg-[#fef2f2] px-3 py-2">
+              <p className="font-body text-[12px] text-[#dc2626]">{error}</p>
+            </div>
+          )}
+
+          <div className="flex flex-wrap gap-2">
+            <Chip active={mode === "link"} onClick={() => setMode("link")}>
+              Email a reset link
+            </Chip>
+            <Chip active={mode === "set"} onClick={() => setMode("set")}>
+              Set a new password
+            </Chip>
+          </div>
+
+          {mode === "link" ? (
+            <div className="rounded-[2px] border border-[#dbeafe] bg-[#eff6ff] p-3">
+              <p className="font-body text-[12px] text-[#1e40af]">
+                We&apos;ll email {user?.email} a single-use link (valid 1 hour) so they can choose their own new password. You never see the password, and their active sessions stay signed in until the reset completes.
+              </p>
+            </div>
+          ) : (
+            <>
+              <Field label="New password" required>
+                <PasswordField
+                  value={password}
+                  onChange={(e) => {
+                    setPassword(e.target.value);
+                    setFieldErrors((x) => ({ ...x, password: undefined }));
+                  }}
+                  visible={showPassword}
+                  onToggle={() => setShowPassword((v) => !v)}
+                />
+                {fieldErrors.password && (
+                  <span className="font-body text-[11px] text-[#dc2626]">{fieldErrors.password}</span>
+                )}
+              </Field>
+              <Field label="Confirm password" required>
+                <PasswordField
+                  value={confirmPassword}
+                  onChange={(e) => {
+                    setConfirmPassword(e.target.value);
+                    setFieldErrors((x) => ({ ...x, confirmPassword: undefined }));
+                  }}
+                  visible={showConfirm}
+                  onToggle={() => setShowConfirm((v) => !v)}
+                />
+                {fieldErrors.confirmPassword && (
+                  <span className="font-body text-[11px] text-[#dc2626]">{fieldErrors.confirmPassword}</span>
+                )}
+              </Field>
+              <div className="rounded-[2px] border border-[#fef3c7] bg-[#fffbeb] p-3">
+                <p className="font-body text-[12px] text-[#92400e]">
+                  The account&apos;s active sessions will be signed out. Share the new password with the user directly — the notification email won&apos;t include it.
+                </p>
+              </div>
+            </>
+          )}
+        </div>
+      ) : null}
+    </Modal>
   );
 }
 
@@ -577,6 +776,19 @@ function UserDrawer({ editing, onClose, onSave, saving, isSelf }) {
               </p>
             </div>
           )}
+
+          {draft.role === "delivery" ? (
+            <Field
+              label="Thunder courier"
+              hint="Mark this delivery account as the external Thunder courier."
+            >
+              <Toggle
+                checked={!!draft.thunder_connected}
+                onChange={(v) => setDraft((d) => ({ ...d, thunder_connected: v }))}
+                label="Connect to Thunder delivery"
+              />
+            </Field>
+          ) : null}
 
           {isNew ? (
             <>

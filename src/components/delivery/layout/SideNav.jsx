@@ -1,13 +1,16 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import Image from "next/image";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import {
   IconCart,
   IconLogout,
 } from "@/components/admin/shared/Icons";
-import { ASSIGNED_ORDERS, deliveryCounts } from "@/lib/mockDelivery";
+import { deliveryCounts, fetchDeliveryOrders } from "@/lib/delivery";
+import { useRepairStore } from "@/lib/useRepairStore";
+import { repairCall } from "@/lib/repairAuthedApi";
 
 const PREFIX = "/r3pr-dispatch";
 
@@ -22,7 +25,36 @@ const SECTIONS = [
 
 export default function SideNav({ onNavigate }) {
   const pathname = usePathname() || "";
-  const counts = deliveryCounts(ASSIGNED_ORDERS);
+  const router = useRouter();
+  const [counts, setCounts] = useState({ active: 0, delivered: 0, failed_delivery: 0 });
+
+  // Live "to deliver" badge. Refetched on navigation so it stays fresh after a
+  // driver marks an order delivered/failed and returns to the dashboard.
+  useEffect(() => {
+    let cancelled = false;
+    fetchDeliveryOrders()
+      .then(({ items }) => {
+        if (!cancelled) setCounts(deliveryCounts(items));
+      })
+      .catch(() => {
+        /* badge is best-effort — never block the nav on a failed count */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [pathname]);
+
+  async function handleSignOut() {
+    if (onNavigate) onNavigate();
+    const refreshToken = useRepairStore.getState().authInfo.refreshToken;
+    try {
+      if (refreshToken) await repairCall("myAppLogout", { refreshToken });
+    } catch {
+      // Server-side revoke is best-effort; clearAuth always runs.
+    }
+    useRepairStore.getState().clearAuth();
+    router.push("/sign-in");
+  }
 
   return (
     <nav className="flex h-full w-[260px] shrink-0 flex-col bg-[#11191f] text-white">
@@ -101,15 +133,16 @@ export default function SideNav({ onNavigate }) {
           </span>
           You can update status on orders assigned to you. You cannot modify catalog or pricing.
         </div>
-        <Link
-          href="/"
-          className="flex h-10 items-center gap-3 rounded-[2px] px-3 font-body text-[13px] text-white/70 hover:bg-white/10 hover:text-white"
+        <button
+          type="button"
+          onClick={handleSignOut}
+          className="flex h-10 w-full items-center gap-3 rounded-[2px] px-3 font-body text-[13px] text-white/70 hover:bg-white/10 hover:text-white"
         >
           <span className="grid size-4 place-items-center">
             <IconLogout />
           </span>
           Sign Out
-        </Link>
+        </button>
       </div>
     </nav>
   );

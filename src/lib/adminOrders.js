@@ -144,6 +144,9 @@ export function mapAdminOrderRow(o) {
     subtotal: Number(o.subtotal) || 0,
     productDiscount: Number(o.product_discount_amount) || 0,
     promoDiscount: Number(o.promo_discount_amount) || 0,
+    // First-order welcome discount (migration 0026). > 0 ⇒ new customer's first
+    // order — drives the "New customer" badge + a money-breakdown line.
+    welcomeDiscount: Number(o.welcome_discount_amount) || 0,
     deliveryUserId: o.delivery_user_id ?? null,
     notes: o.notes ?? null,
     // Thunder (external courier) link — present when the order was dispatched
