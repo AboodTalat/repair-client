@@ -8,9 +8,9 @@
 // here is /checkout (details), reached as the logged-in seeded customer with an
 // item in the cart so it isn't an empty state.
 
-import { test, expect } from "@playwright/test";
+import { test, expect } from "./fixtures";
 import AxeBuilder from "@axe-core/playwright";
-import { login, openFirstProduct, addCurrentProductToCart, visible } from "./helpers";
+import { openFirstProduct, addCurrentProductToCart, visible } from "./helpers";
 
 const SERIOUS = new Set(["critical", "serious"]);
 
@@ -28,7 +28,6 @@ async function scan(page, label) {
   const v = results.violations;
   const bad = v.filter((x) => SERIOUS.has(x.impact));
   // Findings dump — all impacts, for the report.
-  // eslint-disable-next-line no-console
   console.log(
     `\n[a11y] ${label}: ${v.length} violation rule(s) — ` +
       v
@@ -59,17 +58,17 @@ test.describe("accessibility", () => {
   });
 
   test("cart /cart (with item)", async ({ page }) => {
-    await login(page);
-    await openFirstProduct(page);
+    // Signed in via the `setup` project — see e2e/auth.setup.js (myAppLogin is
+    // rate-limited, so tests share one session rather than logging in each).
+    const productName = await openFirstProduct(page);
     await addCurrentProductToCart(page);
     await page.goto("/cart");
-    await expect(visible(page.getByText("Everyday Hoodie"))).toBeVisible({ timeout: 20_000 });
+    await expect(visible(page.getByText(productName))).toBeVisible({ timeout: 20_000 });
     const bad = await scan(page, "/cart");
     expect(bad, JSON.stringify(bad.map((b) => b.id))).toEqual([]);
   });
 
   test("checkout /checkout (details, logged-in)", async ({ page }) => {
-    await login(page);
     await openFirstProduct(page);
     await addCurrentProductToCart(page);
     await page.goto("/cart");

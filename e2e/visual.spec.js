@@ -10,7 +10,7 @@
 // within a seed. Don't re-seed the catalog between creating and comparing
 // baselines — the factory appends random suffixes to category names.
 
-import { test, expect } from "@playwright/test";
+import { test, expect } from "./fixtures";
 
 const VIEWPORTS = [
   { name: "desktop", width: 1280, height: 800 },

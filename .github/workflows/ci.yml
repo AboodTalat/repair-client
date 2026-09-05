@@ -1,0 +1,54 @@
+name: CI
+
+# Storefront CI for repair-client.
+#
+# SCOPE: lint, unit tests and a production build — everything this repo can prove
+# ON ITS OWN. The browser E2E suite is deliberately NOT here: it needs a running
+# backend, which lives in a SEPARATE and PRIVATE repository (Rep_By_Rep_Server).
+# Reaching it from this public repo would mean storing a personal access token
+# here, so the E2E job lives in that repo instead, where checking THIS repo out
+# needs no credentials at all. See Server/.github/workflows/ci.yml.
+#
+# The consequence worth knowing: a storefront change is NOT E2E-tested by this
+# workflow. Until the two repos are merged or a token is added, a PR here that
+# breaks checkout is caught by the backend repo's next run, not by this one.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  storefront:
+    name: lint + unit + build
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      # Vitest, jsdom-backed. vitest.setup.mjs installs a working
+      # localStorage/sessionStorage because Node's own experimental webstorage
+      # global shadows jsdom's and returns undefined — see that file.
+      - name: Unit tests
+        run: npm test
+
+      # A build is a real test here: the App Router fails the build on things the
+      # unit suite cannot see — a server component importing client-only code, a
+      # function prop crossing the server/client boundary, a bad `next/image`
+      # host.
+      - name: Build
+        run: npm run build

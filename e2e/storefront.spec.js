@@ -2,7 +2,7 @@
 // product grid → product detail, all against the seeded test catalog. Asserts
 // real content, not error/empty states.
 
-import { test, expect } from "@playwright/test";
+import { test, expect } from "./fixtures";
 import { visible } from "./helpers";
 
 test.describe("storefront browse", () => {
@@ -31,7 +31,9 @@ test.describe("storefront browse", () => {
     // Product grid renders real seeded products (not the empty / coming-soon state).
     const productLink = visible(page.locator('a[href^="/products/"]'));
     await expect(productLink).toBeVisible({ timeout: 20_000 });
-    await expect(visible(page.getByText("Everyday Hoodie"))).toBeVisible();
+    // Assert the grid HAS products, not which one leads it — that ordering is a
+    // property of the seed, not of the storefront.
+    await expect(page.locator('a[href^="/products/"]')).not.toHaveCount(0);
     await expect(page.getByText(/No products were found/i)).toHaveCount(0);
     await expect(page.getByText(/coming soon/i)).toHaveCount(0);
 
@@ -39,7 +41,7 @@ test.describe("storefront browse", () => {
     await productLink.click();
     await page.waitForURL(/\/products\//);
     // Product name appears on the detail page, and size chips (S/M/L) are present.
-    await expect(visible(page.getByText("Everyday Hoodie"))).toBeVisible();
+    await expect(visible(page.getByRole("heading", { level: 1 }))).toBeVisible();
     await expect(visible(page.getByRole("button", { name: "S", exact: true }))).toBeVisible();
   });
 });
