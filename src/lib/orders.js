@@ -4,14 +4,17 @@
 // IMPORTANT: the backend `orders.status` enum (servers/repair/.../models/orders.ts)
 // still has 8 raw values — pending, processing, dispatched, out_for_delivery,
 // delivered, failed_delivery, cancelled, returned — but the CUSTOMER surface
-// collapses them onto a 3-state happy path: Processing → Dispatched → Delivered.
+// collapses them onto a 3-state happy path: Confirmed → Packed → Delivered.
 // The mapping (used by badgeFor / trackingProgress / ORDER_STATUS_OPTIONS):
-//   pending / processing / dispatched → "Processing"
-//   out_for_delivery                  → "Dispatched"  (admin "With Delivery")
+//   pending / processing / dispatched → "Confirmed"
+//   out_for_delivery                  → "Packed"     (admin "With Delivery")
 //   delivered                         → "Delivered"
-// So the customer only sees "Dispatched" once the admin hands the order to
+// So the customer only sees "Packed" once the admin hands the order to
 // delivery; the admin UI keeps its 4-step Processing → Prepared → With Delivery
 // → Delivered pipeline (src/lib/adminOrders.js) at its own wire boundary.
+// NOTE: the SLUGS ("processing"/"dispatched") + badge `kind`s are internal ids
+// (filter URL state, badge-tone lookup) and stay unchanged — only the
+// customer-facing LABELS were renamed (Processing→Confirmed, Dispatched→Packed).
 // Terminal states (failed_delivery / cancelled / returned) keep their own
 // badge/callout. Every enum value maps with no silent fall-through.
 
@@ -21,11 +24,11 @@ const PLACEHOLDER_IMAGE = "/shop/model-1.png";
 
 // ── Status badge buckets ──────────────────────────────────────────────────
 // The customer-facing tracker has exactly 3 happy-path states —
-// Processing → Dispatched → Delivered — so the badges collapse the 8 raw enum
+// Confirmed → Packed → Delivered — so the badges collapse the 8 raw enum
 // values onto that vocabulary:
-//   • pending / processing / dispatched  → "Processing"  (admin "Prepared" is
+//   • pending / processing / dispatched  → "Confirmed"   (admin "Prepared" is
 //     still internal prep — the customer doesn't see a separate step for it)
-//   • out_for_delivery                   → "Dispatched"  (admin "With Delivery"
+//   • out_for_delivery                   → "Packed"      (admin "With Delivery"
 //     — the order is now on its way with the courier)
 //   • delivered                          → "Delivered"
 // Terminal exceptions (failed_delivery / cancelled / returned) keep their own
@@ -39,7 +42,7 @@ export function badgeFor(status, { isPickup = false } = {}) {
     switch (status) {
       case "pending":
       case "processing":
-        return { kind: "processing", label: "Processing" };
+        return { kind: "processing", label: "Confirmed" };
       case "dispatched":
       case "out_for_delivery": // defensive — pickup orders never reach this raw state
         return { kind: "dispatched", label: "Ready for pickup" };
@@ -59,9 +62,9 @@ export function badgeFor(status, { isPickup = false } = {}) {
     case "pending":
     case "processing":
     case "dispatched":
-      return { kind: "processing", label: "Processing" };
+      return { kind: "processing", label: "Confirmed" };
     case "out_for_delivery":
-      return { kind: "dispatched", label: "Dispatched" };
+      return { kind: "dispatched", label: "Packed" };
     case "delivered":
       return { kind: "delivered", label: "Delivered" };
     case "failed_delivery":
@@ -94,15 +97,15 @@ export function isInFlight(status) {
 // display keys, so progress is resolved by `trackingProgress` (a switch), NOT
 // by matching a raw status against the key.
 export const TRACKING_PIPELINE = [
-  { key: "processing", label: "Processing", description: "We received your order and are preparing it." },
-  { key: "dispatched", label: "Dispatched", description: "Dispatched and handed to our delivery partner." },
+  { key: "processing", label: "Confirmed", description: "We received your order and are preparing it." },
+  { key: "dispatched", label: "Packed", description: "Packed and handed to our delivery partner." },
   { key: "delivered", label: "Delivered", description: "Your order has arrived." },
 ];
 
 // Store-pickup orders have no courier leg, so the middle step is "Ready for
 // Pickup" (the customer collects in store) instead of "Dispatched".
 export const PICKUP_TRACKING_PIPELINE = [
-  { key: "processing", label: "Processing", description: "We received your order and are preparing it." },
+  { key: "processing", label: "Confirmed", description: "We received your order and are preparing it." },
   { key: "ready_pickup", label: "Ready for Pickup", description: "Your order is prepared — come collect it in store." },
   { key: "picked_up", label: "Picked Up", description: "You've collected your order. Enjoy!" },
 ];
@@ -154,10 +157,10 @@ export function trackingProgress(status, { isPickup = false } = {}) {
 export const ORDER_STATUS_OPTIONS = [
   {
     slug: "processing",
-    label: "Processing",
+    label: "Confirmed",
     rawStatuses: ["pending", "processing", "dispatched"],
   },
-  { slug: "dispatched", label: "Dispatched", rawStatuses: ["out_for_delivery"] },
+  { slug: "dispatched", label: "Packed", rawStatuses: ["out_for_delivery"] },
   { slug: "delivered", label: "Delivered", rawStatuses: ["delivered"] },
   { slug: "failed", label: "Delivery failed", rawStatuses: ["failed_delivery"] },
   { slug: "cancelled", label: "Cancelled", rawStatuses: ["cancelled"] },

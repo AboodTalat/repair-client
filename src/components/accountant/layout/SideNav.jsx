@@ -53,7 +53,7 @@ export default function SideNav({ onNavigate }) {
       <div className="flex items-center gap-3 px-6 py-6">
         <div className="grid size-9 place-items-center rounded-[2px] bg-white">
           <Image
-            src="/home/logo-re.png"
+            src="/home/logo-re-v2.png"
             alt="Repair"
             width={20}
             height={20}

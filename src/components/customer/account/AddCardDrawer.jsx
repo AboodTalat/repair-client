@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import useDelayedUnmount from "@/lib/useDelayedUnmount";
 
 // ADD NEW CARD drawer — Figma mobile 79:3149.
 //
@@ -22,28 +23,6 @@ import { useEffect, useState } from "react";
 // of the shop drawers (387px wide, 32px margins, radius:8).
 
 const EXIT_MS = 320;
-
-function useDelayedUnmount(open, exitMs) {
-  const [render, setRender] = useState(open);
-  const [closing, setClosing] = useState(false);
-
-  useEffect(() => {
-    if (open) {
-      setRender(true);
-      setClosing(false);
-      return undefined;
-    }
-    if (!render) return undefined;
-    setClosing(true);
-    const t = setTimeout(() => {
-      setRender(false);
-      setClosing(false);
-    }, exitMs);
-    return () => clearTimeout(t);
-  }, [open, render, exitMs]);
-
-  return { render, dataState: closing ? "closing" : "open" };
-}
 
 export default function AddCardDrawer({ open, onClose, onSubmit }) {
   const { render, dataState } = useDelayedUnmount(open, EXIT_MS);

@@ -21,9 +21,23 @@ import { repairCall } from "@/lib/repairAuthedApi";
 // open/click metrics — the system has no open/click tracking, so showing them
 // would be fabricated.
 
-// Per-send recipient cap on the server. Surfaced so the admin knows a large
-// audience is queued in slices, never silently truncated.
-const SEND_CAP = 500;
+// MIRRORS `BROADCAST_CAP` in resolvers/admin.ts — keep the two in lockstep.
+//
+// This sat at 500 after the server was raised to 5000, and the drift was not
+// cosmetic: it drives the confirm button's label. For a 1,200-person audience
+// the admin clicked a button reading "Confirm — send to 500" and the server
+// queued all 1,200. A button that understates the size of an irreversible mass
+// email is the worst place for a stale constant to live.
+const SEND_CAP = 5000;
+
+// Input bounds, mirroring SUBJECT_MAX / BODY_MAX / PREHEADER_MAX in
+// resolvers/admin.ts. Unlike the storefront forms, this composer surfaces the
+// resolver's real message through `cleanErr`, so the server is doing the
+// enforcing — these exist so the admin sees the limit while writing rather than
+// after pressing Send on a long message.
+const SUBJECT_MAX = 200;
+const BODY_MAX = 20000;
+const PREHEADER_MAX = 200;
 
 const AUDIENCE_LABELS = {
   customers: "All customers",
@@ -221,9 +235,11 @@ export default function BroadcastComposer() {
 
       const queued = Number(res?.queued) || 0;
       const size = Number(res?.audience_size) || queued;
+      // Quote the SERVER's numbers, never the local constant — the response is
+      // authoritative and cannot drift from what was actually queued.
       setToast(
         res?.truncated
-          ? `Queued ${formatNumber(queued)} of ${formatNumber(size)} recipients (the cap is ${formatNumber(SEND_CAP)} per send). Send again to reach the rest.`
+          ? `Queued ${formatNumber(queued)} of ${formatNumber(size)} recipients. Send again to reach the remaining ${formatNumber(Math.max(size - queued, 0))}.`
           : `Broadcast queued to ${formatNumber(queued)} recipient${queued === 1 ? "" : "s"}.`
       );
       setConfirm(false);
@@ -327,25 +343,39 @@ export default function BroadcastComposer() {
                   </div>
                 </div>
               )}
-              <Field label="Subject line" required hint="Keep it under 60 characters for best deliverability.">
+              <Field
+                label="Subject line"
+                required
+                hint={`Keep it under 60 characters for best deliverability. ${subject.length}/${SUBJECT_MAX}`}
+              >
                 <TextInput
                   value={subject}
                   onChange={(e) => setSubject(e.target.value)}
+                  maxLength={SUBJECT_MAX}
                   placeholder="Summer 25% Off — Today Only"
                 />
               </Field>
-              <Field label="Preheader" hint="Inbox preview text. Shown next to the subject in most clients.">
+              <Field
+                label="Preheader"
+                hint={`Inbox preview text. Shown next to the subject in most clients. ${preheader.length}/${PREHEADER_MAX}`}
+              >
                 <TextInput
                   value={preheader}
                   onChange={(e) => setPreheader(e.target.value)}
+                  maxLength={PREHEADER_MAX}
                   placeholder="Just a few hours left to grab the warm-weather drop."
                 />
               </Field>
-              <Field label="Message" required hint="Plain text — line breaks are preserved in the email.">
+              <Field
+                label="Message"
+                required
+                hint={`Plain text — line breaks are preserved in the email. ${formatNumber(body.length)}/${formatNumber(BODY_MAX)}`}
+              >
                 <TextArea
                   rows={10}
                   value={body}
                   onChange={(e) => setBody(e.target.value)}
+                  maxLength={BODY_MAX}
                   placeholder={`Hi there,\n\nWrite something here.\n\n— The Repair team`}
                 />
               </Field>

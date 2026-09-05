@@ -31,7 +31,7 @@ export default function ResetPasswordPage() {
             </Link>
             <Link href="/" aria-label="Repair home" className="pointer-events-auto block">
               <Image
-                src="/auth/blackLogo.png"
+                src="/auth/blackLogo-v2.png"
                 alt="Repair"
                 width={32}
                 height={23}

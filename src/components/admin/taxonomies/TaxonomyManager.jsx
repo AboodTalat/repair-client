@@ -6,6 +6,29 @@ import Button, { IconButton } from "@/components/admin/shared/Button";
 import { TextInput } from "@/components/admin/shared/Form";
 import { IconPlus, IconEdit, IconTrash, IconCheck, IconClose } from "@/components/admin/shared/Icons";
 import { repairCall } from "@/lib/repairAuthedApi";
+import { revalidateStorefrontProducts } from "@/lib/productActions";
+
+// Materials are a storefront filter-drawer facet (`myAppListMaterials` is part
+// of the cached `fetchShopFacets()` bundle), so an add / rename / delete here
+// has to bust the storefront cache — otherwise the drawer keeps showing the old
+// material list for the rest of the ISR window no matter how often the shopper
+// refreshes. Best-effort; never blocks or surfaces an error to the admin.
+// Same helper the admin Products page uses.
+function bustStorefrontFacets() {
+  Promise.resolve(revalidateStorefrontProducts()).catch(() => {});
+}
+
+// repairCall throws with a message shaped like "repairClientApi <op>: <server
+// message>". Strip the prefix so the admin sees the server's human-readable
+// reason. Mirrors cleanErr() in CategoryManager.jsx / ProductManager.jsx.
+function cleanErr(e, fallback) {
+  const m = (e?.message || "").replace(/^repairClientApi \S+:\s*/, "");
+  return m || fallback;
+}
+
+// Mirrors TAXONOMY_NAME_MAX in the backend taxonomies.ts (and the
+// materials.name VARCHAR(100) column).
+const MATERIAL_NAME_MAX = 100;
 
 function MaterialsList() {
   const [items, setItems] = useState([]);
@@ -14,33 +37,65 @@ function MaterialsList() {
   const [editingId, setEditingId] = useState(null);
   const [editingValue, setEditingValue] = useState("");
   const [error, setError] = useState("");
+  // A material still attached to a product cannot be deleted (the FK would
+  // CASCADE and silently untag every one of them). The server enforces it; this
+  // holds the pending target so the modal can refuse before the round-trip.
+  const [confirmDelete, setConfirmDelete] = useState(null);
+  const [deleting, setDeleting] = useState(false);
+  // `?.` deliberately — the React Compiler can evaluate this while the state is
+  // still null (see the ternary note in repair/CLAUDE.md).
+  const blockedByUsage = (confirmDelete?.productCount ?? 0) > 0;
 
   const fetchMaterials = useCallback(async () => {
     try {
-      const data = await repairCall("myAppListMaterials", {}, { isQuery: true });
-      setItems((data.items || []).map((m) => ({ id: Number(m.id), name: m.name })));
+      // includeUsage is admin-gated server-side and drives the "used by N
+      // products" line in the delete confirmation. Public callers (the /shop
+      // filter drawer) don't pass it and don't pay for the count.
+      const data = await repairCall("myAppListMaterials", { includeUsage: true }, { isQuery: true });
+      setItems(
+        (data.items || []).map((m) => ({
+          id: Number(m.id),
+          name: m.name,
+          productCount: Number(m.product_count) || 0,
+        }))
+      );
     } catch (err) {
-      setError(err?.message || "Failed to load materials");
+      setError(cleanErr(err, "Failed to load materials"));
     } finally {
       setLoading(false);
     }
   }, []);
 
+  // Inlined as an async IIFE rather than calling fetchMaterials() directly:
+  // the lint rule traces setState calls through a named function reference and
+  // flags them as synchronous-in-effect. Matches the SubCategoryTypesPanel
+  // effect below, which lints clean for the same reason. Deliberately NO
+  // run-once ref guard — pairing one with a `cancelled` flag deadlocks under
+  // Strict Mode (see the convention note in repair/CLAUDE.md).
   useEffect(() => {
-    fetchMaterials();
+    (async () => {
+      await fetchMaterials();
+    })();
   }, [fetchMaterials]);
 
   async function add() {
     const name = adding.trim();
     if (!name) { setError("Enter a name."); return; }
+    // Mirrors the server rule: a comma would be split by the storefront's CSV
+    // filter parser, so the material could never be selected on /shop.
+    if (name.includes(",")) {
+      setError("A material name can't contain a comma — the storefront filter uses commas to separate values.");
+      return;
+    }
     setError("");
     try {
       await repairCall("myAppAdminCreateMaterial", { name, sort_order: items.length }, { isQuery: false });
       setAdding("");
+      bustStorefrontFacets();
       await fetchMaterials();
     } catch (err) {
-      const msg = err?.message || "";
-      setError(msg.toLowerCase().includes("already exists") ? "This material already exists." : msg || "Failed to add material.");
+      const msg = cleanErr(err, "Failed to add material.");
+      setError(msg.toLowerCase().includes("already exists") ? "This material already exists." : msg);
     }
   }
 
@@ -53,15 +108,20 @@ function MaterialsList() {
   async function commitEdit() {
     const name = editingValue.trim();
     if (!name) { setError("Name can't be empty."); return; }
+    if (name.includes(",")) {
+      setError("A material name can't contain a comma — the storefront filter uses commas to separate values.");
+      return;
+    }
     setError("");
     try {
       await repairCall("myAppAdminUpdateMaterial", { id: editingId, name }, { isQuery: false });
       setEditingId(null);
       setEditingValue("");
+      bustStorefrontFacets();
       await fetchMaterials();
     } catch (err) {
-      const msg = err?.message || "";
-      setError(msg.toLowerCase().includes("already exists") ? "This material already exists." : msg || "Failed to update material.");
+      const msg = cleanErr(err, "Failed to update material.");
+      setError(msg.toLowerCase().includes("already exists") ? "This material already exists." : msg);
     }
   }
 
@@ -71,13 +131,19 @@ function MaterialsList() {
     setError("");
   }
 
-  async function remove(id) {
+  async function confirmRemove() {
+    if (!confirmDelete) return;
     setError("");
+    setDeleting(true);
     try {
-      await repairCall("myAppAdminDeleteMaterial", { id }, { isQuery: false });
+      await repairCall("myAppAdminDeleteMaterial", { id: confirmDelete.id }, { isQuery: false });
+      setConfirmDelete(null);
+      bustStorefrontFacets();
       await fetchMaterials();
     } catch (err) {
-      setError(err?.message || "Failed to delete material.");
+      setError(cleanErr(err, "Failed to delete material."));
+    } finally {
+      setDeleting(false);
     }
   }
 
@@ -113,6 +179,7 @@ function MaterialsList() {
                     <TextInput
                       value={editingValue}
                       autoFocus
+                      maxLength={MATERIAL_NAME_MAX}
                       onChange={(e) => setEditingValue(e.target.value)}
                       onKeyDown={(e) => {
                         if (e.key === "Enter") commitEdit();
@@ -132,10 +199,17 @@ function MaterialsList() {
                     <span className="flex-1 font-body text-[13px] text-[#11191f]">
                       {item.name}
                     </span>
+                    {/* Usage is shown inline so the cost of a delete is
+                        visible before the admin reaches for the bin icon. */}
+                    <span className="shrink-0 font-body text-[11px] text-[#6b7280]">
+                      {item.productCount === 1
+                        ? "1 product"
+                        : `${item.productCount} products`}
+                    </span>
                     <IconButton label="Edit" onClick={() => startEdit(item)}>
                       <IconEdit />
                     </IconButton>
-                    <IconButton label="Delete" onClick={() => remove(item.id)}>
+                    <IconButton label="Delete" onClick={() => setConfirmDelete(item)}>
                       <IconTrash />
                     </IconButton>
                   </>
@@ -150,6 +224,7 @@ function MaterialsList() {
         <div className="mt-4 flex items-center gap-2 border-t border-[#f3f4f6] pt-4">
           <TextInput
             value={adding}
+            maxLength={MATERIAL_NAME_MAX}
             onChange={(e) => { setAdding(e.target.value); setError(""); }}
             onKeyDown={(e) => { if (e.key === "Enter") add(); }}
             placeholder="Add a new material…"
@@ -162,6 +237,79 @@ function MaterialsList() {
       )}
       {error ? (
         <p className="mt-1.5 font-body text-[11px] text-[#dc2626]">{error}</p>
+      ) : null}
+
+      {/* Delete confirmation. This action cascades through product_materials
+          and cannot be undone, so it states the blast radius explicitly rather
+          than asking a generic "are you sure?". */}
+      {confirmDelete ? (
+        <div
+          className="fixed inset-0 z-50 grid place-items-center bg-black/40 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="delete-material-title"
+          onClick={() => { if (!deleting) setConfirmDelete(null); }}
+        >
+          <div
+            className="w-full max-w-[420px] rounded-[4px] border border-[#e5e7eb] bg-white p-5"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <p
+              id="delete-material-title"
+              className="font-display text-[14px] font-bold uppercase tracking-[1px] text-[#11191f]"
+            >
+              Delete “{confirmDelete?.name}”?
+            </p>
+            {/* `?.` on EVERY access, not just the guard: the React Compiler can
+                pre-evaluate both ternary branches, so a "clearly guarded"
+                access still throws when the state is null. Same bite that hit
+                CategoryManager on initial render — see repair/CLAUDE.md. */}
+            {blockedByUsage ? (
+              // Refused up front. The server enforces this too — this branch
+              // just avoids making the admin click Delete to be told no.
+              <p className="mt-2 font-body text-[13px] text-[#6b7280]">
+                <span className="font-medium text-[#11191f]">
+                  {confirmDelete?.productCount}{" "}
+                  {confirmDelete?.productCount === 1 ? "product uses" : "products use"}
+                </span>{" "}
+                this material, so it can&rsquo;t be deleted. Remove it from{" "}
+                {confirmDelete?.productCount === 1 ? "that product" : "those products"}{" "}
+                first — open the product editor, Details tab, Materials.
+              </p>
+            ) : (
+              <p className="mt-2 font-body text-[13px] text-[#6b7280]">
+                No products use this material. It will be removed from the /shop
+                filter drawer. This can&rsquo;t be undone.
+              </p>
+            )}
+            {/* A failed delete leaves the modal open, and the section's error
+                line renders BEHIND this backdrop — so it has to be repeated
+                here or the modal just looks unresponsive. */}
+            {error ? (
+              <p className="mt-3 font-body text-[12px] text-[#dc2626]">{error}</p>
+            ) : null}
+            <div className="mt-5 flex items-center justify-end gap-2">
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={() => setConfirmDelete(null)}
+                disabled={deleting}
+              >
+                {blockedByUsage ? "Close" : "Cancel"}
+              </Button>
+              {blockedByUsage ? null : (
+                <Button
+                  size="sm"
+                  variant="dangerSolid"
+                  onClick={confirmRemove}
+                  disabled={deleting}
+                >
+                  {deleting ? "Deleting…" : "Delete material"}
+                </Button>
+              )}
+            </div>
+          </div>
+        </div>
       ) : null}
     </section>
   );

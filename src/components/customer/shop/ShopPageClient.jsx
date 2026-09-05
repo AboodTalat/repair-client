@@ -7,6 +7,7 @@ import FilterDrawer from "./FilterDrawer";
 import ProductGrid from "./ProductGrid";
 import EmptyState from "./EmptyState";
 import ComingSoonOverlay from "./ComingSoonOverlay";
+import CategoryDiscountBanner from "./CategoryDiscountBanner";
 import AddToCartDrawer from "./AddToCartDrawer";
 import AddedToCartBanner from "./AddedToCartBanner";
 import Pagination from "./Pagination";
@@ -33,6 +34,7 @@ export default function ShopPageClient({
   materialOptions,
   priceRange,
   showComingSoon,
+  discountBanner,
 }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -78,6 +80,13 @@ export default function ShopPageClient({
       <AddedToCartBanner visible={showBanner} onDismiss={() => setShowBanner(false)} />
 
       <main className="mx-auto flex w-full max-w-[1440px] flex-1 flex-col gap-4 px-4 pb-16 pt-3 md:gap-8 md:px-8 md:pt-8">
+        {/* Category discount promo strip — only on the normal shopping path
+            (hidden behind the coming-soon overlay), and only when an active,
+            admin-flagged discount covers this category. */}
+        {!showComingSoon && discountBanner ? (
+          <CategoryDiscountBanner banner={discountBanner} />
+        ) : null}
+
         {/* FilterBar is hidden when the coming-soon overlay is active so the
             blurred grid covers the whole content area below the header
             (Figma 198:5080). */}

@@ -332,8 +332,26 @@ export async function fetchReturnsReport({ from, to }) {
 // ── CSV export (client-side Blob — no dependency) ──────────────────────────
 // headers: [{ key, label }]; rows: array of plain objects keyed by header.key.
 export function downloadCsv(filename, headers, rows) {
+  // Excel, LibreOffice and Sheets evaluate a cell that opens with = + - or @ as
+  // a FORMULA — including inside quotes, so CSV quoting is not a defence. Every
+  // export here carries operator-supplied text: Top Customers exports customer
+  // emails, Delivery exports account emails, Subscribers exports whatever the
+  // public newsletter box accepted.
+  //
+  // And the address regex both ends of the app share
+  // (/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/) admits exactly the local parts that
+  // matter: "=1+1@x.com" and "-2+3@x.com" both pass it (verified). So anyone
+  // who can sign up can plant a formula that runs on an admin's machine the
+  // moment they open the export — a DDE/HYPERLINK payload in that position is
+  // the classic path to data exfiltration or command execution.
+  //
+  // Prefixing a single quote is the standard neutraliser: spreadsheets treat
+  // the cell as literal text and hide the quote, and a plain CSV reader sees one
+  // extra leading character rather than a formula. Applied at the escape layer
+  // so every current and future caller of downloadCsv inherits it.
   const esc = (v) => {
-    const s = v == null ? "" : String(v);
+    let s = v == null ? "" : String(v);
+    if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`;
     return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
   const lines = [headers.map((h) => esc(h.label)).join(",")];

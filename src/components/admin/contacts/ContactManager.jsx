@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Button from "@/components/admin/shared/Button";
 import DataTable from "@/components/admin/shared/DataTable";
+import PagedFooter from "@/components/admin/shared/PagedFooter";
+import usePagedList from "@/components/admin/shared/usePagedList";
 import Drawer from "@/components/admin/shared/Drawer";
 import Modal from "@/components/admin/shared/Modal";
 import StatusBadge from "@/components/admin/shared/StatusBadge";
@@ -40,16 +42,26 @@ function normalize(row) {
   };
 }
 
+/** Rows per page; the list loads more on demand. */
+const PAGE_SIZE = 50;
+
 export default function ContactManager() {
-  const [messages, setMessages] = useState([]);
+  // Debounced copy of the search box; the paged list refetches when its
+  // fetcher identity changes, so debouncing here is what avoids a request
+  // per keystroke.
+  const [appliedQuery, setAppliedQuery] = useState("");
   const [counts, setCounts] = useState({ all: 0, unread: 0, read: 0, replied: 0, archived: 0 });
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
   const [statusFilter, setStatusFilter] = useState("all");
   const [query, setQuery] = useState("");
   const [viewing, setViewing] = useState(null);
   const [confirmDelete, setConfirmDelete] = useState(null);
   const [toast, setToast] = useState("");
+  // usePagedList owns `error` for LOAD failures and clears it at the start of
+  // every load. A MUTATION failure needs its own slot: these handlers refresh
+  // the list right after a failed write, and that refresh would wipe the
+  // message before the admin could read it. Rendered with priority over the
+  // load error — it's the one the admin just caused.
+  const [actionError, setActionError] = useState(null);
 
   const mountedRef = useRef(false);
   const debounceRef = useRef(null);
@@ -59,71 +71,81 @@ export default function ContactManager() {
     setTimeout(() => setToast(""), 3500);
   }
 
-  const fetchMessages = useCallback(async (filters = {}) => {
-    setLoading(true);
-    setError(null);
-    try {
-      const input = { limit: 200 };
-      if (filters.status && filters.status !== "all") input.status = filters.status;
-      if (filters.search) input.search = filters.search;
+  useEffect(() => {
+    if (!mountedRef.current) {
+      mountedRef.current = true;
+      setAppliedQuery(query);
+      return;
+    }
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => setAppliedQuery(query), 250);
+    return () => clearTimeout(debounceRef.current);
+  }, [query]);
+
+  const fetchPage = useCallback(
+    async ({ limit, offset }) => {
+      const input = { limit, offset };
+      if (statusFilter && statusFilter !== "all") input.status = statusFilter;
+      if (appliedQuery) input.search = appliedQuery;
       const data = await repairCall("myAppAdminListContactMessages", input, { isQuery: true });
-      setMessages((data.items || []).map(normalize));
-      // counts is an unfiltered per-status breakdown: [{ status, cnt }].
+      // counts is an UNFILTERED per-status breakdown, so it describes the whole
+      // table and stays correct on any page.
       const cmap = { unread: 0, read: 0, replied: 0, archived: 0 };
       (data.counts || []).forEach((c) => {
         if (c.status in cmap) cmap[c.status] = Number(c.cnt) || 0;
       });
       cmap.all = cmap.unread + cmap.read + cmap.replied + cmap.archived;
       setCounts(cmap);
-    } catch (err) {
-      setError(err?.message || "Failed to load messages");
-      setMessages([]);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+      return { items: (data.items || []).map(normalize), total: data?.total };
+    },
+    [statusFilter, appliedQuery],
+  );
 
-  // Initial load immediately; subsequent filter/search changes debounced.
-  useEffect(() => {
-    if (!mountedRef.current) {
-      mountedRef.current = true;
-      fetchMessages({ status: statusFilter, search: query });
-      return;
-    }
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => {
-      fetchMessages({ status: statusFilter, search: query });
-    }, 250);
-    return () => clearTimeout(debounceRef.current);
-  }, [statusFilter, query, fetchMessages]);
+  const list = usePagedList({ pageSize: PAGE_SIZE, fetchPage });
+  const { items: messages, loading, error, setItems: setMessages } = list;
 
-  async function markAs(id, status) {
-    setError(null);
+  // `silent` skips the post-write refetch — see openMessage. The optimistic
+  // patch above already shows the new status either way, and the failure path
+  // always refetches so a rejected write can never leave a lie on screen.
+  async function markAs(id, status, { silent = false } = {}) {
+    setActionError(null);
     // Optimistic — reconcile via refetch.
     setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, status } : m)));
     setViewing((v) => (v?.id === id ? { ...v, status } : v));
+    const from = messages.find((m) => m.id === id)?.status;
     try {
       await repairCall(
         "myAppAdminUpdateContactMessageStatus",
         { id: Number(id), status },
         { isQuery: false }
       );
-      await fetchMessages({ status: statusFilter, search: query });
+      if (silent) {
+        // Keep the chips honest without paying for a refetch.
+        if (from && from !== status) {
+          setCounts((c) => ({
+            ...c,
+            [from]: Math.max((c[from] || 0) - 1, 0),
+            [status]: (c[status] || 0) + 1,
+          }));
+        }
+        return;
+      }
+      await list.refresh();
     } catch (err) {
-      setError(err?.message || "Failed to update message");
-      await fetchMessages({ status: statusFilter, search: query });
+      setActionError(err?.message || "Failed to update message");
+      await list.refresh();
     }
   }
 
   async function remove(id) {
-    setError(null);
+    setActionError(null);
     setConfirmDelete(null);
     setViewing((v) => (v?.id === id ? null : v));
     try {
       await repairCall("myAppAdminDeleteContactMessage", { id: Number(id) }, { isQuery: false });
-      await fetchMessages({ status: statusFilter, search: query });
+      await list.refresh();
     } catch (err) {
-      setError(err?.message || "Failed to delete message");
+      setActionError(err?.message || "Failed to delete message");
     }
   }
 
@@ -136,13 +158,18 @@ export default function ContactManager() {
     );
     showToast("Reply sent");
     setViewing((v) => (v?.id === id ? { ...v, status: "replied", replyBody } : v));
-    await fetchMessages({ status: statusFilter, search: query });
+    await list.refresh();
   }
 
   function openMessage(msg) {
     setViewing(msg);
-    // Auto-advance unread → read on open (fire-and-forget; markAs reconciles).
-    if (msg.status === "unread") markAs(msg.id, "read");
+    // Auto-advance unread → read on open. Deliberately `silent`: this is the
+    // only markAs call the admin didn't ask for, and refetching on it turned
+    // READING a message into a list mutation — the hook always reloads from
+    // offset 0, so anyone who had pressed "Load more" lost every page past the
+    // first just by opening something. Under the Unread chip it was worse: the
+    // row vanished out from under the drawer that was displaying it.
+    if (msg.status === "unread") markAs(msg.id, "read", { silent: true });
   }
 
   return (
@@ -153,9 +180,9 @@ export default function ContactManager() {
         </div>
       ) : null}
 
-      {error ? (
+      {actionError || error ? (
         <div className="mb-4 rounded-[4px] border border-[#fecaca] bg-[#fef2f2] px-4 py-3">
-          <p className="font-body text-[13px] text-[#dc2626]">{error}</p>
+          <p className="font-body text-[13px] text-[#dc2626]">{actionError || error}</p>
         </div>
       ) : null}
 
@@ -271,6 +298,18 @@ export default function ContactManager() {
         />
       )}
 
+      {!loading && messages.length > 0 ? (
+        <PagedFooter
+          shown={messages.length}
+          total={list.total}
+          hasMore={list.hasMore}
+          loading={loading}
+          loadingMore={list.loadingMore}
+          onLoadMore={list.loadMore}
+          noun="message"
+        />
+      ) : null}
+
       <MessageDrawer
         message={viewing}
         onClose={() => setViewing(null)}
@@ -315,11 +354,18 @@ function MessageDrawer({ message, onClose, onMarkAs, onReply, onRequestDelete })
   const [replyError, setReplyError] = useState(null);
 
   // Reset the composer whenever a different message opens.
-  useEffect(() => {
+  //
+  // Render-phase adjustment, not an effect: this is state DERIVED from which
+  // message is open, so resetting it in an effect meant one render still showed
+  // the previous message's half-typed reply before it cleared. React re-runs the
+  // component immediately on a render-phase update, before painting.
+  const [composerFor, setComposerFor] = useState(message?.id);
+  if (message?.id !== composerFor) {
+    setComposerFor(message?.id);
     setReplyText("");
     setReplyError(null);
     setSending(false);
-  }, [message?.id]);
+  }
 
   async function handleSend() {
     const body = replyText.trim();

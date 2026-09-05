@@ -1,5 +1,5 @@
 import { fetchShopCategories, findShopCategory, typesFromTree } from "@/lib/storeNav";
-import { fetchShopProducts, fetchShopFacets } from "@/lib/shopCatalog";
+import { fetchShopProducts, fetchShopFacets, fetchCategoryDiscountBanner } from "@/lib/shopCatalog";
 import CategoryPicker from "@/components/customer/shop/CategoryPicker";
 import ShopPageClient from "@/components/customer/shop/ShopPageClient";
 
@@ -107,6 +107,10 @@ export default async function ShopPage({ searchParams }) {
   //     full filtered count so the pagination control knows how many pages exist.
   let products = [];
   let total = 0;
+  // Active, admin-flagged discount banner for the category being viewed (glossy
+  // promo strip + countdown). Only fetched on the normal shopping path — the
+  // coming-soon / empty-debug branches never show it.
+  let discountBanner = null;
   if (filters.simulateEmpty) {
     products = [];
     total = 0;
@@ -115,20 +119,24 @@ export default async function ShopPage({ searchParams }) {
     products = res.items.slice(0, 8);
     total = products.length;
   } else {
-    const res = await fetchShopProducts({
-      majorId: cat?.id,
-      subId,
-      colorIds: filterIds.colorIds,
-      sizeIds: filterIds.sizeIds,
-      materialIds: filterIds.materialIds,
-      subCategoryIds: filterIds.subCategoryIds,
-      minPrice: filters.priceMin,
-      maxPrice: filters.priceMax,
-      limit: PAGE_SIZE,
-      offset: (page - 1) * PAGE_SIZE,
-    });
+    const [res, banner] = await Promise.all([
+      fetchShopProducts({
+        majorId: cat?.id,
+        subId,
+        colorIds: filterIds.colorIds,
+        sizeIds: filterIds.sizeIds,
+        materialIds: filterIds.materialIds,
+        subCategoryIds: filterIds.subCategoryIds,
+        minPrice: filters.priceMin,
+        maxPrice: filters.priceMax,
+        limit: PAGE_SIZE,
+        offset: (page - 1) * PAGE_SIZE,
+      }),
+      fetchCategoryDiscountBanner({ majorId: cat?.id, subId }),
+    ]);
     products = res.items;
     total = res.total;
+    discountBanner = banner;
   }
 
   return (
@@ -146,6 +154,7 @@ export default async function ShopPage({ searchParams }) {
       materialOptions={facets.materials.map((m) => m.name)}
       priceRange={facets.priceRange}
       showComingSoon={comingSoon}
+      discountBanner={discountBanner}
     />
   );
 }

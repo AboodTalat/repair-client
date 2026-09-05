@@ -10,6 +10,8 @@ import {
 } from "react";
 import Button from "@/components/admin/shared/Button";
 import DataTable from "@/components/admin/shared/DataTable";
+import PagedFooter from "@/components/admin/shared/PagedFooter";
+import usePagedList from "@/components/admin/shared/usePagedList";
 import Drawer from "@/components/admin/shared/Drawer";
 import Modal from "@/components/admin/shared/Modal";
 import StatusBadge from "@/components/admin/shared/StatusBadge";
@@ -41,10 +43,36 @@ import {
   normalizeCraftedToLast,
 } from "@/lib/craftedToLast";
 import { repairCall } from "@/lib/repairAuthedApi";
+import { revalidateStorefrontProducts } from "@/lib/productActions";
+import {
+  PRODUCT_IMAGE_SPEC_LABEL,
+  describeRejections,
+  validateProductImages,
+} from "@/lib/imageSpec";
+import { useSearchParams } from "next/navigation";
 import { useUploadThing } from "@/lib/uploadthing";
 import { useRepairStore, selectToken } from "@/lib/useRepairStore";
 
 // ── Helpers ────────────────────────────────────────────────────────────
+
+// Bust the cached storefront product reads (grid / detail / related / facets)
+// after a product change, so the storefront reflects it on the very next
+// refresh instead of waiting out the ISR window. Best-effort — never blocks or
+// surfaces an error to the admin (this page reads through the uncached client
+// transport, so the admin table itself is already fresh).
+// Mirrors bustStorefrontNav() in CategoryManager.jsx.
+function bustStorefrontProducts() {
+  Promise.resolve(revalidateStorefrontProducts()).catch(() => {});
+}
+
+// repairCall throws on blnRequestSuccessful:false with a message shaped like
+// "repairClientApi <op>: <server message>". Strip the prefix so the admin sees
+// the human-readable server reason rather than the transport's internal name.
+// Mirrors cleanErr() in CategoryManager.jsx.
+function cleanErr(e, fallback) {
+  const m = (e?.message || "").replace(/^repairClientApi \S+:\s*/, "");
+  return m || fallback;
+}
 
 /** Normalize BigInt-string IDs from the backend into JS numbers. */
 function N(v) {
@@ -63,6 +91,23 @@ const LABEL_OPTIONS = [
 
 // Storefront badges lose meaning when there are too many — cap selection.
 const MAX_LABELS = 2;
+
+// Mirrors PRODUCT_NAME_MAX in the backend adminCatalog.ts (and the
+// products.name VARCHAR(255) column). The input caps at this length and the
+// resolver rejects past it, so an over-long paste can't reach MySQL and come
+// back as the generic "Something went wrong".
+const PRODUCT_NAME_MAX = 255;
+
+// The five reference-data loads, in the order they are requested. Labels name
+// them the way an admin would; fallbacks keep the page renderable when one
+// fails, while `refError` says plainly that what's on screen is incomplete.
+const REF_LABELS = ["colours", "sizes", "categories", "materials", "store settings"];
+const REF_FALLBACKS = [{ items: [] }, { items: [] }, [], { items: [] }, null];
+
+function listAnd(items) {
+  if (items.length === 1) return items[0];
+  return `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
+}
 
 // Photo bucket key for "one shared photo set for all colors" mode. Stored as a
 // string key in the same `photos` map the per-color buckets use (which key by
@@ -197,6 +242,9 @@ function CategoryCell({
 
 // ── Main component ────────────────────────────────────────────────────
 
+/** Rows per page; the list loads more on demand (server caps a page at 100). */
+const PRODUCTS_PAGE_SIZE = 50;
+
 export default function ProductManager() {
   // ── Reference data (fetched once) ──
   const [colors, setColors] = useState([]);
@@ -204,25 +252,46 @@ export default function ProductManager() {
   const [categoryTree, setCategoryTree] = useState([]);
   const [materials, setMaterials] = useState([]);
   const [refLoading, setRefLoading] = useState(true);
+  // Non-null when one of the five reference-data loads failed. Kept separate
+  // from `actionError` (mutation failures) so a later save error can't erase
+  // the standing "this page is showing incomplete data" warning, or vice versa.
+  const [refError, setRefError] = useState(null);
   // Store-wide low-stock threshold from commerce settings (Settings page →
   // Low-Stock Banner). Drives the list's "Stock" low-stock flag so the admin
   // sees the same threshold the storefront banner uses. 0 = no flag (off).
   const [lowStockThreshold, setLowStockThreshold] = useState(0);
 
   // ── Product list ──
-  const [products, setProducts] = useState([]);
-  const [totalProducts, setTotalProducts] = useState(0);
-  const [listLoading, setListLoading] = useState(true);
-  const [query, setQuery] = useState("");
+  // Debounced copy of the search box — the paged list refetches when its
+  // fetcher identity changes, so this is what avoids a request per keystroke.
+  // Seeded from `?q=` so the TopBar global search can hand off a term and land
+  // on a pre-filtered list. Read during the useState initializer (not a mount
+  // effect) — an effect here would be a `set-state-in-effect` lint error and
+  // would flash the unfiltered list for one frame first.
+  const initialQ = useSearchParams().get("q") || "";
+  const [appliedQuery, setAppliedQuery] = useState(initialQ);
+  const [query, setQuery] = useState(initialQ);
   const [majorId, setMajorId] = useState("");
   const [visibility, setVisibility] = useState("all");
 
   // ── Drawer ──
   const [editing, setEditing] = useState(null);
 
+  // Surfaces failures from the inline row actions and the colour/size panels.
+  // These all used to `catch { /* ignore */ }`, so a refused delete (a colour
+  // still used by a variant) or a failed visibility toggle looked to the admin
+  // like nothing had happened at all.
+  const [actionError, setActionError] = useState("");
+
   // ── Delete modal ──
   const [confirmDelete, setConfirmDelete] = useState(null);
   const [deleteError, setDeleteError] = useState("");
+  // The backend refuses to delete a product that appears in order history
+  // (order_items.product_variant_id is RESTRICT, so past orders keep their
+  // line items). When that's why the delete failed, the modal swaps its
+  // primary action to the supported alternative: hide it from the storefront.
+  const [deleteBlocked, setDeleteBlocked] = useState(false);
+  const [hiding, setHiding] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
   // ── Flatten category tree for the sub-category select & lookups ──
@@ -251,14 +320,31 @@ export default function ProductManager() {
     async function load() {
       setRefLoading(true);
       try {
-        const [colorsRes, sizesRes, treeRes, matsRes, settingsRes] = await Promise.all([
-          repairCall("myAppAdminListColors", {}).catch(() => ({ items: [] })),
-          repairCall("myAppAdminListSizes", {}).catch(() => ({ items: [] })),
-          repairCall("myAppListCategoriesTree", { includeHidden: true }).catch(() => []),
-          repairCall("myAppListMaterials", {}).catch(() => ({ items: [] })),
-          repairCall("myAppGetCommerceSettings", {}, { isQuery: true }).catch(() => null),
+        // allSettled, NOT a per-call `.catch(() => ({ items: [] }))`.
+        //
+        // Swallowing the rejection made every failure look like real emptiness:
+        // with an expired session the page rendered "0 colors • No colors yet"
+        // and "0 sizes" beside a product list that had loaded fine (the product
+        // query is public, these five are admin-only), with no error anywhere.
+        // Reproduced. An admin reading that would add a colour that already
+        // exists, or assign products against an empty category list.
+        const settled = await Promise.allSettled([
+          repairCall("myAppAdminListColors", {}),
+          repairCall("myAppAdminListSizes", {}),
+          repairCall("myAppListCategoriesTree", { includeHidden: true }),
+          repairCall("myAppListMaterials", {}),
+          repairCall("myAppGetCommerceSettings", {}, { isQuery: true }),
         ]);
         if (cancelled) return;
+        const [colorsRes, sizesRes, treeRes, matsRes, settingsRes] = settled.map((r, i) =>
+          r.status === "fulfilled" ? r.value : REF_FALLBACKS[i],
+        );
+        const failed = REF_LABELS.filter((_, i) => settled[i].status === "rejected");
+        setRefError(
+          failed.length
+            ? `Could not load ${listAnd(failed)}. What you see below is incomplete — reload, or sign in again if your session expired.`
+            : null,
+        );
         setLowStockThreshold(Number(settingsRes?.inventory?.low_stock_threshold) || 0);
         setColors(
           (colorsRes.items || colorsRes || []).map((c) => ({
@@ -281,8 +367,11 @@ export default function ProductManager() {
             name: m.name,
           }))
         );
-      } catch {
-        /* swallow — individual catches already defaulted */
+      } catch (err) {
+        // allSettled never rejects, so reaching here means the shaping code
+        // above threw on an unexpected payload. Say so rather than leaving the
+        // page looking like an empty catalogue.
+        if (!cancelled) setRefError(cleanErr(err, "Could not load the product reference data."));
       } finally {
         if (!cancelled) setRefLoading(false);
       }
@@ -294,15 +383,24 @@ export default function ProductManager() {
   // ── Fetch product list ──
   const searchTimeoutRef = useRef(null);
 
-  const fetchProducts = useCallback(async (searchQuery, filterMajorId) => {
-    setListLoading(true);
-    try {
-      const vars = { includeHidden: true, limit: 200 };
-      if (searchQuery) vars.search = searchQuery;
-      if (filterMajorId) vars.majorCategoryId = Number(filterMajorId);
+  useEffect(() => {
+    clearTimeout(searchTimeoutRef.current);
+    searchTimeoutRef.current = setTimeout(() => setAppliedQuery(query), 300);
+    return () => clearTimeout(searchTimeoutRef.current);
+  }, [query]);
+
+  const fetchPage = useCallback(
+    async ({ limit, offset }) => {
+      // `visibility` is sent to the SERVER rather than filtered client-side:
+      // this list is paged, so a browser-side filter would only narrow the
+      // page on screen.
+      const vars = { includeHidden: true, limit, offset };
+      if (appliedQuery) vars.search = appliedQuery;
+      if (majorId) vars.majorCategoryId = Number(majorId);
+      if (visibility !== "all") vars.visibility = visibility;
       const res = await repairCall("myAppListProducts", vars);
-      setProducts(
-        (res.items || []).map((p) => ({
+      return {
+        items: (res.items || []).map((p) => ({
           id: N(p.id),
           name: p.name,
           description: p.description,
@@ -317,37 +415,30 @@ export default function ProductManager() {
           total_stock: Number(p.total_stock) || 0,
           extraSubCategoryIds: (p.extra_sub_category_ids || []).map(N),
           extraMajorCategoryIds: (p.extra_major_category_ids || []).map(N),
-        }))
-      );
-      setTotalProducts(res.total ?? (res.items || []).length);
-    } catch {
-      /* keep existing list on error */
-    } finally {
-      setListLoading(false);
-    }
-  }, []);
+        })),
+        total: res.total,
+      };
+    },
+    [appliedQuery, majorId, visibility],
+  );
 
-  // Debounced search (also fires on mount with the initial "" values)
-  useEffect(() => {
-    clearTimeout(searchTimeoutRef.current);
-    searchTimeoutRef.current = setTimeout(() => {
-      fetchProducts(query, majorId);
-    }, 300);
-    return () => clearTimeout(searchTimeoutRef.current);
-  }, [query, majorId, fetchProducts]);
+  const list = usePagedList({ pageSize: PRODUCTS_PAGE_SIZE, fetchPage });
+  const {
+    items: products,
+    total: totalProducts,
+    loading: listLoading,
+    setItems: setProducts,
+  } = list;
 
   // ── Client-side visibility filter ──
-  const filtered = useMemo(() => {
-    return products.filter((p) => {
-      if (visibility === "visible" && !p.is_visible) return false;
-      if (visibility === "hidden" && p.is_visible) return false;
-      return true;
-    });
-  }, [products, visibility]);
+  // Visibility is filtered server-side (see fetchPage) so the count and the
+  // rows always describe the same set.
+  const filtered = products;
 
   // ── Inline visibility toggle ──
   async function toggleVisibility(product) {
     const newVal = !product.is_visible;
+    setActionError("");
     // Optimistic
     setProducts((prev) =>
       prev.map((p) => (p.id === product.id ? { ...p, is_visible: newVal } : p))
@@ -358,10 +449,15 @@ export default function ProductManager() {
         { id: product.id, is_visible: newVal },
         { isQuery: false }
       );
-    } catch {
-      // Revert on failure
+      bustStorefrontProducts();
+    } catch (err) {
+      // Revert on failure — and say so. A silent revert reads as the toggle
+      // being unresponsive rather than the change having been rejected.
       setProducts((prev) =>
         prev.map((p) => (p.id === product.id ? { ...p, is_visible: !newVal } : p))
+      );
+      setActionError(
+        cleanErr(err, `Could not change visibility for "${product.name}".`)
       );
     }
   }
@@ -372,6 +468,7 @@ export default function ProductManager() {
   // toggleVisibility). The primary sub-category is NOT touchable here — it's
   // required and changing it is a full edit in the drawer.
   async function applyCategoryChange(product, nextExtraSubs, nextExtraMajors) {
+    setActionError("");
     setProducts((prev) =>
       prev.map((p) =>
         p.id === product.id
@@ -389,7 +486,8 @@ export default function ProductManager() {
         },
         { isQuery: false }
       );
-    } catch {
+      bustStorefrontProducts();
+    } catch (err) {
       // Revert to the snapshot captured before the optimistic write.
       setProducts((prev) =>
         prev.map((p) =>
@@ -401,6 +499,9 @@ export default function ProductManager() {
               }
             : p
         )
+      );
+      setActionError(
+        cleanErr(err, `Could not update categories for "${product.name}".`)
       );
     }
   }
@@ -555,7 +656,8 @@ export default function ProductManager() {
   // ── Save callback from drawer ──
   async function handleSaveComplete() {
     setEditing(null);
-    await fetchProducts(query, majorId);
+    bustStorefrontProducts();
+    await list.refresh();
   }
 
   // ── Delete product ──
@@ -563,6 +665,7 @@ export default function ProductManager() {
     if (!confirmDelete) return;
     setDeleting(true);
     setDeleteError("");
+    setDeleteBlocked(false);
     try {
       await repairCall(
         "myAppAdminDeleteProduct",
@@ -570,18 +673,55 @@ export default function ProductManager() {
         { isQuery: false }
       );
       setConfirmDelete(null);
-      await fetchProducts(query, majorId);
+      bustStorefrontProducts();
+      await list.refresh();
     } catch (err) {
-      setDeleteError(
-        err?.message || "Cannot delete: product appears in order history. Hide it instead."
-      );
+      const msg =
+        cleanErr(err, "Could not delete this product. Please try again.");
+      const blocked = /order history/i.test(msg);
+      setDeleteBlocked(blocked);
+      // When blocked, the modal body explains it in full — don't also show the
+      // raw server string. Keep the error box for genuine failures.
+      setDeleteError(blocked ? "" : msg);
     } finally {
       setDeleting(false);
     }
   }
 
+  // ── Hide instead of delete ──
+  // Escape hatch offered inside the delete modal when the product has been
+  // ordered and therefore can't be removed. Same call as the inline eye toggle.
+  async function hideInsteadOfDelete() {
+    if (!confirmDelete) return;
+    setHiding(true);
+    setDeleteError("");
+    try {
+      await repairCall(
+        "myAppAdminUpdateProduct",
+        { id: confirmDelete.id, is_visible: false },
+        { isQuery: false }
+      );
+      closeDeleteModal();
+      bustStorefrontProducts();
+      await list.refresh();
+    } catch (err) {
+      setDeleteError(
+        cleanErr(err, "Could not hide this product. Please try again.")
+      );
+    } finally {
+      setHiding(false);
+    }
+  }
+
+  function closeDeleteModal() {
+    setConfirmDelete(null);
+    setDeleteError("");
+    setDeleteBlocked(false);
+  }
+
   // ── Color / Size panel callbacks ──
   async function addColor(color) {
+    setActionError("");
     try {
       const res = await repairCall(
         "myAppAdminCreateColor",
@@ -593,21 +733,28 @@ export default function ProductManager() {
         ...prev,
         { id: N(c.id), name: c.name, hex: c.hex_code || color.hex },
       ]);
-    } catch {
-      /* ignore */
+      // Colors + sizes are the storefront filter-drawer facet options.
+      bustStorefrontProducts();
+    } catch (err) {
+      setActionError(cleanErr(err, `Could not add the colour "${color.name}".`));
     }
   }
 
   async function removeColor(id) {
+    setActionError("");
     try {
       await repairCall("myAppAdminDeleteColor", { id }, { isQuery: false });
       setColors((prev) => prev.filter((c) => c.id !== id));
-    } catch {
-      /* ignore — in use by variants */
+      bustStorefrontProducts();
+    } catch (err) {
+      // The usual cause is the colour still being used by a product variant.
+      // That refusal is the whole point of the guard — show it.
+      setActionError(cleanErr(err, "Could not delete that colour — it may still be used by a product."));
     }
   }
 
   async function addSize(size) {
+    setActionError("");
     try {
       const res = await repairCall(
         "myAppAdminCreateSize",
@@ -619,22 +766,53 @@ export default function ProductManager() {
         ...prev,
         { id: N(s.id), name: s.name, sort_order: s.sort_order },
       ]);
-    } catch {
-      /* ignore */
+      bustStorefrontProducts();
+    } catch (err) {
+      setActionError(cleanErr(err, `Could not add the size "${size.name}".`));
     }
   }
 
   async function removeSize(id) {
+    setActionError("");
     try {
       await repairCall("myAppAdminDeleteSize", { id }, { isQuery: false });
       setSizes((prev) => prev.filter((s) => s.id !== id));
-    } catch {
-      /* ignore — in use by variants */
+      bustStorefrontProducts();
+    } catch (err) {
+      setActionError(cleanErr(err, "Could not delete that size — it may still be used by a product."));
     }
   }
 
   return (
     <>
+      {/* Amber, not red, and NOT dismissible: this is a standing statement
+          about the data on screen, not a one-off action failure. It clears
+          only when a reload actually succeeds. */}
+      {refError ? (
+        <div
+          role="alert"
+          className="mb-4 rounded-[4px] border border-[#fde68a] bg-[#fffbeb] px-4 py-3"
+        >
+          <p className="font-body text-[13px] text-[#92400e]">{refError}</p>
+        </div>
+      ) : null}
+
+      {actionError ? (
+        <div
+          role="alert"
+          className="mb-4 flex items-start justify-between gap-3 rounded-[4px] border border-[#fecaca] bg-[#fef2f2] px-4 py-3"
+        >
+          <p className="font-body text-[13px] text-[#b91c1c]">{actionError}</p>
+          <button
+            type="button"
+            onClick={() => setActionError("")}
+            className="shrink-0 font-body text-[12px] font-medium text-[#b91c1c] underline"
+          >
+            Dismiss
+          </button>
+        </div>
+      ) : null}
+
       <ColorPanel colors={colors} onAdd={addColor} onRemove={removeColor} />
       <SizePanel sizes={sizes} onAdd={addSize} onRemove={removeSize} />
 
@@ -814,6 +992,7 @@ export default function ProductManager() {
                     aria-label="Delete"
                     onClick={() => {
                       setDeleteError("");
+                      setDeleteBlocked(false);
                       setConfirmDelete(p);
                     }}
                     className="grid size-8 place-items-center rounded-[2px] text-[#dc2626] hover:bg-[#fef2f2]"
@@ -846,6 +1025,18 @@ export default function ProductManager() {
         />
       )}
 
+      {!listLoading && filtered.length > 0 ? (
+        <PagedFooter
+          shown={filtered.length}
+          total={totalProducts}
+          hasMore={list.hasMore}
+          loading={listLoading}
+          loadingMore={list.loadingMore}
+          onLoadMore={list.loadMore}
+          noun="product"
+        />
+      ) : null}
+
       <ProductDrawer
         editing={editing}
         colors={colors}
@@ -859,31 +1050,56 @@ export default function ProductManager() {
 
       <Modal
         open={!!confirmDelete}
-        onClose={() => setConfirmDelete(null)}
-        title="Delete product"
+        onClose={closeDeleteModal}
+        title={deleteBlocked ? "Can't delete this product" : "Delete product"}
         footer={
           <>
-            <Button
-              variant="secondary"
-              onClick={() => setConfirmDelete(null)}
-            >
-              Cancel
+            <Button variant="secondary" onClick={closeDeleteModal}>
+              {deleteBlocked ? "Close" : "Cancel"}
             </Button>
-            <Button
-              variant="dangerSolid"
-              onClick={handleDelete}
-              disabled={deleting}
-            >
-              {deleting ? "Deleting..." : "Delete"}
-            </Button>
+            {deleteBlocked ? (
+              confirmDelete?.is_visible ? (
+                <Button
+                  variant="primary"
+                  onClick={hideInsteadOfDelete}
+                  disabled={hiding}
+                >
+                  {hiding ? "Hiding..." : "Hide from storefront"}
+                </Button>
+              ) : null
+            ) : (
+              <Button
+                variant="dangerSolid"
+                onClick={handleDelete}
+                disabled={deleting}
+              >
+                {deleting ? "Deleting..." : "Delete"}
+              </Button>
+            )}
           </>
         }
       >
-        <p className="font-body text-[13px] text-[#11191f]">
-          Are you sure you want to delete{" "}
-          <strong>{confirmDelete?.name}</strong>? This will remove the product
-          and all of its variants from the storefront.
-        </p>
+        {deleteBlocked ? (
+          <>
+            <p className="font-body text-[13px] text-[#11191f]">
+              <strong>{confirmDelete?.name}</strong> has been ordered before, so
+              it can&apos;t be deleted — past orders keep their line items
+              pointing at this product&apos;s variants, and removing it would
+              break that history.
+            </p>
+            <p className="mt-3 font-body text-[13px] text-[#4b5563]">
+              {confirmDelete?.is_visible
+                ? "Hide it instead: it disappears from the storefront immediately, but existing orders, reports and revenue stay intact."
+                : "This product is already hidden, so it no longer appears on the storefront. Nothing further to do."}
+            </p>
+          </>
+        ) : (
+          <p className="font-body text-[13px] text-[#11191f]">
+            Are you sure you want to delete{" "}
+            <strong>{confirmDelete?.name}</strong>? This will remove the product
+            and all of its variants from the storefront.
+          </p>
+        )}
         {deleteError ? (
           <p className="mt-3 rounded-[2px] border border-[#fecaca] bg-[#fef2f2] p-3 font-body text-[12px] text-[#dc2626]">
             {deleteError}
@@ -1403,10 +1619,21 @@ const NUMERIC_SIZE_PRESETS = [
   "28", "30", "32", "34", "36", "38", "40", "42", "44", "46", "48", "50",
 ];
 
+// A size name is a compact label rendered inside chips + the inventory grid's
+// column headers, so it stays short and space-free: at most 5 characters and no
+// whitespace anywhere ("XXXL", "32x30", "48" — never "One Size").
+const MAX_SIZE_LEN = 5;
+
+/** Strip ALL whitespace (not just the ends) and clamp to MAX_SIZE_LEN. */
+function sanitizeSizeName(raw) {
+  return String(raw ?? "").replace(/\s+/g, "").slice(0, MAX_SIZE_LEN);
+}
+
 function SizePanel({ sizes, onAdd, onRemove }) {
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState("alpha");
   const [customInput, setCustomInput] = useState("");
+  const [sizeError, setSizeError] = useState("");
 
   const sizeNames = useMemo(
     () => new Set(sizes.map((s) => s.name)),
@@ -1419,11 +1646,34 @@ function SizePanel({ sizes, onAdd, onRemove }) {
     onAdd({ name, sort_order: sizes.length });
   }
 
+  // Mirror the sanitizer's rules as messages so a rejected keystroke explains
+  // itself instead of silently vanishing from the field.
+  function validationMessage(raw, clean) {
+    if (/\s/.test(raw)) return "Spaces aren't allowed in a size name.";
+    if (raw.length > MAX_SIZE_LEN) return `Maximum ${MAX_SIZE_LEN} characters.`;
+    if (clean && sizeNames.has(clean)) return "That size already exists.";
+    return "";
+  }
+
+  function handleCustomChange(raw) {
+    const clean = sanitizeSizeName(raw);
+    setCustomInput(clean);
+    setSizeError(validationMessage(raw, clean));
+  }
+
   function addCustom() {
-    const name = customInput.trim();
-    if (!name || sizeNames.has(name)) return;
+    const name = sanitizeSizeName(customInput);
+    if (!name) {
+      setSizeError("Enter a size name.");
+      return;
+    }
+    if (sizeNames.has(name)) {
+      setSizeError("That size already exists.");
+      return;
+    }
     onAdd({ name, sort_order: sizes.length });
     setCustomInput("");
+    setSizeError("");
   }
 
   const HEADER_LIMIT = 6;
@@ -1564,29 +1814,41 @@ function SizePanel({ sizes, onAdd, onRemove }) {
           </div>
 
           {/* Custom input */}
-          <div className="flex gap-2">
-            <TextInput
-              value={customInput}
-              onChange={(e) => setCustomInput(e.target.value)}
-              placeholder={
-                mode === "alpha"
-                  ? "e.g. 4XL, Petite, One Size…"
-                  : "e.g. 52, 54, 32x30…"
-              }
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  addCustom();
+          <div className="flex flex-col gap-1.5">
+            <div className="flex gap-2">
+              <TextInput
+                value={customInput}
+                onChange={(e) => handleCustomChange(e.target.value)}
+                // Native backstop; handleCustomChange still sanitizes so a
+                // paste that slips past maxLength can't bypass the rules.
+                maxLength={MAX_SIZE_LEN}
+                placeholder={
+                  mode === "alpha" ? "e.g. 4XL, XXXS…" : "e.g. 52, 32x30…"
                 }
-              }}
-            />
-            <Button
-              variant="secondary"
-              disabled={!customInput.trim() || sizeNames.has(customInput.trim())}
-              onClick={addCustom}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    addCustom();
+                  }
+                }}
+              />
+              <Button
+                variant="secondary"
+                disabled={!customInput || sizeNames.has(customInput)}
+                onClick={addCustom}
+              >
+                Add
+              </Button>
+            </div>
+            <p
+              className={
+                "font-body text-[11px] " +
+                (sizeError ? "text-[#dc2626]" : "text-[#9ca3af]")
+              }
             >
-              Add
-            </Button>
+              {sizeError ||
+                `Max ${MAX_SIZE_LEN} characters, no spaces. ${customInput.length}/${MAX_SIZE_LEN}`}
+            </p>
           </div>
         </div>
       ) : null}
@@ -1614,6 +1876,12 @@ function ProductDrawer({
   const [errors, setErrors] = useState({});
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState("");
+  // Upload-time feedback for the Media tab: files rejected for wrong
+  // dimensions, or an UploadThing failure. Deliberately NOT `errors.photos` —
+  // that key is save-validation ("this color has no photo") and is cleared by
+  // a successful upload, which would wipe the very message explaining why the
+  // upload didn't happen.
+  const [photoNotice, setPhotoNotice] = useState("");
 
   // ── UploadThing ──
   const token = useRepairStore(selectToken);
@@ -1676,6 +1944,7 @@ function ProductDrawer({
     setTab("details");
     setErrors({});
     setSaveError("");
+    setPhotoNotice("");
   }, [editing]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
@@ -1721,9 +1990,25 @@ function ProductDrawer({
   // ── Photo management ──
   async function addPhotos(colorId, files) {
     if (!files || files.length === 0) return;
+    setPhotoNotice("");
+
+    // Gate on DIMENSIONS before uploading. Every storefront slot is a fixed
+    // 2:3 portrait with `object-cover`, so an off-ratio photo is silently
+    // cropped and an undersized one is upscaled — neither errors anywhere, so
+    // this is the only place it can be caught. See lib/imageSpec.js.
+    // Rejections are per-file: one bad photo in a multi-select must not
+    // discard the good ones alongside it.
+    const { accepted, rejected } = await validateProductImages(files);
+    if (rejected.length > 0) {
+      setPhotoNotice(
+        `${rejected.length} photo${rejected.length !== 1 ? "s" : ""} not added — ${describeRejections(rejected)}`
+      );
+    }
+    if (accepted.length === 0) return;
+
     // Upload immediately via UploadThing
     try {
-      const uploaded = await startUpload(Array.from(files));
+      const uploaded = await startUpload(accepted);
       if (!uploaded || uploaded.length === 0) return;
       setDraft((d) => {
         const current = (d.photos || {})[colorId] || [];
@@ -1741,8 +2026,14 @@ function ProductDrawer({
         };
       });
       clearError("photos");
-    } catch {
-      /* upload failed — ignore */
+    } catch (err) {
+      // Was silently swallowed. An UploadThing rejection (over the 4 MB cap,
+      // expired admin token, network) then looked identical to a no-op: the
+      // picker closed and no photo appeared, with nothing to act on.
+      // Appended, not replaced: a batch can both reject files for their size
+      // AND fail to upload the rest, and the admin needs to see both.
+      const msg = cleanErr(err, "The photo could not be uploaded.");
+      setPhotoNotice((n) => (n ? `${n} ${msg}` : msg));
     }
   }
 
@@ -2001,6 +2292,12 @@ function ProductDrawer({
     setErrors({});
     setSaveError("");
     setSaving(true);
+    // Non-fatal problems collected as we go — an image that couldn't be removed
+    // shouldn't abort the save, but it must not vanish silently either.
+    const imageWarnings = [];
+    // Set once the create in step 1 succeeds, so the catch below can tell the
+    // admin whether a failure left a half-saved product behind.
+    let wasCreate = false;
 
     try {
       // Build material string from composition
@@ -2023,7 +2320,7 @@ function ProductDrawer({
           "myAppAdminUpdateProduct",
           {
             id: productId,
-            name: draft.name,
+            name: (draft.name || "").trim(),
             ...primaryCategoryFields,
             base_price: Number(draft.base_price),
             description: draft.description || "",
@@ -2039,7 +2336,7 @@ function ProductDrawer({
         const res = await repairCall(
           "myAppAdminCreateProduct",
           {
-            name: draft.name,
+            name: (draft.name || "").trim(),
             ...primaryCategoryFields,
             base_price: Number(draft.base_price),
             description: draft.description || "",
@@ -2052,26 +2349,42 @@ function ProductDrawer({
           { isQuery: false }
         );
         productId = N((res.product || res).id);
+        wasCreate = true;
+        // Record the new id on the draft IMMEDIATELY. This save is a sequence
+        // of independent mutations with no transaction: if any later step
+        // fails, the product already exists. Without this line `draft.id` stayed
+        // null, so pressing Save again took the create branch a second time and
+        // silently produced a DUPLICATE product. With it, a retry re-enters as
+        // an update and the diffing below reconciles whatever did land.
+        setDraft((prev) => ({ ...prev, id: productId }));
       }
 
-      // Step 2: Diff variants — create new, update changed, delete removed
-      // Get the current variants from the server
+      // Step 2: Read authoritative server state for the variant + image diffs.
+      // Keyed on `productId` rather than `draft.id` so it also runs on the pass
+      // that just created the product — that is what makes a retry idempotent
+      // (a partially-completed first attempt is diffed, not re-applied).
       let serverVariants = [];
-      if (draft.id) {
-        try {
-          const detail = await repairCall("myAppGetProductDetail", {
-            productId,
-          });
-          serverVariants = (detail.variants || []).map((v) => ({
-            id: N(v.id),
-            color_id: N(v.color_id),
-            size_id: N(v.size_id),
-            quantity: Number(v.quantity) || 0,
-            low_stock_threshold: Number(v.low_stock_threshold) || 10,
-          }));
-        } catch {
-          /* proceed with empty — worst case we recreate */
-        }
+      let serverImages = [];
+      try {
+        const detail = await repairCall("myAppGetProductDetail", {
+          productId,
+        });
+        serverVariants = (detail.variants || []).map((v) => ({
+          id: N(v.id),
+          color_id: N(v.color_id),
+          size_id: N(v.size_id),
+          quantity: Number(v.quantity) || 0,
+          low_stock_threshold: Number(v.low_stock_threshold) || 10,
+        }));
+        serverImages = (detail.images || []).map((img) => ({
+          id: N(img.id),
+          url: img.url,
+          color_id: img.color_id == null ? null : N(img.color_id),
+          is_primary: !!img.is_primary,
+          sort_order: img.sort_order ?? 0,
+        }));
+      } catch {
+        /* proceed with empty — worst case we recreate */
       }
 
       const draftVariants = draft.variants || [];
@@ -2124,29 +2437,34 @@ function ProductDrawer({
               { isQuery: false }
             );
           } catch {
-            // If delete fails (ordered), set qty to 0
+            // Delete is refused when the variant appears in order history —
+            // that's expected, so fall back to zeroing its stock, which has the
+            // same storefront effect. Only a failure of THAT is worth surfacing.
             try {
               await repairCall(
                 "myAppAdminUpdateProductVariant",
                 { id: sv.id, quantity: 0 },
                 { isQuery: false }
               );
-            } catch {
-              /* swallow */
+            } catch (err) {
+              imageWarnings.push(
+                cleanErr(err, "a removed size could not be cleared")
+              );
             }
           }
         }
       }
 
-      // Step 3: Sync images
-      const serverImages = (editing?.images || []).map((img) => ({
-        id: img.id || img._backendId,
-        url: img.url,
-        color_id: img.color_id,
-        is_primary: !!img.is_primary,
-        sort_order: img.sort_order ?? 0,
-      }));
+      // Step 3: Sync images against the server state fetched in step 2.
       const serverImageIds = new Set(serverImages.map((img) => img.id));
+      // A photo uploaded during a previous FAILED save attempt was created on
+      // the server but its returned id never made it back into the draft, so it
+      // carries no `_backendId`. Matching on (url, color_id) as well as id lets
+      // the retry recognise it as already-present instead of uploading a
+      // duplicate row for the same picture.
+      const serverImageByUrl = new Map(
+        serverImages.map((img) => [`${img.url}::${img.color_id ?? "null"}`, img])
+      );
 
       // Flatten draft photos into a list. The active image mode decides which
       // buckets persist: "shared" → only the SHARED_PHOTO_KEY bucket, saved
@@ -2173,45 +2491,56 @@ function ProductDrawer({
         });
       }
 
-      const draftPhotoBackendIds = new Set(
-        draftPhotos.filter((p) => p._backendId).map((p) => p._backendId)
+      // Resolve each draft photo to the server row it corresponds to (by id
+      // first, then by url+color for rows orphaned by a failed attempt).
+      const resolveServerImage = (dp) => {
+        if (dp._backendId && serverImageIds.has(dp._backendId)) {
+          return serverImages.find((s) => s.id === dp._backendId);
+        }
+        return serverImageByUrl.get(`${dp.url}::${dp.color_id ?? "null"}`);
+      };
+      const keptServerImageIds = new Set(
+        draftPhotos.map((dp) => resolveServerImage(dp)?.id).filter((id) => id != null)
       );
 
       // Delete removed images
       for (const si of serverImages) {
-        if (!draftPhotoBackendIds.has(si.id)) {
+        if (!keptServerImageIds.has(si.id)) {
           try {
             await repairCall(
               "myAppAdminDeleteProductImage",
               { id: si.id },
               { isQuery: false }
             );
-          } catch {
-            /* swallow */
+          } catch (err) {
+            imageWarnings.push(cleanErr(err, "an image could not be removed"));
           }
         }
       }
 
       // Create new images and update existing
       for (const dp of draftPhotos) {
-        if (dp._backendId && serverImageIds.has(dp._backendId)) {
-          // Existing image — update primary/sort_order if changed
-          const si = serverImages.find((s) => s.id === dp._backendId);
+        const si = resolveServerImage(dp);
+        if (si) {
+          // Existing image — update primary/sort_order if changed. Use the
+          // RESOLVED server id: a url-matched row (recovered from a failed
+          // attempt) has no `_backendId`, and sending undefined here made the
+          // resolver reject the call as BAD_INPUT.
           if (
-            si &&
-            (si.is_primary !== dp.primary || si.sort_order !== dp.sort_order)
+            si.is_primary !== !!dp.primary ||
+            si.sort_order !== dp.sort_order
           ) {
             await repairCall(
               "myAppAdminUpdateProductImage",
               {
-                id: dp._backendId,
+                id: si.id,
                 is_primary: !!dp.primary,
                 sort_order: dp.sort_order,
               },
               { isQuery: false }
             );
           }
-        } else if (dp._isNew || !dp._backendId) {
+        } else {
           // New image
           await repairCall(
             "myAppAdminCreateProductImage",
@@ -2256,9 +2585,25 @@ function ProductDrawer({
         { isQuery: false }
       );
 
+      if (imageWarnings.length > 0) {
+        // Everything essential saved; report the parts that didn't rather than
+        // closing the drawer as if the save were clean.
+        setSaveError(`Saved, but: ${imageWarnings.join("; ")}.`);
+        return;
+      }
       onSave();
     } catch (err) {
-      setSaveError(err?.message || "Something went wrong while saving.");
+      const reason = cleanErr(err, "Something went wrong while saving.");
+      // The product row is written first and each later step is its own
+      // request, so a failure past step 1 leaves the product saved but
+      // incomplete. Say so — otherwise the admin reads a bare error as "nothing
+      // happened", and the honest instruction is to press Save again (which is
+      // now safe: the retry diffs against the server instead of re-creating).
+      setSaveError(
+        wasCreate
+          ? `${reason} The product was created but some details did not save — press Save again to finish.`
+          : reason
+      );
     } finally {
       setSaving(false);
     }
@@ -2384,6 +2729,7 @@ function ProductDrawer({
               <Field label="Name" required>
                 <TextInput
                   value={draft.name || ""}
+                  maxLength={PRODUCT_NAME_MAX}
                   onChange={(e) => {
                     setDraft((d) => ({ ...d, name: e.target.value }));
                     clearError("name");
@@ -2396,7 +2742,11 @@ function ProductDrawer({
                   <p className="font-body text-[11px] text-[#dc2626]">
                     {errors.name}
                   </p>
-                ) : null}
+                ) : (
+                  <p className="font-body text-[11px] text-[#9ca3af]">
+                    {(draft.name || "").length}/{PRODUCT_NAME_MAX}
+                  </p>
+                )}
               </Field>
 
               <div>
@@ -2813,7 +3163,7 @@ function ProductDrawer({
                 </div>
                 <p className="mt-3 font-body text-[11px] text-[#6b7280]">
                   Manage the materials list from{" "}
-                  <strong>Catalog → Taxonomies</strong>.
+                  <strong>Catalog → Materials</strong>.
                 </p>
               </div>
 
@@ -3151,6 +3501,43 @@ function ProductDrawer({
                 <p className="-mt-2 font-body text-[11px] text-[#dc2626]">
                   {errors.photos}
                 </p>
+              ) : null}
+
+              <div
+                className="flex items-start gap-2 rounded-[2px] border p-3"
+                style={{ borderColor: "#e5e7eb", backgroundColor: "#f9fafb" }}
+              >
+                <span className="mt-px grid size-4 shrink-0 place-items-center text-[#1d4ed8]">
+                  <IconAlert />
+                </span>
+                <p className="font-body text-[11px] leading-[1.6] text-[#4b5563]">
+                  <span className="font-medium text-[#11191f]">
+                    Photo size: {PRODUCT_IMAGE_SPEC_LABEL}
+                  </span>{" "}
+                  (2:3 portrait). Bigger is fine as long as the shape matches —
+                  1996 × 2996 works, 1200 × 1600 does not. The storefront crops
+                  every photo to this shape, so an off-shape upload loses the
+                  top and bottom of the picture on the cards.
+                </p>
+              </div>
+
+              {photoNotice ? (
+                <div
+                  className="flex items-start justify-between gap-3 rounded-[2px] border p-3"
+                  style={{ borderColor: "#fecaca", backgroundColor: "#fef2f2" }}
+                  role="alert"
+                >
+                  <p className="font-body text-[11px] leading-[1.6] text-[#b91c1c]">
+                    {photoNotice}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setPhotoNotice("")}
+                    className="shrink-0 font-body text-[11px] font-medium text-[#b91c1c] underline"
+                  >
+                    Dismiss
+                  </button>
+                </div>
               ) : null}
 
               {(draft.productColors || []).length === 0 ? (
@@ -3530,7 +3917,7 @@ function PhotoColorBlock({
               >
                 <div
                   className="relative w-full"
-                  style={{ aspectRatio: "3 / 4" }}
+                  style={{ aspectRatio: "2 / 3" }}
                 >
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img
@@ -3630,7 +4017,7 @@ function PhotoColorBlock({
                 type="button"
                 onClick={openPicker}
                 className="flex h-full w-full flex-col items-center justify-center gap-1.5 rounded-[2px] border border-dashed border-[#e5e7eb] bg-[#fafafa] p-3 text-[#11191f] hover:bg-[#f3f4f6]"
-                style={{ aspectRatio: "3 / 4" }}
+                style={{ aspectRatio: "2 / 3" }}
               >
                 <span className="grid size-6 place-items-center">
                   <IconPlus />
@@ -3665,7 +4052,8 @@ function PhotoColorBlock({
               Drop photos here or choose files
             </p>
             <p className="font-body text-[11px] text-[#6b7280]">
-              JPG, PNG, WebP — max 4 MB each
+              {PRODUCT_IMAGE_SPEC_LABEL} (2:3 portrait) — JPG, PNG, WebP, max
+              4 MB each
             </p>
           </div>
           <Button variant="secondary" icon={<IconPlus />} onClick={openPicker}>

@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { BuildingIcon, HomeIcon, LocationIcon } from "./AccountIcons";
+import useDelayedUnmount from "@/lib/useDelayedUnmount";
 
 // DELETE ADDRESS confirmation — Figma mobile 79:5098.
 //
@@ -25,33 +26,12 @@ import { BuildingIcon, HomeIcon, LocationIcon } from "./AccountIcons";
 
 const EXIT_MS = 320;
 
-function useDelayedUnmount(open, exitMs) {
-  const [render, setRender] = useState(open);
-  const [closing, setClosing] = useState(false);
-
-  useEffect(() => {
-    if (open) {
-      setRender(true);
-      setClosing(false);
-      return undefined;
-    }
-    if (!render) return undefined;
-    setClosing(true);
-    const t = setTimeout(() => {
-      setRender(false);
-      setClosing(false);
-    }, exitMs);
-    return () => clearTimeout(t);
-  }, [open, render, exitMs]);
-
-  return { render, dataState: closing ? "closing" : "open" };
-}
-
 export default function DeleteAddressDrawer({ open, address, onClose, onConfirm }) {
   // Keep showing the last address during the exit animation — parent clears it
   // when the drawer closes (same pattern as DeleteCardDrawer / AddToCartDrawer).
-  const lastAddressRef = useRef(address);
-  if (address) lastAddressRef.current = address;
+  // Derived state rather than a render-written ref — see AddToCartDrawer.
+  const [lastAddress, setLastAddress] = useState(address);
+  if (address && address !== lastAddress) setLastAddress(address);
 
   const { render, dataState } = useDelayedUnmount(open && Boolean(address), EXIT_MS);
 
@@ -64,10 +44,10 @@ export default function DeleteAddressDrawer({ open, address, onClose, onConfirm 
     return () => document.removeEventListener("keydown", onKey);
   }, [open, onClose]);
 
-  if (!render || !lastAddressRef.current) return null;
+  if (!render || !lastAddress) return null;
   return (
     <DrawerBody
-      address={lastAddressRef.current}
+      address={lastAddress}
       onClose={onClose}
       onConfirm={onConfirm}
       dataState={dataState}

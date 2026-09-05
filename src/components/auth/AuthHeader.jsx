@@ -24,7 +24,7 @@ export default function AuthHeader({
         ) : null}
         <Link href="/" aria-label="Repair home" className="block">
           <Image
-            src="/auth/blackLogo.png"
+            src="/auth/blackLogo-v2.png"
             alt="Repair"
             width={32}
             height={23}

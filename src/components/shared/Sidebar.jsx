@@ -89,10 +89,19 @@ export default function Sidebar({
   const [drilldownIndex, setDrilldownIndex] = useState(null);
   const [animDir, setAnimDir] = useState("forward");
 
-  useEffect(() => {
+  // Render-phase adjustment: the drilldown position is derived from `open`, so
+  // resetting it in the effect left one render showing the previous sub-menu.
+  const [wasOpen, setWasOpen] = useState(open);
+  if (open !== wasOpen) {
+    setWasOpen(open);
     if (!open) {
       setDrilldownIndex(null);
       setAnimDir("forward");
+    }
+  }
+
+  useEffect(() => {
+    if (!open) {
       return;
     }
     const prevOverflow = document.body.style.overflow;
@@ -156,7 +165,7 @@ export default function Sidebar({
           </button>
           <div className="relative h-5 w-7">
             <Image
-              src="/auth/blackLogo.png"
+              src="/auth/blackLogo-v2.png"
               alt="Repair"
               fill
               sizes="28px"

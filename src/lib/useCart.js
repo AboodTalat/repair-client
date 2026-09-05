@@ -31,6 +31,7 @@ import {
 import { repairCall } from "@/lib/repairAuthedApi";
 import { computeCartTotals } from "@/lib/cartTotals";
 import { validatePromoCode } from "@/lib/promo";
+import useStoreHydrated from "@/lib/useStoreHydrated";
 
 const PROMO_REVALIDATE_MS = 400;
 
@@ -63,13 +64,7 @@ export function useCart({ shippingMethodKey = "standard" } = {}) {
   const guestItems = useRepairStore(selectGuestCartItems);
 
   // Wait for the persisted store to rehydrate before deciding what to show.
-  const [hydrated, setHydrated] = useState(() => useRepairStore.persist.hasHydrated());
-  useEffect(() => {
-    if (hydrated) return undefined;
-    const unsub = useRepairStore.persist.onFinishHydration(() => setHydrated(true));
-    if (useRepairStore.persist.hasHydrated()) setHydrated(true);
-    return unsub;
-  }, [hydrated]);
+  const hydrated = useStoreHydrated();
 
   // Logged-in server cart.
   const [serverItems, setServerItems] = useState([]);

@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Button from "@/components/admin/shared/Button";
 import Drawer from "@/components/admin/shared/Drawer";
 import Modal from "@/components/admin/shared/Modal";
-import { Field, TextInput, Toggle, Select } from "@/components/admin/shared/Form";
+import { Field, TextInput, Toggle, Select, SearchInput } from "@/components/admin/shared/Form";
 import {
   IconPlus,
   IconEdit,
@@ -42,6 +42,12 @@ function cleanErr(e, fallback) {
 
 const blankMajor = { id: null, name: "", visible: true, comingSoon: false, image: null };
 const blankSub = { id: null, majorId: null, name: "", visible: true, comingSoon: false };
+
+// Mirrors CATEGORY_NAME_MAX in the backend adminCatalog.ts (and the
+// major_categories/sub_categories VARCHAR(100) column). The input caps at the
+// same number so the admin is stopped at the keyboard rather than by a
+// round-trip rejection.
+const NAME_MAX = 100;
 
 const MAJOR_ACCENT_COLORS = ["#1d4ed8", "#7c3aed", "#059669", "#d97706", "#0891b2", "#db2777"];
 
@@ -93,6 +99,7 @@ export default function CategoryManager() {
   const [confirmError, setConfirmError] = useState(null);
   const [deleting, setDeleting] = useState(false);
   const [drag, setDrag] = useState(null);
+  const [query, setQuery] = useState("");
   const dragRef = useRef(null);
 
   const fetchTree = useCallback(async () => {
@@ -104,7 +111,7 @@ export default function CategoryManager() {
       setSubs(s);
       setExpanded((prev) => (prev.size === 0 && m.length > 0 ? new Set([m[0].id]) : prev));
     } catch (err) {
-      setError(err?.message || "Failed to load categories");
+      setError(cleanErr(err, "Failed to load categories"));
     } finally {
       setLoading(false);
     }
@@ -128,6 +135,43 @@ export default function CategoryManager() {
   }, [subs]);
 
   const sortedMajors = useMemo(() => [...majors].sort((a, b) => a.order - b.order), [majors]);
+
+  // ── Search ──
+  // The whole tree is already in memory (categories are a small, bounded set
+  // even for a large catalogue — it's products that scale, not taxonomy), so
+  // the filter runs client-side with no refetch. Without it, an admin managing
+  // dozens of majors has no way to reach one but to scroll.
+  const needle = query.trim().toLowerCase();
+  const searching = needle !== "";
+
+  const visibleTree = useMemo(() => {
+    const rows = sortedMajors.map((m, i) => ({
+      major: m,
+      // Accent is keyed to the major's position in the FULL tree, so a category
+      // keeps its colour while a search filters the list around it.
+      accent: MAJOR_ACCENT_COLORS[i % MAJOR_ACCENT_COLORS.length],
+      subList: subsByMajor.get(m.id) || [],
+    }));
+    if (!searching) return rows;
+    // A major matches on its own name (keep all its subs — you asked for that
+    // whole branch) or on any sub matching (show just the matching subs).
+    const out = [];
+    rows.forEach((row) => {
+      if (row.major.name.toLowerCase().includes(needle)) {
+        out.push(row);
+        return;
+      }
+      const subHits = row.subList.filter((s) => s.name.toLowerCase().includes(needle));
+      if (subHits.length > 0) out.push({ ...row, subList: subHits });
+    });
+    return out;
+  }, [searching, needle, sortedMajors, subsByMajor]);
+
+  // Reordering is disabled while a search is active. Both the arrows and the
+  // drag handle move a row relative to its neighbours in the FULL ordering, so
+  // operating them against a filtered list would move a category next to a row
+  // that isn't on screen — silently, and with no undo.
+  const canReorder = !searching;
 
   function toggleExpand(id) {
     setExpanded((prev) => {
@@ -157,7 +201,7 @@ export default function CategoryManager() {
       bustStorefrontNav();
       await fetchTree();
     } catch (err) {
-      setError(err?.message || "Failed to reorder");
+      setError(cleanErr(err, "Failed to reorder"));
       await fetchTree();
     }
   }
@@ -271,7 +315,7 @@ export default function CategoryManager() {
         bustStorefrontNav();
       } catch (err) {
         setMajors((prev) => prev.map((m) => (m.id === id ? { ...m, visible: !newVis } : m)));
-        setError(err?.message || "Failed to update visibility");
+        setError(cleanErr(err, "Failed to update visibility"));
       }
     } else {
       setSubs((prev) => prev.map((s) => (s.id === id ? { ...s, visible: newVis } : s)));
@@ -280,7 +324,7 @@ export default function CategoryManager() {
         bustStorefrontNav();
       } catch (err) {
         setSubs((prev) => prev.map((s) => (s.id === id ? { ...s, visible: !newVis } : s)));
-        setError(err?.message || "Failed to update visibility");
+        setError(cleanErr(err, "Failed to update visibility"));
       }
     }
   }
@@ -297,12 +341,16 @@ export default function CategoryManager() {
       bustStorefrontNav();
     } catch (err) {
       setList((prev) => prev.map((r) => (r.id === id ? { ...r, comingSoon: !next } : r)));
-      setError(err?.message || "Failed to update coming-soon flag");
+      setError(cleanErr(err, "Failed to update coming-soon flag"));
     }
   }
 
-  async function saveEditing(values) {
+  async function saveEditing(rawValues) {
     if (!editing) return;
+    // Trim before the wire so a trailing space can't create "Hoodies " as a
+    // second category alongside "Hoodies". The resolver trims too — this just
+    // keeps what's sent identical to what gets stored.
+    const values = { ...rawValues, name: (rawValues?.name ?? "").trim() };
     try {
       if (editing.kind === "major") {
         // `image` is null when cleared or never set; the resolver normalizes
@@ -389,25 +437,42 @@ export default function CategoryManager() {
       )}
 
       <div className="rounded-[4px] border border-[#e5e7eb] bg-white" style={{ borderTop: "3px solid #1d4ed8" }}>
-        <div className="flex items-center justify-between border-b border-[#e5e7eb] px-4 py-3">
-          <div>
-            <p className="font-display text-[13px] font-bold uppercase tracking-[1.2px] text-[#11191f]">
-              Category tree
-            </p>
+        <div className="flex flex-col gap-3 border-b border-[#e5e7eb] px-4 py-3">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <p className="font-display text-[13px] font-bold uppercase tracking-[1.2px] text-[#11191f]">
+                Category tree
+              </p>
+              <p className="font-body text-[11px] text-[#6b7280]">
+                Drag the grip handle to reorder (mouse or touch), or use the arrows. Toggle visibility to hide a category from the storefront.
+              </p>
+            </div>
+            <Button icon={<IconPlus />} onClick={() => setEditing({ kind: "major", row: blankMajor })}>
+              New major
+            </Button>
+          </div>
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+            <div className="w-full sm:max-w-[320px]">
+              <SearchInput
+                value={query}
+                onChange={setQuery}
+                placeholder="Search majors and sub-categories…"
+              />
+            </div>
             <p className="font-body text-[11px] text-[#6b7280]">
-              Drag the grip handle to reorder (mouse or touch), or use the arrows. Toggle visibility to hide a category from the storefront.
+              {searching
+                ? `${visibleTree.length} of ${sortedMajors.length} majors match — reordering paused while filtering`
+                : `${sortedMajors.length} major · ${subs.length} sub-categories`}
             </p>
           </div>
-          <Button icon={<IconPlus />} onClick={() => setEditing({ kind: "major", row: blankMajor })}>
-            New major
-          </Button>
         </div>
 
         <ul>
-          {sortedMajors.map((m, idx) => {
-            const accentColor = MAJOR_ACCENT_COLORS[idx % MAJOR_ACCENT_COLORS.length];
-            const open = expanded.has(m.id);
-            const subList = subsByMajor.get(m.id) || [];
+          {visibleTree.map(({ major: m, accent: accentColor, subList }, idx) => {
+            // While searching, matched branches open themselves — otherwise a
+            // sub-category hit would sit inside a collapsed major and read as
+            // "no results".
+            const open = searching || expanded.has(m.id);
             const isDragging = drag?.kind === "major" && drag?.id === m.id;
             const showBefore =
               drag?.kind === "major" && drag?.overId === m.id && drag?.overPos === "before" && drag?.id !== m.id;
@@ -443,18 +508,22 @@ export default function CategoryManager() {
                     (isDragging ? "opacity-50" : "")
                   }
                 >
-                  <span
-                    role="button"
-                    tabIndex={-1}
-                    aria-label="Drag to reorder"
-                    title="Drag to reorder"
-                    onClick={(e) => e.stopPropagation()}
-                    onPointerDown={(e) => onGripPointerDown(e, "major", m.id, null)}
-                    {...dragHandlers}
-                    className="grid size-5 cursor-grab touch-none place-items-center text-[#9ca3af] active:cursor-grabbing"
-                  >
-                    <IconGrip />
-                  </span>
+                  {canReorder ? (
+                    <span
+                      role="button"
+                      tabIndex={-1}
+                      aria-label="Drag to reorder"
+                      title="Drag to reorder"
+                      onClick={(e) => e.stopPropagation()}
+                      onPointerDown={(e) => onGripPointerDown(e, "major", m.id, null)}
+                      {...dragHandlers}
+                      className="grid size-5 cursor-grab touch-none place-items-center text-[#9ca3af] active:cursor-grabbing"
+                    >
+                      <IconGrip />
+                    </span>
+                  ) : (
+                    <span aria-hidden className="size-5 shrink-0" />
+                  )}
                   <span aria-hidden className="grid size-6 place-items-center">
                     <span className="grid size-4 place-items-center" style={{ color: accentColor }}>
                       {open ? <IconChevronDown /> : <IconChevronRight />}
@@ -480,20 +549,27 @@ export default function CategoryManager() {
                         className="rounded-full px-2 py-0.5 font-body text-[10px] font-medium"
                         style={{ backgroundColor: accentColor + "18", color: accentColor }}
                       >
-                        {m.productCount} products
+                        {m.productCount} {m.productCount === 1 ? "product" : "products"}
                       </span>
-                      <span className="rounded-full bg-[#f3f4f6] px-2 py-0.5 font-body text-[10px] font-medium text-[#6b7280]">
+                      {/* #4b5563 rather than #6b7280: at this 10px size the
+                          lighter grey measured 4.39:1 on #f3f4f6, just under
+                          the 4.5:1 AA threshold. */}
+                      <span className="rounded-full bg-[#f3f4f6] px-2 py-0.5 font-body text-[10px] font-medium text-[#4b5563]">
                         {subList.length} sub{subList.length !== 1 ? "s" : ""}
                       </span>
                     </div>
                   </div>
                   <div className="flex items-center gap-1">
-                    <RowIconBtn variant="indigo" label="Move up" disabled={idx === 0} onClick={() => moveMajor(m.id, -1)}>
-                      <IconArrowUp />
-                    </RowIconBtn>
-                    <RowIconBtn variant="indigo" label="Move down" disabled={idx === sortedMajors.length - 1} onClick={() => moveMajor(m.id, 1)}>
-                      <IconArrowDown />
-                    </RowIconBtn>
+                    {canReorder ? (
+                      <>
+                        <RowIconBtn variant="indigo" label="Move up" disabled={idx === 0} onClick={() => moveMajor(m.id, -1)}>
+                          <IconArrowUp />
+                        </RowIconBtn>
+                        <RowIconBtn variant="indigo" label="Move down" disabled={idx === visibleTree.length - 1} onClick={() => moveMajor(m.id, 1)}>
+                          <IconArrowDown />
+                        </RowIconBtn>
+                      </>
+                    ) : null}
                     <RowIconBtn variant="amber" label={m.visible ? "Deactivate" : "Activate"} onClick={() => toggleVisibility("major", m.id)}>
                       {m.visible ? <IconEye /> : <IconEyeOff />}
                     </RowIconBtn>
@@ -551,17 +627,21 @@ export default function CategoryManager() {
                             >
                               {subShowBefore ? <span className="pointer-events-none absolute inset-x-0 top-0 h-0.5 bg-[#1d4ed8]" /> : null}
                               {subShowAfter ? <span className="pointer-events-none absolute inset-x-0 bottom-0 h-0.5 bg-[#1d4ed8]" /> : null}
-                              <span
-                                role="button"
-                                tabIndex={-1}
-                                aria-label="Drag to reorder"
-                                title="Drag to reorder"
-                                onPointerDown={(e) => onGripPointerDown(e, "sub", s.id, m.id)}
-                                {...dragHandlers}
-                                className="grid size-4 cursor-grab touch-none place-items-center text-[#9ca3af] active:cursor-grabbing"
-                              >
-                                <IconGrip />
-                              </span>
+                              {canReorder ? (
+                                <span
+                                  role="button"
+                                  tabIndex={-1}
+                                  aria-label="Drag to reorder"
+                                  title="Drag to reorder"
+                                  onPointerDown={(e) => onGripPointerDown(e, "sub", s.id, m.id)}
+                                  {...dragHandlers}
+                                  className="grid size-4 cursor-grab touch-none place-items-center text-[#9ca3af] active:cursor-grabbing"
+                                >
+                                  <IconGrip />
+                                </span>
+                              ) : (
+                                <span aria-hidden className="size-4 shrink-0" />
+                              )}
                               <span aria-hidden className="size-2 shrink-0 rounded-full" style={{ backgroundColor: accentColor }} />
                               <div className="min-w-0 flex-1">
                                 <div className="flex items-center gap-2">
@@ -580,16 +660,20 @@ export default function CategoryManager() {
                                   className="mt-0.5 inline-block rounded-full px-2 py-0.5 font-body text-[10px] font-medium"
                                   style={{ backgroundColor: accentColor + "12", color: accentColor }}
                                 >
-                                  {s.productCount} products
+                                  {s.productCount} {s.productCount === 1 ? "product" : "products"}
                                 </span>
                               </div>
                               <div className="flex items-center gap-1">
-                                <RowIconBtn variant="indigo" label="Move up" disabled={j === 0} onClick={() => moveSub(s.id, -1)}>
-                                  <IconArrowUp />
-                                </RowIconBtn>
-                                <RowIconBtn variant="indigo" label="Move down" disabled={j === subList.length - 1} onClick={() => moveSub(s.id, 1)}>
-                                  <IconArrowDown />
-                                </RowIconBtn>
+                                {canReorder ? (
+                                  <>
+                                    <RowIconBtn variant="indigo" label="Move up" disabled={j === 0} onClick={() => moveSub(s.id, -1)}>
+                                      <IconArrowUp />
+                                    </RowIconBtn>
+                                    <RowIconBtn variant="indigo" label="Move down" disabled={j === subList.length - 1} onClick={() => moveSub(s.id, 1)}>
+                                      <IconArrowDown />
+                                    </RowIconBtn>
+                                  </>
+                                ) : null}
                                 <RowIconBtn variant="amber" label={s.visible ? "Deactivate" : "Activate"} onClick={() => toggleVisibility("sub", s.id)}>
                                   {s.visible ? <IconEye /> : <IconEyeOff />}
                                 </RowIconBtn>
@@ -618,6 +702,23 @@ export default function CategoryManager() {
             );
           })}
         </ul>
+
+        {visibleTree.length === 0 ? (
+          <div className="px-4 py-10 text-center">
+            <p className="font-body text-[13px] text-[#11191f]">
+              {searching ? (
+                <>
+                  No category matches <span className="font-semibold">{query.trim()}</span>.
+                </>
+              ) : (
+                "No categories yet."
+              )}
+            </p>
+            <p className="mt-1 font-body text-[12px] text-[#6b7280]">
+              {searching ? "Clear the search to see the full tree." : "Create a major category to start the storefront navigation."}
+            </p>
+          </div>
+        ) : null}
       </div>
 
       <CategoryDrawer
@@ -662,12 +763,12 @@ export default function CategoryManager() {
               <div className="rounded-[2px] border border-[#fde68a] bg-[#fffbeb] px-3 py-2.5">
                 <p className="font-body text-[12px] font-semibold text-[#92400e]">
                   {confirm?.kind === "major"
-                    ? `This category and its sub-categories have ${confirm.productCount} product${confirm.productCount === 1 ? "" : "s"} assigned.`
-                    : `This sub-category has ${confirm.productCount} product${confirm.productCount === 1 ? "" : "s"} assigned.`}
+                    ? `This category and its sub-categories have ${confirm?.productCount} product${confirm?.productCount === 1 ? "" : "s"} assigned.`
+                    : `This sub-category has ${confirm?.productCount} product${confirm?.productCount === 1 ? "" : "s"} assigned.`}
                 </p>
                 <p className="mt-1 font-body text-[11px] text-[#92400e]">
                   A category can&rsquo;t be deleted while products are assigned to it. Move or
-                  reassign {confirm.productCount === 1 ? "it" : "them"} to another category first,
+                  reassign {confirm?.productCount === 1 ? "it" : "them"} to another category first,
                   then delete.
                 </p>
               </div>
@@ -679,7 +780,7 @@ export default function CategoryManager() {
                   {confirm?.kind === "major" && confirm?.subCount > 0 ? (
                     <span className="text-[#dc2626]">
                       {" "}
-                      This will also remove {confirm.subCount} sub-categor{confirm.subCount === 1 ? "y" : "ies"}.
+                      This will also remove {confirm?.subCount} sub-categor{confirm?.subCount === 1 ? "y" : "ies"}.
                     </span>
                   ) : null}
                 </p>
@@ -786,7 +887,7 @@ function CategoryDrawer({ editing, majors, onClose, onSave }) {
     try {
       await onSave(draft);
     } catch (err) {
-      setDrawerError(err?.message || "Something went wrong.");
+      setDrawerError(cleanErr(err, "Something went wrong."));
     } finally {
       setSaving(false);
     }
@@ -835,6 +936,7 @@ function CategoryDrawer({ editing, majors, onClose, onSave }) {
           <Field label="Name" required>
             <TextInput
               value={draft.name || ""}
+              maxLength={NAME_MAX}
               onChange={(e) => {
                 setDraft((d) => ({ ...d, name: e.target.value }));
                 setErrors((e) => ({ ...e, name: "" }));
@@ -844,7 +946,12 @@ function CategoryDrawer({ editing, majors, onClose, onSave }) {
             />
             {errors.name ? (
               <span className="font-body text-[11px] text-[#dc2626]">{errors.name}</span>
-            ) : null}
+            ) : (
+              <span className="font-body text-[11px] text-[#9ca3af]">
+                Becomes the storefront URL, so it has to be unique
+                {editing?.kind === "sub" ? " within its major category" : ""}. {(draft.name || "").length}/{NAME_MAX}
+              </span>
+            )}
           </Field>
           {editing?.kind === "major" ? (
             <Field label="Category image">

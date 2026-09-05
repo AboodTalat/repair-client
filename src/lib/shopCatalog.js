@@ -34,6 +34,15 @@ const STOREFRONT_REVALIDATE = (() => {
   return Number.isFinite(v) && v >= 0 ? v : 60;
 })();
 
+// On-demand invalidation tag for every product-derived storefront read (grid,
+// detail, related, facet options, category product_count). The admin Products
+// page calls the `revalidateStorefrontProducts` server action after each
+// mutation, so an edit surfaces on the very next refresh instead of waiting out
+// STOREFRONT_REVALIDATE. Mirrors CATEGORY_CACHE_TAG in storeNav.js — without it
+// an admin who saves a product and immediately reloads the storefront sees the
+// old copy no matter how many times they refresh.
+export const PRODUCT_CACHE_TAG = "repair-products";
+
 // Wire item (myAppListProducts) → ProductCard prop shape.
 //   subtitle  ← products.material (stores the subtitle / composition string)
 //   salePrice ← effective_price only when an active discount lowered the price
@@ -105,7 +114,10 @@ export async function fetchShopProducts({
     // Short ISR window (STOREFRONT_REVALIDATE) so a spike collapses onto one
     // backend call per unique query per window instead of one per page load,
     // while admin edits still surface on the next refresh inside the window.
-    const res = await repairQuery("myAppListProducts", variables, { revalidate: STOREFRONT_REVALIDATE });
+    const res = await repairQuery("myAppListProducts", variables, {
+      revalidate: STOREFRONT_REVALIDATE,
+      tags: [PRODUCT_CACHE_TAG],
+    });
     const items = Array.isArray(res?.items) ? res.items : [];
     const mapped = items.map(mapListItemToCard);
     const total = Number.isFinite(Number(res?.total)) ? Number(res.total) : mapped.length;
@@ -129,10 +141,12 @@ export async function fetchShopProducts({
 //   priceRange → { min, max } | null  (MIN/MAX base_price across visible products)
 export const fetchShopFacets = cache(async () => {
   const [colorsRes, sizesRes, materialsRes, priceRes] = await Promise.all([
-    repairQuery("myAppListColors", {}, { revalidate: 300 }).catch(() => null),
-    repairQuery("myAppListSizes", {}, { revalidate: 300 }).catch(() => null),
-    repairQuery("myAppListMaterials", {}, { revalidate: 300 }).catch(() => null),
-    repairQuery("myAppGetPriceRange", {}, { revalidate: 300 }).catch(() => null),
+    repairQuery("myAppListColors", {}, { revalidate: 300, tags: [PRODUCT_CACHE_TAG] }).catch(() => null),
+    repairQuery("myAppListSizes", {}, { revalidate: 300, tags: [PRODUCT_CACHE_TAG] }).catch(() => null),
+    repairQuery("myAppListMaterials", {}, { revalidate: 300, tags: [PRODUCT_CACHE_TAG] }).catch(() => null),
+    // Price bounds move whenever a product price changes, so this one really
+    // does need the product tag despite being "reference data".
+    repairQuery("myAppGetPriceRange", {}, { revalidate: 300, tags: [PRODUCT_CACHE_TAG] }).catch(() => null),
   ]);
 
   const colors = (Array.isArray(colorsRes?.items) ? colorsRes.items : [])
@@ -154,6 +168,38 @@ export const fetchShopFacets = cache(async () => {
 
   return { colors, sizes, materials, priceRange };
 });
+
+// Active, admin-flagged discount banner for the category the shopper is viewing
+// (myAppGetCategoryDiscountBanner). Returns the banner payload
+//   { id, discount_type, discount_value, target_type, target_id, target_name,
+//     starts_at, ends_at, banner_headline, banner_subtext }
+// or null when there is no active banner discount. `subId` is optional (a
+// major-only view). Short ISR window so a newly *expired* banner surfaces
+// promptly; the live countdown itself ticks client-side off `ends_at`.
+//
+// Tagged PRODUCT_CACHE_TAG so an admin discount edit busts it immediately —
+// the same action already busts the grid/detail prices this banner advertises,
+// and a banner that outlived the price it points at is worse than either being
+// stale alone. Without the tag this read was the untagged-fetch case
+// lib/CLAUDE.md warns about: no number of browser refreshes reaches past a
+// server-side cache entry.
+export async function fetchCategoryDiscountBanner({ majorId, subId } = {}) {
+  const hasMajor = Number.isFinite(Number(majorId)) && Number(majorId) > 0;
+  const hasSub = subId != null && Number.isFinite(Number(subId)) && Number(subId) > 0;
+  if (!hasMajor && !hasSub) return null;
+  try {
+    const variables = {};
+    if (hasMajor) variables.majorId = Number(majorId);
+    if (hasSub) variables.subId = Number(subId);
+    const res = await repairQuery("myAppGetCategoryDiscountBanner", variables, {
+      revalidate: STOREFRONT_REVALIDATE,
+      tags: [PRODUCT_CACHE_TAG],
+    });
+    return res?.banner ?? null;
+  } catch {
+    return null;
+  }
+}
 
 // Resolve a sub-category's parent major from the cached category tree. Needed
 // for related-product broadening: a sub-primary product carries a NULL
@@ -207,7 +253,7 @@ async function fetchRelatedProducts(detail) {
       const res = await repairQuery(
         "myAppListProducts",
         { ...vars, limit: 12 },
-        { revalidate: STOREFRONT_REVALIDATE }
+        { revalidate: STOREFRONT_REVALIDATE, tags: [PRODUCT_CACHE_TAG] }
       );
       const items = Array.isArray(res?.items) ? res.items : [];
       for (const it of items) {
@@ -353,7 +399,10 @@ export const fetchProductDetail = cache(async (slug) => {
     // the low-stock banner. Settings failure degrades to 0 (banner off), never
     // blocks the page.
     const [detail, settings] = await Promise.all([
-      repairQuery("myAppGetProductDetail", { productId }, { revalidate: STOREFRONT_REVALIDATE }),
+      repairQuery("myAppGetProductDetail", { productId }, {
+        revalidate: STOREFRONT_REVALIDATE,
+        tags: [PRODUCT_CACHE_TAG],
+      }),
       repairQuery("myAppGetCommerceSettings", {}, { revalidate: STOREFRONT_REVALIDATE }).catch(() => null),
     ]);
     if (!detail || detail.id == null) return null;

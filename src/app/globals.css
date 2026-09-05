@@ -2,6 +2,13 @@
 
 @source "../**/*.{js,jsx,mjs,ts,tsx}";
 @source "../../src/**/*.{js,jsx,mjs,ts,tsx}";
+/* Markdown is NOT source. The @source rules above ADD to Tailwind v4's automatic
+   detection rather than replacing it, so the CLAUDE.md files were being scanned
+   and their illustrative class names compiled into the bundle as real rules —
+   including invalid ones like `.top-\[Npx\]{top:Npx}` from placeholder notation.
+   Harmless in size, but it means any class name written in prose becomes CSS.
+   Verified Aug 2026 by finding those exact rules in the production chunk. */
+@source not "../../**/*.md";
 
 :root {
   --background: #ffffff;

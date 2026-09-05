@@ -135,7 +135,7 @@ export default function ShopHeader({ categories = [] }) {
       className="absolute left-1/2 top-1/2 h-[35px] w-12 -translate-x-1/2 -translate-y-1/2"
     >
       <Image
-        src="/home/logo-re.png"
+        src="/home/logo-re-v2.png"
         alt="Repair"
         fill
         sizes="48px"
@@ -316,7 +316,7 @@ export default function ShopHeader({ categories = [] }) {
             className="absolute left-1/2 top-1/2 h-[23px] w-8 -translate-x-1/2 -translate-y-1/2"
           >
             <Image
-              src="/home/logo-re.png"
+              src="/home/logo-re-v2.png"
               alt="Repair"
               fill
               sizes="32px"

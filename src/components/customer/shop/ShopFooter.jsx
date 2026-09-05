@@ -52,7 +52,7 @@ export default function ShopFooter({ categories = [] }) {
           <div className="flex flex-col gap-[22.8px]">
             <Link href="/" aria-label="Repair home" className="relative h-[33px] w-12">
               <Image
-                src="/home/logo-re.png"
+                src="/home/logo-re-v2.png"
                 alt="Repair"
                 fill
                 sizes="48px"

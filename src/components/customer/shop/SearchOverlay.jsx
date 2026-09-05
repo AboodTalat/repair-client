@@ -5,6 +5,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { repairCall } from "@/lib/repairAuthedApi";
 import ProductCard from "@/components/customer/shop/ProductCard";
+import useDelayedUnmount from "@/lib/useDelayedUnmount";
 
 // myAppListProducts item → ProductCard prop shape (client-side counterpart of
 // shopCatalog.js's server mapper; kept inline so this client component doesn't
@@ -59,30 +60,6 @@ const SEARCH_DEBOUNCE_MS = 250;
 //
 // Both variants share linear fade in/out (240ms) via `.search-overlay`.
 
-// Same delayed-unmount pattern used in FilterDrawer / AddToCartDrawer so the
-// fade-out can play before the element leaves the tree.
-function useDelayedUnmount(open, exitMs) {
-  const [render, setRender] = useState(open);
-  const [closing, setClosing] = useState(false);
-
-  useEffect(() => {
-    if (open) {
-      setRender(true);
-      setClosing(false);
-      return undefined;
-    }
-    if (!render) return undefined;
-    setClosing(true);
-    const t = setTimeout(() => {
-      setRender(false);
-      setClosing(false);
-    }, exitMs);
-    return () => clearTimeout(t);
-  }, [open, render, exitMs]);
-
-  return { render, dataState: closing ? "closing" : "open" };
-}
-
 export default function SearchOverlay({ open, onClose }) {
   const { render, dataState } = useDelayedUnmount(open, 240);
   if (!render) return null;
@@ -120,14 +97,14 @@ function Body({ onClose, dataState }) {
   // Debounced server search — one request per pause in typing, not per keystroke.
   // `active` drops a stale response if the query changed before it resolved.
   useEffect(() => {
-    if (!trimmed) {
-      setResults([]);
-      setLoading(false);
-      return undefined;
-    }
-    setLoading(true);
+    if (!trimmed) return undefined;
+    // setLoading runs in the debounce callback, not the effect body — a search
+    // that is still being typed has not started yet, so flipping the spinner on
+    // synchronously here also made the "no results" copy flash between
+    // keystrokes.
     let active = true;
     const t = setTimeout(() => {
+      setLoading(true);
       repairCall("myAppListProducts", { search: trimmed, limit: 12 }, { isQuery: true })
         .then((d) => {
           if (!active) return;

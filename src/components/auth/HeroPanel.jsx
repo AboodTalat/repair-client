@@ -20,7 +20,7 @@ export default function HeroPanel({
 
       <div className="absolute left-8 top-8 h-[33px] w-12">
         <Image
-          src="/home/logo-re.png"
+          src="/home/logo-re-v2.png"
           alt="Repair"
           fill
           sizes="48px"

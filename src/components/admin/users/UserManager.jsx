@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Button from "@/components/admin/shared/Button";
 import DataTable from "@/components/admin/shared/DataTable";
+import PagedFooter from "@/components/admin/shared/PagedFooter";
+import usePagedList from "@/components/admin/shared/usePagedList";
 import Drawer from "@/components/admin/shared/Drawer";
 import Modal from "@/components/admin/shared/Modal";
 import StatusBadge from "@/components/admin/shared/StatusBadge";
@@ -11,6 +13,7 @@ import { IconPlus, IconEdit, IconTrash, IconMail } from "@/components/admin/shar
 import CountryCodePicker from "@/components/customer/contact/CountryCodePicker";
 import { DEFAULT_COUNTRY, phoneLengthFor } from "@/lib/countryCodes";
 import { repairCall } from "@/lib/repairAuthedApi";
+import { useSearchParams } from "next/navigation";
 import { useRepairStore, selectUser } from "@/lib/useRepairStore";
 import Link from "next/link";
 
@@ -21,7 +24,22 @@ const ROLES = [
   { value: "customer", label: "Customer" },
 ];
 
+// Mirrors ADMIN_EMAIL_RE in the backend auth.ts — keep the two in lockstep.
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+
+// Mirrors normalizeAdminPhone in the backend auth.ts — keep the two in lockstep.
+// Deliberately country-agnostic: the per-country digit rules live in the create
+// form's country picker, and bare digits are allowed so rows stored before that
+// picker existed stay editable.
+const PHONE_RE = /^\+?\d{7,15}$/;
+
+// repairCall throws with a message shaped like "repairClientApi <op>: <server
+// message>". Strip the prefix so the admin sees the server's own reason (e.g.
+// "Please enter a valid email address"). Mirrors the other admin managers.
+function cleanErr(e, fallback) {
+  const m = (e?.message || "").replace(/^repairClientApi \S+:\s*/, "");
+  return m || fallback;
+}
 
 function formatDate(iso) {
   if (!iso) return "—";
@@ -50,53 +68,64 @@ function buildPhone(localDigits, dialCode) {
   return `+${dialCode}${stripped}`;
 }
 
+/** Rows per page; the list loads more on demand. */
+const PAGE_SIZE = 50;
+
 export default function UserManager() {
-  const [users, setUsers] = useState([]);
-  const [total, setTotal] = useState(0);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
+  // Debounced copy of the search box — the paged list refetches when its
+  // fetcher identity changes, so this is what avoids a request per keystroke.
+  // Seeded from `?q=` so the TopBar global search can hand off a term and land
+  // on a pre-filtered list. Read during the useState initializer (not a mount
+  // effect) — an effect here would be a `set-state-in-effect` lint error and
+  // would flash the unfiltered list for one frame first.
+  const initialQ = useSearchParams().get("q") || "";
+  const [appliedQuery, setAppliedQuery] = useState(initialQ);
   const [role, setRole] = useState("all");
-  const [query, setQuery] = useState("");
+  const [query, setQuery] = useState(initialQ);
   const [editing, setEditing] = useState(null);
   const [confirmDelete, setConfirmDelete] = useState(null);
   const [resetting, setResetting] = useState(null);
   const [notice, setNotice] = useState(null);
   const [saving, setSaving] = useState(false);
+  // MUTATION errors live here, separate from usePagedList's `error`, which is
+  // for LOAD failures only and is cleared by every refetch. The toggle and
+  // delete handlers below used to call a `setError` that was never declared in
+  // this component (the only one in the file belongs to ResetPasswordModal), so
+  // both threw `ReferenceError: setError is not defined` on their first line —
+  // inside an async function, so the rejection was unhandled and nothing
+  // surfaced. Neither action worked at all and neither said so: the toggle
+  // snapped back, and Delete left its confirm modal sitting open. Verified in
+  // the browser before the fix.
+  const [actionError, setActionError] = useState(null);
 
   const me = useRepairStore(selectUser);
   const debounceRef = useRef(null);
   const mountedRef = useRef(false);
 
-  const fetchUsers = useCallback(async (filters = {}) => {
-    setLoading(true);
-    setError(null);
-    try {
-      const input = {};
-      if (filters.role && filters.role !== "all") input.role = filters.role;
-      if (filters.search) input.search = filters.search;
-      const data = await repairCall("myAppAdminListUsers", input, { isQuery: true });
-      setUsers(data.users || []);
-      setTotal(data.total ?? 0);
-    } catch (err) {
-      setError(err?.message || "Failed to load users");
-      setUsers([]);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
   useEffect(() => {
     if (!mountedRef.current) {
       mountedRef.current = true;
-      fetchUsers({ role, search: query });
+      setAppliedQuery(query);
       return;
     }
     if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => {
-      fetchUsers({ role, search: query });
-    }, 250);
+    debounceRef.current = setTimeout(() => setAppliedQuery(query), 250);
     return () => clearTimeout(debounceRef.current);
-  }, [query, role, fetchUsers]);
+  }, [query]);
+
+  const fetchPage = useCallback(
+    async ({ limit, offset }) => {
+      const input = { limit, offset };
+      if (role && role !== "all") input.role = role;
+      if (appliedQuery) input.search = appliedQuery;
+      const data = await repairCall("myAppAdminListUsers", input, { isQuery: true });
+      return { items: data.users || [], total: data?.total };
+    },
+    [role, appliedQuery],
+  );
+
+  const list = usePagedList({ pageSize: PAGE_SIZE, fetchPage });
+  const { items: users, total, loading, error, setItems: setUsers } = list;
 
   async function save(values) {
     setSaving(true);
@@ -107,31 +136,42 @@ export default function UserManager() {
       if (values.id) {
         await repairCall("myAppAdminUpdateUser", {
           userId: Number(values.id),
-          email: values.email,
-          phone: values.phone || null,
+          // TRIMMED before the wire. validate() checks a trimmed COPY, so an
+          // address pasted with a trailing space passed validation and was then
+          // stored padded — and myAppLogin matches the stored string exactly,
+          // so that account could never sign in again.
+          email: (values.email || "").trim(),
+          phone: (values.phone || "").trim() || null,
           role: values.role,
           thunder_connected: thunderConnected,
         }, { isQuery: false });
       } else {
         const phone = buildPhone(values.phoneLocal, values.phoneDial);
+        // Omitting `password` entirely is what selects the backend's setup-link
+        // branch: it mints a single-use password_reset_tokens row and emails a
+        // link so the user picks their own, and the admin never learns the
+        // credential. Sending one instead puts the plaintext password in the
+        // welcome email. Don't send `password: ""` — the resolver branches on
+        // truthiness, so an empty string takes the link path by accident rather
+        // than by intent, which is a bad thing to leave resting on coercion.
         await repairCall("myAppAdminCreateUser", {
-          email: values.email,
+          email: (values.email || "").trim(),
           phone,
           role: values.role,
-          password: values.password,
+          ...(values.pwMode === "set" ? { password: values.password } : {}),
           is_active: values.is_active ?? true,
           thunder_connected: thunderConnected,
         }, { isQuery: false });
       }
       setEditing(null);
-      await fetchUsers({ role, search: query });
+      await list.refresh();
     } finally {
       setSaving(false);
     }
   }
 
   async function toggleActive(user) {
-    setError(null);
+    setActionError(null);
     const newActive = !user.is_active;
     setUsers((prev) => prev.map((u) => (u.id === user.id ? { ...u, is_active: newActive } : u)));
     try {
@@ -139,21 +179,32 @@ export default function UserManager() {
         userId: Number(user.id),
         isActive: newActive,
       }, { isQuery: false });
-      await fetchUsers({ role, search: query });
+      // No refresh on success. The optimistic patch above is already the whole
+      // change, and `usePagedList.refresh()` reloads from offset 0 — so on a
+      // long list an admin who had pressed "Load more" lost every page past the
+      // first as a side effect of flipping one switch. The failure path below
+      // still reverts, so a rejected write can't leave a lie on screen.
     } catch (err) {
       setUsers((prev) => prev.map((u) => (u.id === user.id ? { ...u, is_active: user.is_active } : u)));
-      setError(err?.message || "Failed to update user");
+      setActionError(cleanErr(err, "Failed to update user"));
     }
   }
 
   async function remove(id) {
-    setError(null);
+    setActionError(null);
+    setNotice(null);
     setConfirmDelete(null);
     try {
-      await repairCall("myAppAdminDeleteUser", { userId: Number(id) }, { isQuery: false });
-      await fetchUsers({ role, search: query });
+      // The resolver has TWO outcomes and the response is the only thing that
+      // distinguishes them: a user with order history is DEACTIVATED instead of
+      // deleted (orders.user_id is ON DELETE RESTRICT). The result used to be
+      // discarded, so that case looked like a failed delete — the row was still
+      // there after the refresh, with nothing saying why.
+      const res = await repairCall("myAppAdminDeleteUser", { userId: Number(id) }, { isQuery: false });
+      await list.refresh();
+      setNotice(res?.message || "User deleted");
     } catch (err) {
-      setError(err?.message || "Failed to delete user");
+      setActionError(cleanErr(err, "Failed to delete user"));
     }
   }
 
@@ -161,9 +212,27 @@ export default function UserManager() {
 
   return (
     <>
+      {/* Load failure. Passed through cleanErr like every other message on this
+          page — the raw value carries repairCall's `repairClientApi <op>:`
+          prefix, so a dead session rendered as
+          "repairClientApi myAppAdminListUsers: Un Authenticated User". */}
       {error && (
         <div className="mb-4 rounded-[4px] border border-[#fecaca] bg-[#fef2f2] px-4 py-3">
-          <p className="font-body text-[13px] text-[#dc2626]">{error}</p>
+          <p className="font-body text-[13px] text-[#dc2626]">{cleanErr({ message: error }, "Failed to load users")}</p>
+        </div>
+      )}
+
+      {actionError && (
+        <div className="mb-4 flex items-start justify-between gap-3 rounded-[4px] border border-[#fecaca] bg-[#fef2f2] px-4 py-3">
+          <p className="font-body text-[13px] text-[#dc2626]">{actionError}</p>
+          <button
+            type="button"
+            aria-label="Dismiss"
+            onClick={() => setActionError(null)}
+            className="font-body text-[12px] text-[#dc2626] underline hover:no-underline"
+          >
+            Dismiss
+          </button>
         </div>
       )}
 
@@ -217,6 +286,7 @@ export default function UserManager() {
               phoneCountry: DEFAULT_COUNTRY,
               role: "delivery",
               is_active: true,
+              pwMode: "link",
               password: "",
               confirmPassword: "",
             })
@@ -315,6 +385,18 @@ export default function UserManager() {
         />
       )}
 
+      {!loading && users.length > 0 ? (
+        <PagedFooter
+          shown={users.length}
+          total={total}
+          hasMore={list.hasMore}
+          loading={loading}
+          loadingMore={list.loadingMore}
+          onLoadMore={list.loadMore}
+          noun="user"
+        />
+      ) : null}
+
       <UserDrawer
         editing={editing}
         onClose={() => setEditing(null)}
@@ -397,7 +479,16 @@ function ResetPasswordModal({ user, onClose, onDone }) {
   const [error, setError] = useState(null);
   const [fieldErrors, setFieldErrors] = useState({});
 
-  useEffect(() => {
+  // Reset the modal whenever it opens on a different user. This is React's
+  // documented "adjust state when a prop changes" pattern — compare against the
+  // previous prop DURING render — not a prop effect. An effect would paint one
+  // frame carrying the PREVIOUS user's half-typed password before clearing it,
+  // and trips react-hooks/set-state-in-effect. Tracking `prevUser` including
+  // null means closing the modal resets the tracker, so reopening on the same
+  // user still clears. Same shape as DiscountManager's drawer seeding.
+  const [prevUser, setPrevUser] = useState(null);
+  if (user !== prevUser) {
+    setPrevUser(user);
     if (user) {
       setMode("link");
       setPassword("");
@@ -408,7 +499,7 @@ function ResetPasswordModal({ user, onClose, onDone }) {
       setError(null);
       setFieldErrors({});
     }
-  }, [user]);
+  }
 
   async function submit() {
     if (!user) return;
@@ -434,7 +525,7 @@ function ResetPasswordModal({ user, onClose, onDone }) {
         onDone(`Password updated for ${user.email}. A notification email was sent — share the new password with them directly.`);
       }
     } catch (err) {
-      setError(err?.message || "Something went wrong.");
+      setError(cleanErr(err, "Something went wrong."));
     } finally {
       setBusy(false);
     }
@@ -557,7 +648,15 @@ function UserDrawer({ editing, onClose, onSave, saving, isSelf }) {
   const [fieldErrors, setFieldErrors] = useState({});
   const [drawerError, setDrawerError] = useState(null);
 
-  useEffect(() => {
+  // Seed the form from the account being edited — compared DURING render rather
+  // than in a prop effect, for the same reasons as the reset modal above: an
+  // effect paints one frame holding the previous account's values (visibly
+  // wrong in a drawer showing someone's email) and trips
+  // react-hooks/set-state-in-effect. `prevEditing` tracks null too, so closing
+  // and reopening the same row still reseeds instead of keeping a stale draft.
+  const [prevEditing, setPrevEditing] = useState(null);
+  if (editing !== prevEditing) {
+    setPrevEditing(editing);
     if (editing) {
       setDraft({
         ...editing,
@@ -573,7 +672,7 @@ function UserDrawer({ editing, onClose, onSave, saving, isSelf }) {
       setFieldErrors({});
       setDrawerError(null);
     }
-  }, [editing]);
+  }
 
   const phoneLen = phoneLengthFor(draft.phoneIso2 || DEFAULT_COUNTRY.iso2);
   const phoneInputMax = phoneLen.max + 1;
@@ -630,16 +729,28 @@ function UserDrawer({ editing, onClose, onSave, saving, isSelf }) {
         }
       }
 
-      const pw = draft.password || "";
-      if (!pw) errs.password = "Password is required.";
-      else if (pw.length < 8) errs.password = "Password must be at least 8 characters.";
+      // Only validated on the "set a password now" branch — the setup-link
+      // branch deliberately sends no password at all.
+      if (draft.pwMode === "set") {
+        const pw = draft.password || "";
+        if (!pw) errs.password = "Password is required.";
+        else if (pw.length < 8) errs.password = "Password must be at least 8 characters.";
 
-      const cpw = draft.confirmPassword || "";
-      if (!cpw) errs.confirmPassword = "Please confirm the password.";
-      else if (pw && cpw !== pw) errs.confirmPassword = "Passwords do not match.";
+        const cpw = draft.confirmPassword || "";
+        if (!cpw) errs.confirmPassword = "Please confirm the password.";
+        else if (pw && cpw !== pw) errs.confirmPassword = "Passwords do not match.";
+      }
     } else {
+      // Edit mode has a plain text field rather than the create form's country
+      // picker, and used to check only that it was non-empty — so an admin could
+      // save "hello world" as someone's phone, and the server stored it (it
+      // trimmed and length-capped, nothing more). That column is a unique
+      // login-adjacent key, the driver's tel: link, and what the Thunder courier
+      // integration reformats at dispatch. Mirrors the backend rule now: E.164,
+      // or bare digits for rows that predate the picker.
       const phone = (draft.phone || "").trim();
       if (!phone) errs.phone = "Phone number is required.";
+      else if (!PHONE_RE.test(phone)) errs.phone = "Enter a valid phone number, e.g. +962791234567.";
     }
 
     if (!draft.role) errs.role = "Role is required.";
@@ -656,7 +767,7 @@ function UserDrawer({ editing, onClose, onSave, saving, isSelf }) {
     try {
       await onSave(draft);
     } catch (err) {
-      const msg = err?.message || "";
+      const msg = cleanErr(err, "");
       const lower = msg.toLowerCase();
       if (lower.includes("email") && lower.includes("already")) {
         setFieldErrors((e) => ({ ...e, email: "This email is already registered." }));
@@ -792,34 +903,68 @@ function UserDrawer({ editing, onClose, onSave, saving, isSelf }) {
 
           {isNew ? (
             <>
-              <Field label="Password" required>
-                <PasswordField
-                  value={draft.password || ""}
-                  onChange={(e) => {
-                    setDraft((d) => ({ ...d, password: e.target.value }));
-                    clearFieldError("password");
-                  }}
-                  visible={showPassword}
-                  onToggle={() => setShowPassword((v) => !v)}
-                />
-                {fieldErrors.password && (
-                  <span className="font-body text-[11px] text-[#dc2626]">{fieldErrors.password}</span>
-                )}
+              {/* Two ways for the new account to get a password, and they are
+                  not equivalent. The link path emails a single-use setup link
+                  and the admin never learns the credential; the direct path puts
+                  the plaintext password in the welcome email. The backend has
+                  supported both since it was written, but this drawer required a
+                  password, so the safer branch was unreachable and every account
+                  created here had its password mailed in the clear — while the
+                  sibling "Reset password" modal took the opposite care, sending a
+                  notify-only email precisely so no credential goes out by mail.
+                  Link is the default; the direct path stays for handing someone
+                  a password in person. */}
+              <Field label="Password setup" hint="How this person gets their first password.">
+                <div className="flex flex-wrap gap-2">
+                  <Chip
+                    active={draft.pwMode !== "set"}
+                    onClick={() => {
+                      setDraft((d) => ({ ...d, pwMode: "link" }));
+                      clearFieldError("password");
+                      clearFieldError("confirmPassword");
+                    }}
+                  >
+                    Email a setup link
+                  </Chip>
+                  <Chip active={draft.pwMode === "set"} onClick={() => setDraft((d) => ({ ...d, pwMode: "set" }))}>
+                    Set a password now
+                  </Chip>
+                </div>
               </Field>
-              <Field label="Confirm password" required>
-                <PasswordField
-                  value={draft.confirmPassword || ""}
-                  onChange={(e) => {
-                    setDraft((d) => ({ ...d, confirmPassword: e.target.value }));
-                    clearFieldError("confirmPassword");
-                  }}
-                  visible={showConfirm}
-                  onToggle={() => setShowConfirm((v) => !v)}
-                />
-                {fieldErrors.confirmPassword && (
-                  <span className="font-body text-[11px] text-[#dc2626]">{fieldErrors.confirmPassword}</span>
-                )}
-              </Field>
+
+              {draft.pwMode === "set" ? (
+                <>
+                  <Field label="Password" required>
+                    <PasswordField
+                      value={draft.password || ""}
+                      onChange={(e) => {
+                        setDraft((d) => ({ ...d, password: e.target.value }));
+                        clearFieldError("password");
+                      }}
+                      visible={showPassword}
+                      onToggle={() => setShowPassword((v) => !v)}
+                    />
+                    {fieldErrors.password && (
+                      <span className="font-body text-[11px] text-[#dc2626]">{fieldErrors.password}</span>
+                    )}
+                  </Field>
+                  <Field label="Confirm password" required>
+                    <PasswordField
+                      value={draft.confirmPassword || ""}
+                      onChange={(e) => {
+                        setDraft((d) => ({ ...d, confirmPassword: e.target.value }));
+                        clearFieldError("confirmPassword");
+                      }}
+                      visible={showConfirm}
+                      onToggle={() => setShowConfirm((v) => !v)}
+                    />
+                    {fieldErrors.confirmPassword && (
+                      <span className="font-body text-[11px] text-[#dc2626]">{fieldErrors.confirmPassword}</span>
+                    )}
+                  </Field>
+                </>
+              ) : null}
+
               <div className="flex items-center justify-between rounded-[2px] border border-[#e5e7eb] bg-[#fafafa] p-3">
                 <div>
                   <p className="font-body text-[13px] font-medium text-[#11191f]">Active</p>
@@ -829,11 +974,20 @@ function UserDrawer({ editing, onClose, onSave, saving, isSelf }) {
                 </div>
                 <Toggle checked={!!draft.is_active} onChange={(v) => setDraft((d) => ({ ...d, is_active: v }))} />
               </div>
-              <div className="rounded-[2px] border border-[#dbeafe] bg-[#eff6ff] p-3">
-                <p className="font-body text-[12px] text-[#1e40af]">
-                  A welcome email with the password will be sent to this address on save.
-                </p>
-              </div>
+
+              {draft.pwMode === "set" ? (
+                <div className="rounded-[2px] border border-[#fef3c7] bg-[#fffbeb] p-3">
+                  <p className="font-body text-[12px] text-[#92400e]">
+                    The welcome email will contain this password in plain text. Prefer &ldquo;Email a setup link&rdquo; unless you are handing it over in person.
+                  </p>
+                </div>
+              ) : (
+                <div className="rounded-[2px] border border-[#dbeafe] bg-[#eff6ff] p-3">
+                  <p className="font-body text-[12px] text-[#1e40af]">
+                    A welcome email with a single-use setup link (valid 1 hour) will be sent to this address on save, so they choose their own password. You never see it.
+                  </p>
+                </div>
+              )}
             </>
           ) : null}
         </div>

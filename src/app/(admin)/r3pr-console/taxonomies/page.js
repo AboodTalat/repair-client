@@ -6,7 +6,7 @@ export default function TaxonomiesPage() {
     <>
       <PageHeader
         eyebrow="Catalog"
-        title="Taxonomies"
+        title="Materials"
         description="Edit the filter facets (Materials + Types) customers see on the shop page."
       />
       <TaxonomyManager />

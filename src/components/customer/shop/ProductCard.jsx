@@ -65,7 +65,12 @@ function ColorImageViewer({
   const [index, setIndex] = useState(0);
   const [drag, setDrag] = useState(0);
   const startX = useRef(null);
-  const widthRef = useRef(0);
+  // Width lives in state, not a ref: it is READ during render (to turn the
+  // px drag into a percentage), and a ref read during render is torn by
+  // concurrent rendering / StrictMode (react-hooks/refs). startX and movedRef
+  // stay refs — they are only ever touched inside event handlers, which is
+  // exactly what refs are for.
+  const [width, setWidth] = useState(0);
   const movedRef = useRef(false);
 
   const count = images.length;
@@ -74,7 +79,7 @@ function ColorImageViewer({
 
   function onTouchStart(e) {
     startX.current = e.touches[0].clientX;
-    widthRef.current = e.currentTarget.offsetWidth;
+    setWidth(e.currentTarget.offsetWidth);
     movedRef.current = false;
   }
   function onTouchMove(e) {
@@ -87,7 +92,7 @@ function ColorImageViewer({
   }
   function onTouchEnd() {
     if (startX.current === null) return;
-    const w = widthRef.current || 1;
+    const w = width || 1;
     const threshold = Math.min(50, w * 0.15);
     if (drag <= -threshold && idx < count - 1) setIndex(idx + 1);
     else if (drag >= threshold && idx > 0) setIndex(idx - 1);
@@ -95,7 +100,7 @@ function ColorImageViewer({
     startX.current = null;
   }
 
-  const w = widthRef.current || 1;
+  const w = width || 1;
   const dragPct = (drag / w) * 100;
 
   function go(e, dir) {

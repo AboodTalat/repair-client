@@ -1,9 +1,12 @@
-// @vitest-environment jsdom
-//
 // Unit tests for the security-critical auth + cart state machine in
-// useRepairStore.js. jsdom gives us localStorage + window (for the persist
-// round-trip and the BroadcastChannel path); the GraphQL transport is mocked
-// at the module seam (@/lib/repairClientApi) so no backend is needed.
+// useRepairStore.js. Needs localStorage + window (for the persist round-trip
+// and the BroadcastChannel path); the GraphQL transport is mocked at the
+// module seam (@/lib/repairClientApi) so no backend is needed.
+//
+// This file used to carry a `// @vitest-environment jsdom` docblock. Vitest 4
+// removed per-file environment docblocks, so it silently ran in `node` and all
+// 18 tests here failed on a missing localStorage. jsdom is now the suite-wide
+// default in vitest.config.mjs — do not re-add a docblock, it does nothing.
 //
 // The behaviours under test are the ones whose regression would silently log a
 // user out, lose their cart, or reuse an already-rotated refresh token:

@@ -63,19 +63,17 @@ export function shippingForMethod(shipSettings, methodKey, afterPromo) {
 // Build the selectable delivery-method list for the checkout radios from the
 // live commerce settings. Only ENABLED methods are returned, each priced for
 // the current afterPromo subtotal so the displayed price matches the order
-// summary. Express carries a DOUBLE gate — the shipping_methods row must be
-// enabled AND shipping.express_shipping_enabled must be true, otherwise
-// myAppCheckout rejects it (EXPRESS_SHIPPING_DISABLED). Returns [] until
-// settings load.
+// summary. Every method — express included — is gated ONLY by its
+// shipping_methods row, matching myAppCheckout. (Express used to carry a second
+// gate on shipping.express_shipping_enabled; removed Aug 2026 because two
+// switches for one method let it read "Shown" in Shipping Methods while staying
+// invisible at checkout, with nothing in the UI explaining why.) Returns []
+// until settings load.
 export function buildDeliveryMethods(settings, afterPromo = 0) {
   const rows = Array.isArray(settings?.shippingMethods) ? settings.shippingMethods : [];
   const ship = settings?.shipping ?? {};
   return rows
-    .filter((m) => {
-      if (!m?.enabled) return false;
-      if (String(m.key).toLowerCase() === "express" && !ship.express_shipping_enabled) return false;
-      return true;
-    })
+    .filter((m) => !!m?.enabled)
     .map((m) => ({
       id: String(m.key).toLowerCase(),
       label: m.name,

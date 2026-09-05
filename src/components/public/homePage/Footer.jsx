@@ -70,11 +70,11 @@ export default function Footer({ categories = [], footer } = {}) {
     <footer className="w-full bg-white px-4 pb-[102px] pt-8 text-[#11191f] sm:px-8 sm:pb-16 md:px-12 md:pt-16 lg:px-16">
       <div className="mx-auto flex max-w-[357px] flex-col gap-6 sm:max-w-[720px] md:max-w-[1100px] md:grid md:grid-cols-12 md:gap-x-10 md:gap-y-10">
         <div className="flex flex-col gap-6 md:col-span-4">
-          <Link href="/" aria-label="Repair home" className="inline-flex h-8 w-[44.5px]">
+          <Link href="/" aria-label="Repair home" className="inline-flex h-8 w-[47px]">
             <Image
-              src="/home/logo-re.png"
+              src="/home/logo-re-v2.png"
               alt="Repair"
-              width={44}
+              width={47}
               height={32}
               className="h-8 w-auto"
               style={{ filter: "brightness(0)" }}

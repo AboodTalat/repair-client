@@ -25,6 +25,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useRepairStore, selectIsLoggedIn } from "@/lib/useRepairStore";
 import { repairCall } from "@/lib/repairAuthedApi";
 import { buildAddressLine } from "@/lib/mockCart";
+import useStoreHydrated from "@/lib/useStoreHydrated";
 
 // Derive the card icon bucket from the free-text label — the backend has no
 // `kind` column. Anything that reads like a workplace → office; explicit
@@ -58,13 +59,7 @@ function toDisplay(addr) {
 export function useAddresses() {
   const isLoggedIn = useRepairStore(selectIsLoggedIn);
 
-  const [hydrated, setHydrated] = useState(() => useRepairStore.persist.hasHydrated());
-  useEffect(() => {
-    if (hydrated) return undefined;
-    const unsub = useRepairStore.persist.onFinishHydration(() => setHydrated(true));
-    if (useRepairStore.persist.hasHydrated()) setHydrated(true);
-    return unsub;
-  }, [hydrated]);
+  const hydrated = useStoreHydrated();
 
   const [addresses, setAddresses] = useState([]);
   const [loaded, setLoaded] = useState(false);
@@ -84,7 +79,11 @@ export function useAddresses() {
   }, []);
 
   useEffect(() => {
-    if (hydrated && isLoggedIn) refetch();
+    if (!hydrated || !isLoggedIn) return undefined;
+    // Microtask, not a direct call — refetch sets loading state synchronously.
+    let cancelled = false;
+    queueMicrotask(() => { if (!cancelled) refetch(); });
+    return () => { cancelled = true; };
   }, [hydrated, isLoggedIn, refetch]);
 
   // Persist an address. `id` present → update, else add. Returns the saved

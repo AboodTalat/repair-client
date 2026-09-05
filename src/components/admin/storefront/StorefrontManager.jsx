@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { createContext, useContext, useEffect, useRef, useState } from "react";
 import Button, { IconButton } from "@/components/admin/shared/Button";
 import { TextInput, TextArea, Toggle } from "@/components/admin/shared/Form";
 import { IconCheck, IconTrash, IconPlus, IconChevronDown, IconEdit } from "@/components/admin/shared/Icons";
@@ -117,9 +117,12 @@ function SavedPill() {
 }
 
 function SaveBar({ onSave, saving, saved, error, onTogglePreview, previewOpen }) {
+  // Reads the block reason straight from context so all nine editors inherit
+  // the guard without threading a prop through each of them.
+  const blocked = useContext(SaveBlockedContext);
   return (
     <div className="mt-4 flex flex-wrap items-center gap-3 border-t border-[#f3f4f6] pt-4">
-      <Button size="sm" onClick={onSave} disabled={saving}>
+      <Button size="sm" onClick={onSave} disabled={saving || !!blocked}>
         {saving ? "Saving…" : "Save changes"}
       </Button>
       {onTogglePreview ? (
@@ -135,6 +138,97 @@ function SaveBar({ onSave, saving, saved, error, onTogglePreview, previewOpen })
   );
 }
 
+// Keys whose values become an `<a href>` or an `<img src>` on the PUBLIC
+// landing page. Mirrors URL_KEYS in the backend resolver.
+//
+// Images are validated more tightly than links: a link may point anywhere, but
+// an image is rendered through `next/image`, which throws for a host outside
+// `next.config.mjs` `images.remotePatterns` — so an off-site image URL returns
+// a 500 on the storefront page rather than showing a broken picture.
+const IMAGE_KEYS = new Set(["image", "imageUrl", "image_url"]);
+const LINK_KEYS = new Set(["href", "url", "ctaHref", "cta_url", "ctaUrl"]);
+const URL_KEYS = new Set([...IMAGE_KEYS, ...LINK_KEYS]);
+
+// Mirrors `images.remotePatterns` in next.config.mjs and `isAllowedImageHost`
+// in the backend resolver. Keep the three in lockstep.
+export function isAllowedImageHost(v) {
+  let url;
+  try {
+    url = new URL(v);
+  } catch {
+    return false;
+  }
+  if (url.protocol !== "https:") return false;
+  const host = url.hostname.toLowerCase();
+  return host === "utfs.io" || host.endsWith(".ufs.sh");
+}
+
+// Client-side twin of `normalizeUrlField` in
+// Server/servers/repair/src/graphql/resolvers/storefrontContent.ts. The SERVER
+// is the enforcement — this exists so the admin gets a precise, immediate
+// message naming the offending field instead of a generic save failure.
+// Allows: "" (unset → the shipped default renders), "#anchor", a single-leading-
+// slash site path, and absolute http(s). Everything else — notably
+// `javascript:` and `data:` — is refused, because the value lands directly in
+// an href and would be stored XSS against every storefront visitor.
+export function checkStorefrontUrl(raw, isImage = false) {
+  if (raw === null || raw === undefined) return null;
+  if (typeof raw !== "string") return "must be text";
+  const v = raw.trim();
+  if (v === "") return null;
+  if (v.length > 2000) return "is too long";
+  for (let i = 0; i < v.length; i++) {
+    const c = v.charCodeAt(i);
+    if (c < 0x20 || c === 0x7f) return "contains invalid characters";
+  }
+  if (!isImage && v.startsWith("#")) return null;
+  if (v.startsWith("/")) {
+    if (v.startsWith("//") || v.startsWith("/\\")) {
+      return "must be a path on this site, not another domain";
+    }
+    return null;
+  }
+  if (/^https?:\/\//i.test(v)) {
+    if (isImage && !isAllowedImageHost(v)) {
+      return 'must be an uploaded image (utfs.io or an UploadThing *.ufs.sh host) or a path on this site starting with "/". Other hosts cannot be rendered and would break the storefront page';
+    }
+    return null;
+  }
+  return isImage
+    ? 'must be an uploaded image URL or a path on this site starting with "/"'
+    : 'must be a full http(s) URL, a path starting with "/", or an anchor starting with "#"';
+}
+
+// Walks a section blob and returns the first offending URL field, or null.
+function findBadUrl(value, depth = 0) {
+  if (depth > 12 || !value || typeof value !== "object") return null;
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      const bad = findBadUrl(entry, depth + 1);
+      if (bad) return bad;
+    }
+    return null;
+  }
+  for (const [k, v] of Object.entries(value)) {
+    if (URL_KEYS.has(k)) {
+      const reason = checkStorefrontUrl(v, IMAGE_KEYS.has(k));
+      if (reason) return `"${k}" ${reason}.`;
+      continue;
+    }
+    const bad = findBadUrl(v, depth + 1);
+    if (bad) return bad;
+  }
+  return null;
+}
+
+// When the mount fetch fails, every editor is seeded from the SHIPPED DEFAULTS
+// (`content` falls back to `{}`), so a Save at that moment does not save the
+// admin's edit — it replaces whatever was actually stored with the defaults
+// plus that edit. The banner alone was not a guard: nothing disabled Save. This
+// context carries the reason down into `useSaveSection` so every one of the
+// nine editors is covered from one place.
+const SaveBlockedContext = createContext(null);
+
 // Per-section save against the storefront-content CMS. `save(value)` upserts the
 // section row via myAppAdminUpdateStorefrontContent and surfaces real
 // saving / saved / error states (replaces the old no-op flag).
@@ -142,7 +236,19 @@ function useSaveSection(section) {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState(null);
+  const blocked = useContext(SaveBlockedContext);
   async function save(value) {
+    if (blocked) {
+      setError(blocked);
+      setSaved(false);
+      return;
+    }
+    const badUrl = findBadUrl(value);
+    if (badUrl) {
+      setError(badUrl);
+      setSaved(false);
+      return;
+    }
     setSaving(true);
     setError(null);
     setSaved(false);
@@ -160,7 +266,7 @@ function useSaveSection(section) {
       setSaving(false);
     }
   }
-  return { save, saving, saved, error };
+  return { save, saving, saved, error, blocked };
 }
 
 // (#20) Wraps a section preview block so every editor has the same chrome:
@@ -232,6 +338,26 @@ function ImageField({
     onChange("");
   }
 
+  // The storefront renders these through `next/image`, which THROWS at render
+  // time for a host that isn't in next.config.mjs `images.remotePatterns` — a
+  // URL pasted here from any other host took the page DOWN (measured: saving
+  // `hero.image = https://example.com/x.png` moved `/` from 200 to 500), and
+  // the section preview below uses a plain <img>, so it rendered the picture
+  // happily while the live page was broken. The save is now refused server-side
+  // and by `checkStorefrontUrl`; this is the earlier, in-place signal.
+  const pathWarning = (() => {
+    const v = (value || "").trim();
+    if (!v || !/^https?:\/\//i.test(v)) return null;
+    let host = "";
+    try {
+      host = new URL(v).hostname;
+    } catch {
+      return "This does not look like a valid URL.";
+    }
+    if (isAllowedImageHost(v)) return null;
+    return `"${host}" is not an allowed image host, so the storefront page cannot render this image — saving will be refused. Upload the photo instead (the button above), or use a path on this site starting with "/".`;
+  })();
+
   return (
     <div className="flex flex-col gap-1.5">
       <span className="font-body text-[11px] font-medium uppercase tracking-[1px] text-[#6b7280]">
@@ -300,11 +426,16 @@ function ImageField({
       ) : null}
 
       {showPath ? (
-        <TextInput
-          value={value || ""}
-          onChange={(e) => onChange(e.target.value)}
-          placeholder="/home/hero.jpg"
-        />
+        <>
+          <TextInput
+            value={value || ""}
+            onChange={(e) => onChange(e.target.value)}
+            placeholder="/home/hero.jpg"
+          />
+          {pathWarning ? (
+            <span className="font-body text-[12px] text-[#dc2626]">{pathWarning}</span>
+          ) : null}
+        </>
       ) : null}
     </div>
   );
@@ -1546,6 +1677,7 @@ export default function StorefrontManager() {
   const [content, setContent] = useState(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(null);
+  const [reloadNonce, setReloadNonce] = useState(0);
 
   // Single cancelled-flag guard (NOT paired with a run-once ref — that combo
   // deadlocks under React strict-mode double-mount; see repair CLAUDE.md).
@@ -1554,10 +1686,13 @@ export default function StorefrontManager() {
     (async () => {
       try {
         const res = await repairCall("myAppGetStorefrontContent", {});
-        if (!cancelled) setContent(res && typeof res === "object" ? res : {});
+        if (!cancelled) {
+          setContent(res && typeof res === "object" ? res : {});
+          setLoadError(null);
+        }
       } catch (e) {
         if (!cancelled) {
-          setLoadError(cleanErr(e, "Couldn't load saved content — showing current defaults."));
+          setLoadError(cleanErr(e, "Couldn't load the saved content."));
           setContent({});
         }
       } finally {
@@ -1567,20 +1702,35 @@ export default function StorefrontManager() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [reloadNonce]);
 
   if (loading) return <LoadingState />;
+
+  // A failed load leaves every editor showing the SHIPPED DEFAULTS, not what is
+  // actually stored — so saving now would overwrite the live storefront with
+  // defaults. Saving stays disabled until a reload succeeds.
+  const saveBlocked = loadError
+    ? "Saving is disabled until the saved content loads — these fields are showing the shipped defaults, not what's live."
+    : null;
 
   // Seed each editor with the saved section value, falling back to the canonical
   // current-design defaults so the first Save never changes the live page.
   const seed = (section) => content?.[section] ?? STOREFRONT_DEFAULTS[section];
 
   return (
+    <SaveBlockedContext.Provider value={saveBlocked}>
     <div className="flex flex-col gap-4">
       <RouteHintsDatalist />
       {loadError ? (
-        <div className="rounded-[4px] border border-[#fde68a] bg-[#fffbeb] px-4 py-3 font-body text-[12px] text-[#92400e]">
-          {loadError}
+        <div className="flex flex-wrap items-center gap-3 rounded-[4px] border border-[#fecaca] bg-[#fef2f2] px-4 py-3">
+          <p className="font-body text-[12px] text-[#991b1b]">
+            <strong>{loadError}</strong> The fields below are showing the shipped
+            defaults, not your live storefront content — saving is disabled so a
+            failed load can&apos;t overwrite what customers currently see.
+          </p>
+          <Button size="sm" variant="secondary" onClick={() => { setLoading(true); setReloadNonce((n) => n + 1); }}>
+            Retry
+          </Button>
         </div>
       ) : null}
       <HeroEditor initial={seed("hero")} />
@@ -1593,5 +1743,6 @@ export default function StorefrontManager() {
       <CoachingEditor initial={seed("coaching")} />
       <FooterEditor initial={seed("footer")} />
     </div>
+    </SaveBlockedContext.Provider>
   );
 }

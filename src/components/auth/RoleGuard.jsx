@@ -40,22 +40,11 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useRepairStore } from "@/lib/useRepairStore";
 import { buildSignInRedirect, homeForRole } from "@/lib/authRedirect";
+import useStoreHydrated from "@/lib/useStoreHydrated";
 
 export default function RoleGuard({ allow = [], requireAuth = false, children }) {
   const router = useRouter();
-  const [ready, setReady] = useState(() =>
-    typeof window === "undefined" ? false : useRepairStore.persist.hasHydrated()
-  );
-
-  useEffect(() => {
-    if (ready) return undefined;
-    if (useRepairStore.persist.hasHydrated()) {
-      setReady(true);
-      return undefined;
-    }
-    const unsub = useRepairStore.persist.onFinishHydration(() => setReady(true));
-    return unsub;
-  }, [ready]);
+  const ready = useStoreHydrated();
 
   const isLoggedIn = useRepairStore((s) => s.authInfo.isLoggedIn);
   const token = useRepairStore((s) => s.authInfo.token);

@@ -123,6 +123,9 @@ export default function PromoManager() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
+  // Amber, non-blocking: mirrors DiscountManager. The save SUCCEEDED — this
+  // explains that what was just saved can't actually be redeemed.
+  const [notice, setNotice] = useState(null);
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
   const [editing, setEditing] = useState(null);
@@ -145,7 +148,13 @@ export default function PromoManager() {
   }, [fetchCodes]);
 
   useEffect(() => {
-    loadAll();
+    // Kicked off in a microtask rather than called straight from the effect
+    // body: loadAll flips `loading` synchronously, and doing that during the
+    // effect triggers a second render pass before the request has even started.
+    // Identical idiom to usePagedList.
+    let cancelled = false;
+    queueMicrotask(() => { if (!cancelled) loadAll(); });
+    return () => { cancelled = true; };
   }, [loadAll]);
 
   const filtered = useMemo(() => {
@@ -164,9 +173,12 @@ export default function PromoManager() {
 
   async function save(draft) {
     const op = draft.id ? "myAppAdminUpdatePromoCode" : "myAppAdminCreatePromoCode";
-    await repairCall(op, toWirePayload(draft), { isQuery: false });
+    const res = await repairCall(op, toWirePayload(draft), { isQuery: false });
     setEditing(null);
     await fetchCodes();
+    // Set AFTER fetchCodes so the reload can't clear it (same ordering trap
+    // DiscountManager hit).
+    setNotice(res?.warning || null);
   }
 
   // The backend REFUSES to delete a code that has ever been redeemed (FK from
@@ -185,9 +197,34 @@ export default function PromoManager() {
   }
 
   function generateCode() {
-    // No Math.random restriction in the browser; keep the original generator.
-    const random = Math.random().toString(36).slice(2, 8).toUpperCase();
-    return "PROMO" + random;
+    // crypto.getRandomValues, NOT Math.random.
+    //
+    // A promo code is a bearer token for money off. Math.random is a fast PRNG
+    // (xorshift128+ in V8) whose internal state can be recovered from a handful
+    // of consecutive outputs — and promo codes are semi-public by nature:
+    // printed on flyers, screenshotted, posted by influencers. Collect a few
+    // issued codes and the next ones become predictable. That is the one
+    // property a value granting a discount must not have, and the fix costs a
+    // line. (The suffix LENGTH was never the problem — 2,000,000 samples of the
+    // old generator all produced exactly 6 characters.)
+    //
+    // The alphabet drops the characters that get mistyped off print — 0/O, 1/I/L
+    // — and every vowel, so a generated code can never spell an unintended word.
+    // 28 symbols over 8 slots is ~3.8e11 combinations, far past anything the
+    // 5/min validate limiter lets an attacker search, while staying short enough
+    // to read out loud.
+    const ALPHABET = "23456789BCDFGHJKMNPQRSTVWXYZ";
+    const LENGTH = 8;
+    const bytes = new Uint8Array(LENGTH);
+    crypto.getRandomValues(bytes);
+    let out = "";
+    for (let i = 0; i < LENGTH; i++) {
+      // Modulo bias here is negligible (256 % 29 = 24 of 256 values slightly
+      // favoured) and irrelevant at this search-space size; rejection sampling
+      // would add a loop for no practical gain.
+      out += ALPHABET[bytes[i] % ALPHABET.length];
+    }
+    return "PROMO" + out;
   }
 
   if (loading) {
@@ -206,6 +243,22 @@ export default function PromoManager() {
       {error && (
         <div className="mb-4 rounded-[4px] border border-[#fecaca] bg-[#fef2f2] px-4 py-3">
           <p className="font-body text-[13px] text-[#dc2626]">{error}</p>
+        </div>
+      )}
+
+      {notice && (
+        <div
+          role="status"
+          className="mb-4 flex items-start justify-between gap-3 rounded-[4px] border border-[#fde68a] bg-[#fffbeb] px-4 py-3"
+        >
+          <p className="font-body text-[13px] text-[#92400e]">{notice}</p>
+          <button
+            type="button"
+            onClick={() => setNotice(null)}
+            className="shrink-0 font-body text-[12px] font-medium text-[#92400e] underline"
+          >
+            Dismiss
+          </button>
         </div>
       )}
 
@@ -413,13 +466,15 @@ function PromoDrawer({ editing, onClose, onSave, onRegen }) {
   const [drawerError, setDrawerError] = useState(null);
   const [saving, setSaving] = useState(false);
 
-  useEffect(() => {
-    if (editing) {
-      setDraft({ ...editing });
-      setErrors({});
-      setDrawerError(null);
-    }
-  }, [editing]);
+  // Render-phase adjustment — the draft is derived from which code is open.
+  // See the ContactManager composer for the same reasoning.
+  const [draftFor, setDraftFor] = useState(editing);
+  if (editing && editing !== draftFor) {
+    setDraftFor(editing);
+    setDraft({ ...editing });
+    setErrors({});
+    setDrawerError(null);
+  }
 
   // React Compiler can pre-evaluate both ternary branches, so guard every
   // draft access with optional chaining even though `open` gates the body.

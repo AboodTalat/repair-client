@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { FILTER_OPTIONS } from "@/lib/mockShop";
+import useDelayedUnmount from "@/lib/useDelayedUnmount";
 
 // Filter dialog.
 //   Mobile (Figma 11:1797): bottom-anchored floating card (361x auto),
@@ -26,30 +27,6 @@ import { FILTER_OPTIONS } from "@/lib/mockShop";
 const TXT_BODY = "var(--font-zalando-sans)";
 const TXT_DISPLAY = "var(--font-zalando-expanded)";
 const INK = "#11191F";
-
-// Keep the dialog mounted while the close animation plays.
-// `open` toggles in the parent; we hold render=true through the exit window.
-function useDelayedUnmount(open, exitMs) {
-  const [render, setRender] = useState(open);
-  const [closing, setClosing] = useState(false);
-
-  useEffect(() => {
-    if (open) {
-      setRender(true);
-      setClosing(false);
-      return undefined;
-    }
-    if (!render) return undefined;
-    setClosing(true);
-    const t = setTimeout(() => {
-      setRender(false);
-      setClosing(false);
-    }, exitMs);
-    return () => clearTimeout(t);
-  }, [open, render, exitMs]);
-
-  return { render, dataState: closing ? "closing" : "open" };
-}
 
 export default function FilterDrawer(props) {
   const { render, dataState } = useDelayedUnmount(props.open, 320);

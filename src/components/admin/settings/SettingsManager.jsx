@@ -219,28 +219,31 @@ function FreeDeliveryCard({ shipping }) {
 }
 
 // (#3) Express shipping — patches the shipping_settings singleton.
+// FEE ONLY. Whether customers see Express at checkout is decided solely by the
+// Express row in the Shipping Methods card below; this card used to carry a
+// second show/hide toggle, which meant Express could read "Shown" there and
+// still be invisible at checkout with nothing explaining why. Removed Aug 2026
+// along with the matching gates in buildDeliveryMethods + myAppCheckout.
 function ExpressShippingCard({ shipping }) {
-  const [enabled, setEnabled] = useState(() => !!shipping?.express_shipping_enabled);
   const [fee, setFee] = useState(() => money(shipping?.express_shipping_fee));
   const [saved, setSaved] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
   async function handleSave() {
-    let val = 0;
-    if (enabled) {
-      val = parseFloat(fee);
-      if (isNaN(val) || val < 0) {
-        setError("Enter a valid amount (0 or more).");
-        return;
-      }
+    const val = parseFloat(fee);
+    if (isNaN(val) || val < 0) {
+      setError("Enter a valid amount (0 or more).");
+      return;
     }
     setError("");
     setSaving(true);
     try {
-      const payload = { express_shipping_enabled: enabled };
-      if (enabled) payload.express_shipping_fee = val;
-      await repairCall("myAppAdminUpdateShippingSettings", payload, { isQuery: false });
+      await repairCall(
+        "myAppAdminUpdateShippingSettings",
+        { express_shipping_fee: val },
+        { isQuery: false }
+      );
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     } catch (e) {
@@ -253,28 +256,19 @@ function ExpressShippingCard({ shipping }) {
   return (
     <SettingsCard
       title="Express Shipping"
-      description="When enabled, customers see the Express Shipping option at checkout for the extra fee below."
+      description="The fee charged when a customer chooses Express Shipping. Show or hide Express itself from the Shipping Methods card below."
     >
-      <div className="mb-4">
-        <Toggle
-          checked={enabled}
-          onChange={(v) => { setEnabled(v); setSaved(false); setError(""); }}
-          label={enabled ? "Shown to customers" : "Hidden from customers"}
-        />
-      </div>
-
-      <div className="border-t border-[#f3f4f6] pt-4">
+      <div>
         <p className="mb-1 font-body text-[11px] font-medium uppercase tracking-[1px] text-[#11191f]">
           Extra Fee
         </p>
         <p className="mb-3 font-body text-[12px] text-[#6b7280]">
-          Added to the standard delivery fee when a customer chooses Express Shipping.
+          Charged instead of the standard delivery fee when a customer chooses Express Shipping.
         </p>
         <div className="flex items-center gap-3">
           <JodInput
             value={fee}
             onChange={(v) => { setFee(v); setError(""); setSaved(false); }}
-            disabled={!enabled}
           />
           <Button size="sm" onClick={handleSave} disabled={saving}>
             {saving ? "Saving…" : "Save"}
@@ -290,9 +284,15 @@ function ExpressShippingCard({ shipping }) {
 }
 
 // (#4) Tax rate — patches the tax_settings singleton.
+// RATE ONLY. The store is tax-EXCLUSIVE: the rate is calculated on the subtotal
+// and added on top at checkout. The old "Prices include tax" toggle was removed
+// Aug 2026 by request — an inclusive store never adds tax at all (tax_amount is
+// always 0 on the order), which made this card's rate look broken. The
+// `tax_settings.inclusive` column is kept and still honoured by the math, but
+// nothing writes it any more; flipping the store back to inclusive is now a
+// deliberate DB change, not a stray click in the admin UI.
 function TaxRateCard({ tax }) {
   const [rate, setRate] = useState(() => String(tax?.rate ?? 0));
-  const [inclusive, setInclusive] = useState(() => !!tax?.inclusive);
   const [saved, setSaved] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -308,7 +308,7 @@ function TaxRateCard({ tax }) {
     try {
       await repairCall(
         "myAppAdminUpdateTaxSettings",
-        { rate: val, inclusive },
+        { rate: val },
         { isQuery: false }
       );
       setSaved(true);
@@ -329,7 +329,7 @@ function TaxRateCard({ tax }) {
         Rate
       </p>
       <p className="mb-3 font-body text-[12px] text-[#6b7280]">
-        Percentage of the order subtotal.
+        Percentage of the order subtotal, added on top at checkout. Shipping is not taxed.
       </p>
       <div className="flex items-center gap-3">
         <PctInput
@@ -344,19 +344,6 @@ function TaxRateCard({ tax }) {
       {error ? (
         <p className="mt-1.5 font-body text-[11px] text-[#dc2626]">{error}</p>
       ) : null}
-
-      <div className="mt-5 flex flex-col gap-2 border-t border-[#f3f4f6] pt-4">
-        <Toggle
-          checked={inclusive}
-          onChange={(v) => { setInclusive(v); setSaved(false); }}
-          label="Prices include tax (tax-inclusive display)"
-        />
-        <p className="font-body text-[12px] leading-[18px] text-[#6b7280]">
-          {inclusive
-            ? "On: your product prices already include tax, so nothing extra is added at checkout — the total stays the price the customer sees. The cart shows the tax portion already contained in the price (for the receipt), not an added charge."
-            : "Off: prices are tax-exclusive. Tax is calculated on the subtotal and added on top at checkout, so the total is higher than the listed prices."}
-        </p>
-      </div>
     </SettingsCard>
   );
 }
@@ -432,11 +419,42 @@ function ShippingMethodsCard({ methods: initialMethods, locations: initialLocati
   }
 
   async function handleSave() {
+    // Checked here as well as server-side because the loop below saves ONE ROW
+    // PER REQUEST: without this, "turn everything off" would apply to the first
+    // two methods and only be refused on the third, leaving the store half-
+    // configured and the admin staring at an error for a row they'd already
+    // toggled. myAppCheckout rejects a disabled method, so zero enabled methods
+    // means no customer can complete an order.
+    if (!methods.some((m) => m.enabled)) {
+      setError(
+        "At least one shipping method must stay enabled — customers could not check out otherwise."
+      );
+      return;
+    }
+    for (const m of methods) {
+      if (!m.name.trim()) {
+        setError("Each shipping method needs a display name.");
+        return;
+      }
+    }
+
     // Pickup locations are only managed while Store Pickup is enabled — their
     // editor is hidden otherwise, so a hidden blank row must not block the save.
     const pickupOn = methods.some((m) => m.key === "pickup" && m.enabled);
+    const pickupWas = !!origMethods.find((m) => m.key === "pickup")?.enabled;
+    const turningPickupOff = pickupWas && !pickupOn;
 
     if (pickupOn) {
+      // Offering Store Pickup with nowhere to collect from lets a customer check
+      // out on a promise the store can't keep — the "ready for pickup" email
+      // reads pickup_locations LIVE and falls back to "please visit our store"
+      // with no address. The server enforces this from both directions; mirrored
+      // here because this card saves row-by-row and the message should name the
+      // fix rather than surfacing mid-batch.
+      if (locations.length === 0) {
+        setError("Add at least one pickup location, or turn Store Pickup off.");
+        return;
+      }
       for (const l of locations) {
         if (!l.name.trim() || !l.address.trim()) {
           setError("Each pickup location needs a name and an address.");
@@ -447,30 +465,33 @@ function ShippingMethodsCard({ methods: initialMethods, locations: initialLocati
     setError("");
     setSaving(true);
     try {
-      // 1) Changed shipping methods only.
-      for (const m of methods) {
-        const o = origMethods.find((x) => String(x.id) === String(m.id));
-        if (!o || o.name !== m.name || o.eta !== m.eta || o.enabled !== m.enabled) {
-          await repairCall(
-            "myAppAdminUpdateShippingMethod",
-            { id: m.id, name: m.name.trim(), eta: m.eta.trim(), enabled: m.enabled },
-            { isQuery: false }
-          );
-        }
-      }
-
-      if (pickupOn) {
-        // 2) Deleted pickup locations (loaded ids no longer present).
-        const currentRealIds = new Set(
-          locations.map((l) => String(l.id)).filter((id) => !id.startsWith("loc-"))
-        );
-        for (const oid of origLocationIds) {
-          if (!currentRealIds.has(oid)) {
-            await repairCall("myAppAdminDeletePickupLocation", { id: oid }, { isQuery: false });
+      // ORDER MATTERS, because the server enforces "Store Pickup requires at
+      // least one active location" from both directions and this card saves one
+      // row per request. Running the method updates first would break the most
+      // natural flow there is — switch Store Pickup on, add the first location,
+      // Save — since enabling would be refused before the location it needs had
+      // been created. And the mirror case, clearing every location and switching
+      // Pickup off in one go, only works if the toggle lands first.
+      //
+      // So: turning pickup OFF → methods first, then the location edits.
+      // Everything else → locations first, then methods.
+      const saveMethods = async () => {
+        for (const m of methods) {
+          const o = origMethods.find((x) => String(x.id) === String(m.id));
+          if (!o || o.name !== m.name || o.eta !== m.eta || o.enabled !== m.enabled) {
+            await repairCall(
+              "myAppAdminUpdateShippingMethod",
+              { id: m.id, name: m.name.trim(), eta: m.eta.trim(), enabled: m.enabled },
+              { isQuery: false }
+            );
           }
         }
+      };
 
-        // 3) Create new + update existing locations.
+      const saveLocations = async () => {
+        // Creates and updates BEFORE deletes. Replacing the only location is a
+        // normal edit, and doing the delete first would momentarily leave zero —
+        // which the server (correctly) refuses.
         for (const l of locations) {
           const payload = {
             name: l.name.trim(),
@@ -487,6 +508,26 @@ function ShippingMethodsCard({ methods: initialMethods, locations: initialLocati
             );
           }
         }
+        // Deleted locations = loaded ids no longer present in the editor.
+        const currentRealIds = new Set(
+          locations.map((l) => String(l.id)).filter((id) => !id.startsWith("loc-"))
+        );
+        for (const oid of origLocationIds) {
+          if (!currentRealIds.has(oid)) {
+            await repairCall("myAppAdminDeletePickupLocation", { id: oid }, { isQuery: false });
+          }
+        }
+      };
+
+      if (turningPickupOff) {
+        // Locations still run afterwards so removals made before flipping the
+        // toggle aren't silently dropped — they used to be, because the whole
+        // location branch was gated on pickup being ON after the save.
+        await saveMethods();
+        await saveLocations();
+      } else {
+        if (pickupOn) await saveLocations();
+        await saveMethods();
       }
 
       await resync();

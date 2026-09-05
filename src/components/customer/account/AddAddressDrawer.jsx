@@ -5,6 +5,7 @@ import { BuildingIcon, HomeIcon, LocationIcon } from "./AccountIcons";
 import { JORDAN_CITIES } from "@/lib/jordanCities";
 import CountryCodePicker from "@/components/customer/contact/CountryCodePicker";
 import { DEFAULT_COUNTRY, parseE164, phoneLengthFor } from "@/lib/countryCodes";
+import useDelayedUnmount from "@/lib/useDelayedUnmount";
 
 // Strip a leading trunk-0 and any duplicated dial code, returning just the
 // national digits we measure + send. Same contract as SignUpForm /
@@ -43,28 +44,6 @@ const KIND_OPTIONS = [
 // for this drawer exists.
 
 const EXIT_MS = 320;
-
-function useDelayedUnmount(open, exitMs) {
-  const [render, setRender] = useState(open);
-  const [closing, setClosing] = useState(false);
-
-  useEffect(() => {
-    if (open) {
-      setRender(true);
-      setClosing(false);
-      return undefined;
-    }
-    if (!render) return undefined;
-    setClosing(true);
-    const t = setTimeout(() => {
-      setRender(false);
-      setClosing(false);
-    }, exitMs);
-    return () => clearTimeout(t);
-  }, [open, render, exitMs]);
-
-  return { render, dataState: closing ? "closing" : "open" };
-}
 
 // `initial` triggers edit mode. When present the drawer pre-fills the form,
 // retitles the header to "EDIT ADDRESS", and renames the submit button to

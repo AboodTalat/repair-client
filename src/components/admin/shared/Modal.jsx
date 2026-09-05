@@ -2,26 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { IconClose } from "./Icons";
-
-function useDelayedUnmount(open, exitMs) {
-  const [render, setRender] = useState(open);
-  const [closing, setClosing] = useState(false);
-  useEffect(() => {
-    if (open) {
-      setRender(true);
-      setClosing(false);
-      return undefined;
-    }
-    if (!render) return undefined;
-    setClosing(true);
-    const t = setTimeout(() => {
-      setRender(false);
-      setClosing(false);
-    }, exitMs);
-    return () => clearTimeout(t);
-  }, [open, render, exitMs]);
-  return { render, dataState: closing ? "closing" : "open" };
-}
+import useDelayedUnmount from "@/lib/useDelayedUnmount";
 
 export default function Modal({ open, onClose, title, children, footer, width = 480 }) {
   const { render, dataState } = useDelayedUnmount(open, 240);

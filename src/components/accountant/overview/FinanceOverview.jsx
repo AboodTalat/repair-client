@@ -20,6 +20,7 @@ import {
   formatNumber,
   downloadCsv,
 } from "@/lib/finance";
+import { todayISO, daysAgoISO, startOfYearISO } from "@/lib/adminDates";
 
 // Accountant Financial Overview — WIRED TO BACKEND (myAppFinanceDailySeries /
 // DiscountByCode / RevenueByProduct + myAppReportRevenueByCategory). Date range
@@ -28,23 +29,14 @@ import {
 // server pipeline) — same posture as the admin Reports page.
 
 // ── Date presets (today-relative) ───────────────────────────────────────────
-function isoToday() {
-  return new Date().toISOString().slice(0, 10);
-}
-function isoMinus(days) {
-  const d = new Date();
-  d.setDate(d.getDate() - days);
-  return d.toISOString().slice(0, 10);
-}
-function isoStartOfYear() {
-  return `${new Date().getFullYear()}-01-01`;
-}
-
+// Local-calendar dates, NOT `toISOString().slice(0,10)` — revenue is bucketed
+// on the database's clock (local), so a UTC-derived preset dropped the current
+// day's takings between 00:00 and 03:00. See lib/adminDates.js.
 const PRESETS = [
-  { label: "7D", from: () => isoMinus(6), to: isoToday },
-  { label: "30D", from: () => isoMinus(29), to: isoToday },
-  { label: "90D", from: () => isoMinus(89), to: isoToday },
-  { label: "YTD", from: isoStartOfYear, to: isoToday },
+  { label: "7D", from: () => daysAgoISO(6), to: todayISO },
+  { label: "30D", from: () => daysAgoISO(29), to: todayISO },
+  { label: "90D", from: () => daysAgoISO(89), to: todayISO },
+  { label: "YTD", from: startOfYearISO, to: todayISO },
 ];
 
 const BREAKDOWN_TABS = [
@@ -133,8 +125,8 @@ function EmptyChart({ message }) {
 // ── Root ──────────────────────────────────────────────────────────────────────
 export default function FinanceOverview() {
   const [preset, setPreset] = useState("30D");
-  const [from, setFrom] = useState(isoMinus(29));
-  const [to, setTo] = useState(isoToday());
+  const [from, setFrom] = useState(daysAgoISO(29));
+  const [to, setTo] = useState(todayISO());
   const [compare, setCompare] = useState(true);
   const [tab, setTab] = useState("category");
   const [granularity, setGranularity] = useState("week");
@@ -213,7 +205,7 @@ export default function FinanceOverview() {
             </label>
             <label className="flex flex-col gap-1.5">
               <span className="font-body text-[11px] font-medium uppercase tracking-[1px] text-[#6b7280]">To</span>
-              <DateInput value={to} min={from || undefined} max={isoToday()} onChange={handleToChange} />
+              <DateInput value={to} min={from || undefined} max={todayISO()} onChange={handleToChange} />
             </label>
           </div>
           <div className="flex shrink-0 flex-wrap items-center gap-2">

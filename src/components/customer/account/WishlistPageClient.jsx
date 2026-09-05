@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { MobileWishlistCard, DesktopWishlistCard } from "./WishlistCard";
 import { useRepairStore, selectIsLoggedIn } from "@/lib/useRepairStore";
 import { repairCall } from "@/lib/repairAuthedApi";
+import useStoreHydrated from "@/lib/useStoreHydrated";
 
 // Wishlist listing — Figma mobile 41:1613 + desktop 119:4743.
 //
@@ -38,13 +39,7 @@ export default function WishlistPageClient() {
   const isLoggedIn = useRepairStore(selectIsLoggedIn);
 
   // Wait for the persisted store to rehydrate before deciding what to show.
-  const [hydrated, setHydrated] = useState(() => useRepairStore.persist.hasHydrated());
-  useEffect(() => {
-    if (hydrated) return undefined;
-    const unsub = useRepairStore.persist.onFinishHydration(() => setHydrated(true));
-    if (useRepairStore.persist.hasHydrated()) setHydrated(true);
-    return unsub;
-  }, [hydrated]);
+  const hydrated = useStoreHydrated();
 
   const [items, setItems] = useState([]);
   const [loaded, setLoaded] = useState(false);
@@ -67,8 +62,15 @@ export default function WishlistPageClient() {
   }, []);
 
   useEffect(() => {
-    if (hydrated && isLoggedIn) refetch();
-    else if (hydrated && !isLoggedIn) setLoaded(true);
+    if (!hydrated) return undefined;
+    // Microtask, not a direct call — both branches set state synchronously.
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (cancelled) return;
+      if (isLoggedIn) refetch();
+      else setLoaded(true);
+    });
+    return () => { cancelled = true; };
   }, [hydrated, isLoggedIn, refetch]);
 
   const removeItem = useCallback(

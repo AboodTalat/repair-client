@@ -115,7 +115,7 @@ export default function Header({ categories = [] }) {
       className="absolute left-1/2 top-1/2 h-[22px] w-8 -translate-x-1/2 -translate-y-1/2 md:h-7 md:w-10"
     >
       <Image
-        src="/home/logo-re.png"
+        src="/home/logo-re-v2.png"
         alt="Repair"
         fill
         sizes="40px"
@@ -269,7 +269,7 @@ export default function Header({ categories = [] }) {
                   className="relative h-7 w-10 shrink-0"
                 >
                   <Image
-                    src="/home/logo-re.png"
+                    src="/home/logo-re-v2.png"
                     alt="Repair"
                     fill
                     sizes="40px"

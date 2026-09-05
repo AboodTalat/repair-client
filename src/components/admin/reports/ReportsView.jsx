@@ -17,6 +17,7 @@ import {
   fetchReturnsReport,
   downloadCsv,
 } from "@/lib/adminReports";
+import { todayISO, daysAgoISO, startOfYearISO, formatISODate } from "@/lib/adminDates";
 
 // Admin Reports — WIRED TO BACKEND (reports.ts). Every tab fetches its own
 // slice on demand from a read-only report resolver via repairCall; only
@@ -26,23 +27,14 @@ import {
 
 // ── Date preset helpers ──────────────────────────────────────────────────────
 
-function isoToday() {
-  return new Date().toISOString().slice(0, 10);
-}
-function isoMinus(days) {
-  const d = new Date();
-  d.setDate(d.getDate() - days);
-  return d.toISOString().slice(0, 10);
-}
-function isoStartOfYear() {
-  return `${new Date().getFullYear()}-01-01`;
-}
-
+// Local-calendar dates, NOT `toISOString().slice(0,10)` — order timestamps are
+// bucketed on the database's clock (local), so a UTC-derived preset dropped the
+// current day between 00:00 and 03:00. See lib/adminDates.js.
 const PRESETS = [
-  { label: "7D", from: () => isoMinus(6), to: isoToday },
-  { label: "30D", from: () => isoMinus(29), to: isoToday },
-  { label: "90D", from: () => isoMinus(89), to: isoToday },
-  { label: "YTD", from: isoStartOfYear, to: isoToday },
+  { label: "7D", from: () => daysAgoISO(6), to: todayISO },
+  { label: "30D", from: () => daysAgoISO(29), to: todayISO },
+  { label: "90D", from: () => daysAgoISO(89), to: todayISO },
+  { label: "YTD", from: startOfYearISO, to: todayISO },
 ];
 
 const TABS = [
@@ -195,8 +187,8 @@ function shortMoney(v) {
 export default function ReportsView() {
   const [tab, setTab] = useState("sales");
   const [preset, setPreset] = useState("30D");
-  const [from, setFrom] = useState(isoMinus(29));
-  const [to, setTo] = useState(isoToday());
+  const [from, setFrom] = useState(daysAgoISO(29));
+  const [to, setTo] = useState(todayISO());
 
   function applyPreset(p) {
     setPreset(p.label);
@@ -213,11 +205,29 @@ export default function ReportsView() {
   }
 
   const rangeInvalid = from && to && from > to;
+  // A date input can be CLEARED, and an empty bound is sent as "no bound" — so
+  // emptying "From" silently turned a 30-day report into an all-time one, with
+  // the subtitle rendering as "· → 2026-08-16" and the prior-period delta
+  // vanishing to "—". Nothing said the range had changed. Treat a half-open
+  // range as unusable input rather than as a much larger query.
+  const rangeIncomplete = !from || !to;
+  // Inventory is a live stock snapshot; no resolver on that tab takes a date.
+  // Leaving the range bar looking active above it implied the numbers were
+  // scoped to it.
+  const rangeApplies = tab !== "inventory";
 
   return (
     <>
       {/* ── Filter bar ─────────────────────────────────────────── */}
-      <div className="mb-5 rounded-[4px] border border-[#e5e7eb] bg-white p-4">
+      <div
+        className="mb-5 rounded-[4px] border border-[#e5e7eb] bg-white p-4 transition-opacity"
+        style={rangeApplies ? undefined : { opacity: 0.55 }}
+      >
+        {!rangeApplies ? (
+          <p className="mb-3 font-body text-[12px] text-[#6b7280]">
+            The date range doesn’t apply to Inventory — stock levels are a live snapshot.
+          </p>
+        ) : null}
         <div className="mb-3 flex flex-wrap items-center gap-2">
           {PRESETS.map((p) => (
             <button
@@ -246,12 +256,16 @@ export default function ReportsView() {
             </label>
             <label className="flex flex-col gap-1.5">
               <span className="font-body text-[11px] font-medium uppercase tracking-[1px] text-[#6b7280]">To</span>
-              <DateInput value={to} min={from || undefined} max={isoToday()} onChange={handleToChange} />
+              <DateInput value={to} min={from || undefined} max={todayISO()} onChange={handleToChange} />
             </label>
           </div>
         </div>
         {rangeInvalid ? (
           <p className="mt-3 font-body text-[12px] text-[#dc2626]">“From” is after “To” — adjust the range.</p>
+        ) : rangeApplies && rangeIncomplete ? (
+          <p className="mt-3 font-body text-[12px] text-[#dc2626]">
+            Pick both a “From” and a “To” date, or choose a preset above.
+          </p>
         ) : null}
       </div>
 
@@ -279,7 +293,7 @@ export default function ReportsView() {
       </div>
 
       {/* ── Tab content ───────────────────────────────────────── */}
-      {rangeInvalid ? (
+      {rangeApplies && (rangeInvalid || rangeIncomplete) ? (
         <EmptyNote>Fix the date range to see results.</EmptyNote>
       ) : (
         <>
@@ -454,7 +468,9 @@ function PromoReport({ from, to }) {
     redemptions: r.orders_using,
     discount_given: r.total_discount_given,
     all_time_uses: r.used_count,
-    expires: r.expires_at ? new Date(r.expires_at).toISOString().slice(0, 10) : "Never",
+    // Local, matching the on-screen column below — a UTC slice here rendered a
+    // "1 Sep 01:00" expiry as "31 Aug", so the CSV disagreed with the table.
+    expires: r.expires_at ? formatISODate(r.expires_at) : "Never",
     status: r.is_active ? "Active" : "Inactive",
   }));
 

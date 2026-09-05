@@ -5,6 +5,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Button, { IconButton } from "@/components/admin/shared/Button";
 import { Chip, SearchInput } from "@/components/admin/shared/Form";
 import DataTable from "@/components/admin/shared/DataTable";
+import PagedFooter from "@/components/admin/shared/PagedFooter";
+import usePagedList from "@/components/admin/shared/usePagedList";
 import StatusBadge from "@/components/admin/shared/StatusBadge";
 import Modal from "@/components/admin/shared/Modal";
 import { IconDownload, IconTrash, IconSend } from "@/components/admin/shared/Icons";
@@ -20,10 +22,15 @@ import { repairCall } from "@/lib/repairAuthedApi";
 // straight from the resolver (no client-side filtering). Status counts come
 // from the resolver's global `statusCounts` array.
 
-// We pull a generous page so the table + CSV export reflect the whole list
-// without a pagination UI; the resolver caps at 500, so a larger list is
-// flagged as truncated below the table.
-const PAGE_LIMIT = 500;
+/** Rows per page; the list loads more on demand (server caps a page at 500). */
+const PAGE_LIMIT = 50;
+
+// Export page size. The resolver caps a page at 500, so the export walks the
+// list in 500-row requests rather than asking for everything at once.
+const EXPORT_PAGE = 500;
+// A hard stop so a runaway list can't spin forever. If it ever bites, the file
+// SAYS so (see exportCsv) rather than looking complete.
+const EXPORT_MAX = 50000;
 
 const STATUS_FILTERS = [
   { key: "all",          label: "All" },
@@ -49,8 +56,12 @@ function countsFromStatus(arr) {
   return c;
 }
 
+// Same formula-injection guard as `downloadCsv` in lib/adminReports.js — see the
+// long note there. This list is the highest-risk of the lot: the addresses come
+// straight from the PUBLIC newsletter box, with no account required.
 function csvCell(v) {
-  const s = String(v ?? "");
+  let s = String(v ?? "");
+  if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`;
   return /[,"\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
@@ -74,67 +85,121 @@ function downloadCsv(rows) {
   URL.revokeObjectURL(url);
 }
 
+// Fetch EVERY row matching the current filters, for the export.
+//
+// This used to be `downloadCsv(rows)` over whatever the table had loaded —
+// PAGE_LIMIT is 50 and the list grows only when the admin presses "Load more",
+// so a 121-subscriber list exported 50 rows into a file named
+// `newsletter-subscribers-<date>.csv`, with nothing on screen or in the file
+// saying it was a slice. Measured: first page 50, server total 121. A partial
+// export is worse than a failed one — the admin mails the 50 and believes the
+// list is done. Same rule the digital-orders admin reads follow: never derive
+// a whole-list artefact from a paged view.
+async function fetchAllForExport({ statusFilter, appliedSearch }) {
+  const all = [];
+  let offset = 0;
+  for (;;) {
+    const input = { limit: EXPORT_PAGE, offset };
+    if (statusFilter && statusFilter !== "all") input.status = statusFilter;
+    if (appliedSearch) input.search = appliedSearch;
+    const data = await repairCall("myAppAdminListNewsletterSubscribers", input, { isQuery: true });
+    const batch = Array.isArray(data?.items) ? data.items : [];
+    all.push(...batch);
+    offset += batch.length;
+    const total = Number(data?.total);
+    // Stop on a short page (the end) or once we've matched the reported total.
+    if (batch.length < EXPORT_PAGE) break;
+    if (Number.isFinite(total) && offset >= total) break;
+    if (offset >= EXPORT_MAX) return { rows: all, capped: true };
+  }
+  return { rows: all, capped: false };
+}
+
 export default function SubscribersManager() {
-  const [rows, setRows] = useState([]);
   const [counts, setCounts] = useState({ all: 0, active: 0, unsubscribed: 0 });
-  const [total, setTotal] = useState(0);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
+  // Debounced copy of the search box — the paged list refetches when its
+  // fetcher identity changes, so this is what avoids a request per keystroke.
+  const [appliedSearch, setAppliedSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [search, setSearch] = useState("");
   const [busyId, setBusyId] = useState(null);
   const [pendingDelete, setPendingDelete] = useState(null);
+  const [exporting, setExporting] = useState(false);
 
   const debounceRef = useRef(null);
   const mountedRef = useRef(false);
 
-  const fetchSubscribers = useCallback(async (filters = {}) => {
-    setLoading(true);
-    setError(null);
-    try {
-      const input = { limit: PAGE_LIMIT };
-      if (filters.status && filters.status !== "all") input.status = filters.status;
-      if (filters.search) input.search = filters.search;
-      const data = await repairCall("myAppAdminListNewsletterSubscribers", input, { isQuery: true });
-      setRows(Array.isArray(data?.items) ? data.items : []);
-      setCounts(countsFromStatus(data?.statusCounts));
-      setTotal(Number(data?.total) || 0);
-    } catch (err) {
-      setError(err?.message || "Failed to load subscribers");
-      setRows([]);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
   useEffect(() => {
     if (!mountedRef.current) {
       mountedRef.current = true;
-      fetchSubscribers({ status: statusFilter, search });
+      setAppliedSearch(search);
       return;
     }
     if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => {
-      fetchSubscribers({ status: statusFilter, search });
-    }, 250);
+    debounceRef.current = setTimeout(() => setAppliedSearch(search), 250);
     return () => clearTimeout(debounceRef.current);
-  }, [statusFilter, search, fetchSubscribers]);
+  }, [search]);
+
+  const fetchPage = useCallback(
+    async ({ limit, offset }) => {
+      const input = { limit, offset };
+      if (statusFilter && statusFilter !== "all") input.status = statusFilter;
+      if (appliedSearch) input.search = appliedSearch;
+      const data = await repairCall("myAppAdminListNewsletterSubscribers", input, { isQuery: true });
+      // statusCounts is an UNFILTERED whole-table breakdown — correct on any page.
+      setCounts(countsFromStatus(data?.statusCounts));
+      return { items: Array.isArray(data?.items) ? data.items : [], total: data?.total };
+    },
+    [statusFilter, appliedSearch],
+  );
+
+  const list = usePagedList({ pageSize: PAGE_LIMIT, fetchPage });
+  const { items: rows, total, loading, error, setItems: setRows } = list;
+  // usePagedList owns `error` for LOAD failures and clears it at the start of
+  // every load. A MUTATION failure needs its own slot, or the refresh that
+  // follows a failed write erases the message before the admin can read it.
+  const [actionError, setActionError] = useState(null);
 
   async function toggleStatus(row) {
     const next = row.status === "active" ? "unsubscribed" : "active";
     setBusyId(row.id);
-    setError(null);
+    setActionError(null);
     try {
       await repairCall(
         "myAppAdminUpdateNewsletterSubscriberStatus",
         { id: Number(row.id), status: next },
         { isQuery: false }
       );
-      await fetchSubscribers({ status: statusFilter, search });
+      await list.refresh();
     } catch (err) {
-      setError(err?.message || "Failed to update the subscriber");
+      setActionError(err?.message || "Failed to update the subscriber");
     } finally {
       setBusyId(null);
+    }
+  }
+
+  async function exportCsv() {
+    if (exporting) return;
+    setExporting(true);
+    setActionError(null);
+    try {
+      const { rows: allRows, capped } = await fetchAllForExport({ statusFilter, appliedSearch });
+      if (allRows.length === 0) {
+        setActionError("Nothing to export for this filter.");
+        return;
+      }
+      downloadCsv(allRows);
+      if (capped) {
+        setActionError(
+          `Exported the first ${allRows.length.toLocaleString()} subscribers — the list is larger than the ${EXPORT_MAX.toLocaleString()}-row export limit.`
+        );
+      }
+    } catch (err) {
+      // Say the export failed. Falling back to the loaded page here would hand
+      // over a silently partial file, which is the bug this replaced.
+      setActionError(err?.message || "Failed to export the subscriber list");
+    } finally {
+      setExporting(false);
     }
   }
 
@@ -142,12 +207,12 @@ export default function SubscribersManager() {
     if (!pendingDelete) return;
     const id = pendingDelete.id;
     setPendingDelete(null);
-    setError(null);
+    setActionError(null);
     try {
       await repairCall("myAppAdminDeleteNewsletterSubscriber", { id: Number(id) }, { isQuery: false });
-      await fetchSubscribers({ status: statusFilter, search });
+      await list.refresh();
     } catch (err) {
-      setError(err?.message || "Failed to delete the subscriber");
+      setActionError(err?.message || "Failed to delete the subscriber");
     }
   }
 
@@ -190,9 +255,9 @@ export default function SubscribersManager() {
 
   return (
     <div className="flex flex-col gap-4">
-      {error && (
+      {(actionError || error) && (
         <div className="rounded-[4px] border border-[#fecaca] bg-[#fef2f2] px-4 py-3">
-          <p className="font-body text-[13px] text-[#dc2626]">{error}</p>
+          <p className="font-body text-[13px] text-[#dc2626]">{actionError || error}</p>
         </div>
       )}
 
@@ -223,10 +288,10 @@ export default function SubscribersManager() {
             variant="secondary"
             size="sm"
             icon={<IconDownload />}
-            disabled={rows.length === 0}
-            onClick={() => downloadCsv(rows)}
+            disabled={rows.length === 0 || exporting}
+            onClick={exportCsv}
           >
-            Export CSV
+            {exporting ? "Preparing…" : "Export CSV"}
           </Button>
           <Link
             href="/r3pr-console/broadcast"
@@ -258,12 +323,15 @@ export default function SubscribersManager() {
               </p>
             }
           />
-          {total > rows.length && (
-            <p className="font-body text-[12px] text-[#9ca3af]">
-              Showing the first {rows.length} of {total} subscribers. Narrow the search to find a
-              specific subscriber.
-            </p>
-          )}
+          <PagedFooter
+            shown={rows.length}
+            total={total}
+            hasMore={list.hasMore}
+            loading={loading}
+            loadingMore={list.loadingMore}
+            onLoadMore={list.loadMore}
+            noun="subscriber"
+          />
         </>
       )}
 
@@ -280,7 +348,7 @@ export default function SubscribersManager() {
       >
         <p className="font-body text-[13px] text-[#11191f]">
           {pendingDelete
-            ? `${pendingDelete.email} will be permanently removed from the list.`
+            ? `${pendingDelete?.email} will be permanently removed from the list.`
             : ""}
         </p>
       </Modal>

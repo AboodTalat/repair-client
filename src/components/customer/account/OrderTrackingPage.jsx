@@ -11,6 +11,7 @@ import ReorderResultDrawer from "@/components/customer/account/ReorderResultDraw
 import { repairCall } from "@/lib/repairAuthedApi";
 import { useCommerceSettings } from "@/lib/useCommerceSettings";
 import { useRepairStore } from "@/lib/useRepairStore";
+import useStoreHydrated from "@/lib/useStoreHydrated";
 
 const PLACEHOLDER_IMAGE = "/shop/model-1.png";
 
@@ -211,13 +212,13 @@ function TrackingNotFound({ id }) {
 
 // Fallback labels for the activity timeline (used only when a history row has
 // no backend note). Keyed by raw status. `out_for_delivery` reads as the
-// "Dispatched" handover — NOT "out for delivery / on the way" — to match the
-// 3-state customer tracker.
+// "Packed" handover — NOT "out for delivery / on the way" — to match the
+// 3-state customer tracker (Confirmed → Packed → Delivered).
 const STATUS_NOTE = {
   pending: "Order placed",
   processing: "Order placed — being prepared",
   dispatched: "Order prepared",
-  out_for_delivery: "Dispatched to our delivery partner",
+  out_for_delivery: "Packed and handed to our delivery partner",
   delivered: "Delivered",
   failed_delivery: "Delivery attempt failed",
   cancelled: "Order cancelled",
@@ -229,13 +230,7 @@ export default function OrderTrackingPage({ orderId }) {
   const router = useRouter();
 
   // Gate on rehydration so the auth token is present before the fetch.
-  const [hydrated, setHydrated] = useState(() => useRepairStore.persist.hasHydrated());
-  useEffect(() => {
-    if (hydrated) return undefined;
-    const unsub = useRepairStore.persist.onFinishHydration(() => setHydrated(true));
-    if (useRepairStore.persist.hasHydrated()) setHydrated(true);
-    return unsub;
-  }, [hydrated]);
+  const hydrated = useStoreHydrated();
 
   const [detail, setDetail] = useState(null);
   const [loaded, setLoaded] = useState(false);

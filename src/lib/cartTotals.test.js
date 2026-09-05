@@ -79,7 +79,6 @@ const arbSettings = fc.record({
     express_shipping_fee: money2dp(0, 50),
     free_delivery_enabled: fc.boolean(),
     free_delivery_threshold: money2dp(0, 500),
-    express_shipping_enabled: fc.boolean(),
   }),
   tax: fc.record({
     rate: money2dp(0, 25),

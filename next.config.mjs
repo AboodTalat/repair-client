@@ -5,6 +5,13 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  // Opt-in build directory. Next writes its dev-server lock inside the dist dir
+  // (.next/dev/lock) and refuses to start a second dev server for the same
+  // project directory — which blocks the Playwright suite whenever a normal
+  // `npm run dev` is already running, the usual state while working. Pointing the
+  // e2e server at its own dist dir lets the two coexist instead of asking anyone
+  // to stop theirs. Unset everywhere else, so normal dev/build are unchanged.
+  distDir: process.env.NEXT_DIST_DIR || ".next",
   reactCompiler: true,
   turbopack: {
     root: __dirname,

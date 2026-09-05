@@ -131,8 +131,13 @@ export function Stepper({ activeStep = "cart" }) {
           center of the 32px icon boxes which sit on top via z-10). */}
       <div className="relative w-full md:hidden">
         <div className="relative flex w-full items-center justify-between">
-          {/* Connector line — width pinned via inline style because Tailwind v4 +
-              Turbopack silently drops arbitrary `w-[Npx]` in this file's scan. */}
+          {/* Connector line — width/left/top pinned inline. Kept as-is, but the
+              reason originally given (Turbopack dropping arbitrary width classes
+              from this file's scan) was re-measured in Aug 2026 and no longer
+              holds: every arbitrary class in this app reaches both the dev and
+              production CSS. Inline is fine here — these are fixed pixel offsets
+              with no responsive variant — so this is left alone rather than
+              churned. See the Tailwind entry in repair/CLAUDE.md. */}
           <div
             className="absolute h-[2px] bg-[#f3f4f6]"
             style={{ left: 15, top: 16, width: 320 }}
@@ -891,9 +896,11 @@ export function OrderTotalsBlock({ totals, appliedPromo, variant, onContinue, is
         desktop
           ? undefined
           : {
-              // Tailwind v4 + Turbopack drops `outline-[#f3f4f6]` and
-              // `-outline-offset-1` from the scanner output — set both inline
-              // so the card actually gets the light-grey #F3F4F6 outline.
+              // Outline set inline. The original reason — Turbopack dropping
+              // the arbitrary outline classes — was disproven in Aug 2026 (both
+              // emit correctly in dev and production). Harmless to keep, and
+              // changing a working visual for no behavioural gain is not worth
+              // the regression risk; see repair/CLAUDE.md.
               outlineColor: "#f3f4f6",
               outlineOffset: "-1px",
             }

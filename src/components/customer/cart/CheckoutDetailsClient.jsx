@@ -534,7 +534,48 @@ function DeliveryMethodRow({ method, selected, onSelect, variant }) {
   );
 }
 
-function DeliveryMethodSection({ methods, selectedId, onSelect, variant, freeShippingBanner }) {
+// Where to collect a store-pickup order. Shown only while "pickup" is the
+// selected method — picking it otherwise told the customer nothing about where
+// to go, which is the whole point of the option.
+//
+// ALL active locations are listed rather than offering a chooser, deliberately:
+// an order records only `shipping_method_key`, with no pickup-location column,
+// and the backend's ready-for-pickup email lists every active location too
+// (orders.ts ~1088). Listing them here keeps checkout and that email saying the
+// same thing. A real chooser needs a column on `orders` first.
+function PickupLocationPanel({ locations, variant }) {
+  const desktop = variant === "desktop";
+  return (
+    <div className={`flex w-full flex-col gap-2 rounded-[4px] border border-[#e5e7eb] bg-[#f9fafb] ${desktop ? "p-4" : "p-3"}`}>
+      <p className="font-body text-[10px] font-medium uppercase tracking-[1px] text-[#6b7280]">
+        {locations.length > 1 ? "Collect from any of our stores" : "Collect from"}
+      </p>
+      {locations.length ? (
+        locations.map((loc, i) => (
+          <div key={i} className="flex flex-col">
+            <p className="font-display text-[13px] font-medium leading-5 text-[#11191f]">
+              {loc.name || "Our store"}
+            </p>
+            {loc.address ? (
+              <p className="font-body text-[13px] leading-5 text-[#6b7280]" style={condensed}>{loc.address}</p>
+            ) : null}
+            {loc.hours ? (
+              <p className="font-body text-[12px] leading-4 text-[#6b7280]" style={condensed}>Hours: {loc.hours}</p>
+            ) : null}
+          </div>
+        ))
+      ) : (
+        // Pickup enabled with no active location is a real admin state — say so
+        // rather than rendering a bare heading with nothing under it.
+        <p className="font-body text-[13px] leading-5 text-[#6b7280]" style={condensed}>
+          We&apos;ll confirm the pickup address with you after your order is placed.
+        </p>
+      )}
+    </div>
+  );
+}
+
+function DeliveryMethodSection({ methods, selectedId, onSelect, variant, freeShippingBanner, pickupLocations }) {
   const desktop = variant === "desktop";
   return (
     <section className={desktop ? "flex w-full flex-col gap-6 border-t border-[#f3f4f6] pt-[33px]" : "flex w-full flex-col gap-4 px-4"}>
@@ -547,6 +588,9 @@ function DeliveryMethodSection({ methods, selectedId, onSelect, variant, freeShi
             <DeliveryMethodRow key={m.id} method={m} selected={m.id === selectedId} onSelect={onSelect} variant={variant} />
           ))
         )}
+        {String(selectedId).toLowerCase() === "pickup" ? (
+          <PickupLocationPanel locations={pickupLocations ?? []} variant={variant} />
+        ) : null}
       </div>
       {!desktop && freeShippingBanner ? freeShippingBanner : null}
     </section>
@@ -726,25 +770,40 @@ export default function CheckoutDetailsClient() {
     () => buildDeliveryMethods(settings, totals.afterPromo),
     [settings, totals.afterPromo]
   );
+  // Active store-pickup locations, surfaced once "pickup" is selected. Same
+  // shape + filter as OrderTrackingPage so checkout and the tracker agree.
+  const pickupLocations = useMemo(() => {
+    const rows = Array.isArray(settings?.pickupLocations) ? settings.pickupLocations : [];
+    return rows
+      .map((l) => ({ name: l.name, address: l.address, hours: l.hours }))
+      .filter((l) => l.name || l.address);
+  }, [settings]);
   // Keep the selection valid against the live list.
-  useEffect(() => {
-    if (methods.length === 0) return;
-    if (!methods.some((m) => m.id === selectedShippingId)) {
-      setSelectedShippingId(methods[0].id);
-    }
-  }, [methods, selectedShippingId]);
+  //
+  // Render-phase adjustment: the selection is only valid RELATIVE to `methods`,
+  // so correcting it in an effect meant one render — and one paint — showed a
+  // shipping method that is no longer offered, and the totals computed from it.
+  if (methods.length > 0 && !methods.some((m) => m.id === selectedShippingId)) {
+    setSelectedShippingId(methods[0].id);
+  }
 
   // Address selection. Logged-in → a saved-address id; guest → the local id.
   const [selectedAddressId, setSelectedAddressId] = useState(null);
   const [guestAddress, setGuestAddress] = useState(null);
-  useEffect(() => {
-    if (!isLoggedIn) return;
-    // Default to the saved default (or first) address once they load.
-    if (savedAddresses.length > 0 && !savedAddresses.some((a) => a.id === selectedAddressId)) {
-      const def = savedAddresses.find((a) => a.isDefault) ?? savedAddresses[0];
-      setSelectedAddressId(def.id);
-    }
-  }, [isLoggedIn, savedAddresses, selectedAddressId]);
+  // Default to the saved default (or first) address once they load.
+  //
+  // Render-phase adjustment: the selection is only meaningful relative to
+  // `savedAddresses`, so choosing it in an effect meant the first paint after
+  // the addresses arrived had no address selected — and the summary card and
+  // Continue button read that empty state for a frame.
+  if (
+    isLoggedIn &&
+    savedAddresses.length > 0 &&
+    !savedAddresses.some((a) => a.id === selectedAddressId)
+  ) {
+    const def = savedAddresses.find((a) => a.isDefault) ?? savedAddresses[0];
+    setSelectedAddressId(def.id);
+  }
 
   const addressList = isLoggedIn ? savedAddresses : guestAddress ? [guestAddress] : [];
   const effectiveSelectedAddressId = isLoggedIn ? selectedAddressId : guestAddress?.id ?? null;
@@ -969,6 +1028,7 @@ export default function CheckoutDetailsClient() {
           onSelect={setSelectedShippingId}
           variant="mobile"
           freeShippingBanner={freeShippingMobile}
+          pickupLocations={pickupLocations}
         />
 
         <div className="mx-4 mt-4 h-px bg-[#f3f4f6]" />
@@ -1029,6 +1089,7 @@ export default function CheckoutDetailsClient() {
               selectedId={selectedShippingId}
               onSelect={setSelectedShippingId}
               variant="desktop"
+              pickupLocations={pickupLocations}
             />
           </div>
 

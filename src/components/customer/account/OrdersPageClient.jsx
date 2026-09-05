@@ -13,6 +13,7 @@ import {
 } from "@/lib/orders";
 import { repairCall } from "@/lib/repairAuthedApi";
 import { useRepairStore } from "@/lib/useRepairStore";
+import useStoreHydrated from "@/lib/useStoreHydrated";
 
 // Orders listing — Figma mobile 41:1420 + desktop 119:4406.
 //
@@ -54,13 +55,7 @@ export default function OrdersPageClient({ filters }) {
   const [filterOpen, setFilterOpen] = useState(false);
 
   // Gate on rehydration so the auth token is present before we call the API.
-  const [hydrated, setHydrated] = useState(() => useRepairStore.persist.hasHydrated());
-  useEffect(() => {
-    if (hydrated) return undefined;
-    const unsub = useRepairStore.persist.onFinishHydration(() => setHydrated(true));
-    if (useRepairStore.persist.hasHydrated()) setHydrated(true);
-    return unsub;
-  }, [hydrated]);
+  const hydrated = useStoreHydrated();
 
   const [allOrders, setAllOrders] = useState([]);
   const [loading, setLoading] = useState(true);

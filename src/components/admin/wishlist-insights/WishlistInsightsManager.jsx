@@ -111,6 +111,12 @@ export default function WishlistInsightsManager() {
   const [uniqueHolders, setUniqueHolders] = useState(0);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(null);
+  // The resolver caps the list and returns { truncated, cap }. Nothing read
+  // them, so its own comment ("we now tell the ADMIN as well as the log") was
+  // untrue from where the admin sits — and every KPI and chip on this page is
+  // derived client-side from `rows`, so a truncated list silently undercounts
+  // all four of them.
+  const [truncation, setTruncation] = useState(null);
 
   const [stockFilter, setStockFilter] = useState("all");
   const [search, setSearch] = useState("");
@@ -164,11 +170,13 @@ export default function WishlistInsightsManager() {
         if (cancelled) return;
         setRows(Array.isArray(data?.items) ? data.items.map(mapRow) : []);
         setUniqueHolders(Number(data?.uniqueHolders) || 0);
+        setTruncation(data?.truncated ? { cap: Number(data?.cap) || 0 } : null);
       } catch (err) {
         if (cancelled) return;
         setLoadError(err?.message || "Failed to load wishlist insights");
         setRows([]);
         setUniqueHolders(0);
+        setTruncation(null);
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -392,6 +400,13 @@ export default function WishlistInsightsManager() {
         </div>
       ) : null}
 
+      {truncation ? (
+        <div className="rounded-[4px] border border-[#fde68a] bg-[#fffbeb] px-4 py-3 font-body text-[13px] text-[#92400e]">
+          Showing the top {formatNumber(truncation?.cap)} wishlisted products — there are more. The counters below
+          cover only what is listed here.
+        </div>
+      ) : null}
+
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <KpiCard label="Total wishlisted" value={formatNumber(totals.totalWishlistedItems)} period="Across all products" />
         <KpiCard label="Added last 7 days" value={`+${formatNumber(totals.totalAddedThisWeek)}`} period="Demand trending" />
@@ -475,7 +490,7 @@ export default function WishlistInsightsManager() {
             <p className="font-body text-[13px] text-[#6b7280]">Loading holders…</p>
           </div>
         ) : holders.length === 0 && !holdersError ? (
-          <p className="font-body text-[13px] text-[#6b7280]">No active holders to show.</p>
+          <p className="font-body text-[13px] text-[#6b7280]">No holders to show.</p>
         ) : (
           <div className="flex flex-col gap-3">
             <p className="font-body text-[12px] text-[#6b7280]">
@@ -531,7 +546,14 @@ export default function WishlistInsightsManager() {
           <div className="flex flex-col gap-3">
             <div className="rounded-[2px] border border-[#dbeafe] bg-[#eff6ff] p-3">
               <p className="font-body text-[12px] text-[#1e3a8a]">
-                Notify <strong>{formatNumber(notifyTarget.wishlistCount)}</strong> customer{notifyTarget.wishlistCount === 1 ? "" : "s"} who have <strong>{notifyTarget.product}</strong> in their wishlist.
+                Notify up to <strong>{formatNumber(notifyTarget?.wishlistCount)}</strong> customer{notifyTarget?.wishlistCount === 1 ? "" : "s"} who have <strong>{notifyTarget?.product}</strong> in their wishlist.
+              </p>
+              {/* This count is wishlist ROWS; the send skips deactivated
+                  accounts, so the two legitimately differ. Say so here rather
+                  than showing a number the result will quietly contradict —
+                  the response reports what was actually queued. */}
+              <p className="mt-1 font-body text-[11px] text-[#1e3a8a]/70">
+                Deactivated accounts are skipped. Emails are queued and delivered in the background.
               </p>
             </div>
 
@@ -546,7 +568,7 @@ export default function WishlistInsightsManager() {
                   setOneSubject(e.target.value);
                   setOneError("");
                 }}
-                placeholder={`${notifyTarget.product} is waiting for you`}
+                placeholder={`${notifyTarget?.product} is waiting for you`}
               />
               <MergeTagRow
                 onInsert={(token) =>
@@ -601,7 +623,11 @@ export default function WishlistInsightsManager() {
         <div className="flex flex-col gap-3">
           <div className="rounded-[2px] border border-[#dbeafe] bg-[#eff6ff] p-3">
             <p className="font-body text-[12px] text-[#1e3a8a]">
-              This will reach <strong>{formatNumber(uniqueHolders)}</strong> unique customer{uniqueHolders === 1 ? "" : "s"} who have at least one product wishlisted across the store.
+              This will reach up to <strong>{formatNumber(uniqueHolders)}</strong> unique customer{uniqueHolders === 1 ? "" : "s"} who have at least one product wishlisted across the store.
+            </p>
+            <p className="mt-1 font-body text-[11px] text-[#1e3a8a]/70">
+              Deactivated accounts are skipped, and a single send is capped at 500 recipients — the result will say
+              if any were left over. Emails are queued and delivered in the background.
             </p>
           </div>
 

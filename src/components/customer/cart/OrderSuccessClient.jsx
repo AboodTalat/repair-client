@@ -8,6 +8,7 @@ import { condensed } from "./CartPageClient";
 import { repairCall } from "@/lib/repairAuthedApi";
 import { useCommerceSettings } from "@/lib/useCommerceSettings";
 import { useRepairStore, selectLastPlacedOrder } from "@/lib/useRepairStore";
+import useStoreHydrated from "@/lib/useStoreHydrated";
 
 // /checkout/success — Order confirmation screen reached after a successful
 // "Confirm & Pay" on /checkout/payment. Matches Figma mobile 85:8692 +
@@ -671,13 +672,7 @@ export default function OrderSuccessClient({ coaching } = {}) {
 
   // Gate on rehydration — lastOrder is persisted but unavailable on the first
   // (pre-hydrate) frame, so without this a fresh reload would redirect to /shop.
-  const [hydrated, setHydrated] = useState(() => useRepairStore.persist.hasHydrated());
-  useEffect(() => {
-    if (hydrated) return undefined;
-    const unsub = useRepairStore.persist.onFinishHydration(() => setHydrated(true));
-    if (useRepairStore.persist.hasHydrated()) setHydrated(true);
-    return unsub;
-  }, [hydrated]);
+  const hydrated = useStoreHydrated();
 
   // No placed order (direct nav / cleared state) → nothing to confirm.
   useEffect(() => {

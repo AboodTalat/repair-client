@@ -71,15 +71,15 @@ export default function SplashSection() {
         className="splash-anim pointer-events-none absolute left-1/2 top-1/2 z-10"
         style={{
           width: "clamp(112px, 22vmin, 260px)",
-          aspectRatio: "128 / 98",
+          aspectRatio: "800 / 548",
           animation: `splashLogo 800ms ${EASE} 1.75s both`,
         }}
       >
         <Image
-          src="/splash/logo-re.png"
+          src="/splash/logo-re-v2.png"
           alt="Repair"
           width={260}
-          height={199}
+          height={178}
           priority
           className="h-full w-full object-contain drop-shadow-[0_4px_24px_rgba(0,0,0,0.18)]"
         />

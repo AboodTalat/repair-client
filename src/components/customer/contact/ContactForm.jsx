@@ -7,6 +7,16 @@ import { repairCall } from "@/lib/repairAuthedApi";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 
+// Mirrors MAX_MESSAGE_LEN / MAX_NAME_LEN in resolvers/contact.ts.
+//
+// These are the only limits the server enforced that the client did not, and
+// the gap was a dead end rather than a rough edge: the catch below rewrites
+// every server failure as "Something went wrong — please try again", so a
+// 4001-character message produced a retry prompt for a condition that retrying
+// can never fix. Keep them in step with the resolver.
+const MAX_MESSAGE_LEN = 4000;
+const MAX_NAME_LEN = 100;
+
 // Contact form — Figma 66:2449. Wired to the public `myAppSendContactMessage`
 // mutation on the repair sub-server (no auth required; the guest's null token
 // is harmless — same pattern as NewsletterSignup). Client-side validation below
@@ -69,6 +79,10 @@ export default function ContactForm() {
       setError("Please enter your first and last name.");
       return;
     }
+    if (form.firstName.trim().length > MAX_NAME_LEN || form.lastName.trim().length > MAX_NAME_LEN) {
+      setError(`Names must be ${MAX_NAME_LEN} characters or fewer.`);
+      return;
+    }
     if (!EMAIL_RE.test(form.email.trim())) {
       setError("Please enter a valid email address.");
       return;
@@ -87,6 +101,10 @@ export default function ContactForm() {
     }
     if (!form.message.trim()) {
       setError("Please enter a message.");
+      return;
+    }
+    if (form.message.trim().length > MAX_MESSAGE_LEN) {
+      setError(`Message must be ${MAX_MESSAGE_LEN} characters or fewer.`);
       return;
     }
 
@@ -132,6 +150,7 @@ export default function ContactForm() {
         placeholder="First Name"
         value={form.firstName}
         onChange={onChange("firstName")}
+        maxLength={MAX_NAME_LEN}
         className={FIELD}
       />
 
@@ -146,6 +165,7 @@ export default function ContactForm() {
         placeholder="Last Name"
         value={form.lastName}
         onChange={onChange("lastName")}
+        maxLength={MAX_NAME_LEN}
         className={FIELD}
       />
 
@@ -202,6 +222,7 @@ export default function ContactForm() {
         placeholder="Message"
         value={form.message}
         onChange={onChange("message")}
+        maxLength={MAX_MESSAGE_LEN}
         className="contact-input w-full resize-none rounded-[2px] border border-[#11191f] bg-transparent p-3 text-[10px] tracking-[0.4px] text-[#11191f] outline-none focus:ring-1 focus:ring-[#11191f] h-[147px] md:h-[180px] md:p-4 md:text-[12px]"
       />
 

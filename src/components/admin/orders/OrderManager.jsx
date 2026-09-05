@@ -11,6 +11,7 @@ import { IconCheck } from "@/components/admin/shared/Icons";
 import { formatCurrency, STATUS_TONE } from "@/lib/mockAdmin";
 import { repairCall } from "@/lib/repairAuthedApi";
 import { toOptions, formatThunderFee } from "@/lib/thunderDelivery";
+import { useSearchParams } from "next/navigation";
 import { useCommerceSettings } from "@/lib/useCommerceSettings";
 import {
   ORDER_FILTER_CHIPS,
@@ -28,10 +29,40 @@ import {
   resolvePaymentLabel,
 } from "@/lib/adminOrders";
 
+// repairCall throws with a message shaped like "repairClientApi <op>: <server
+// message>". Strip the prefix so the admin sees the server's own reason (e.g.
+// "That user is not a delivery account") rather than the transport's internal
+// name. Mirrors cleanErr() in the other admin managers.
+function cleanErr(e, fallback) {
+  const m = (e?.message || "").replace(/^repairClientApi \S+:\s*/, "");
+  return m || fallback;
+}
+
 const PAGE_SIZE = 25;
 
-// Raw statuses an admin can still CANCEL from (canTransition in helpers.ts).
-const CANCELLABLE_RAW = new Set(["pending", "processing", "dispatched"]);
+// Raw statuses an admin can still CANCEL from. This MUST mirror the
+// `cancelled` entries in ADMIN_ALLOWED (helpers.ts), which are:
+//   pending → cancelled, processing → cancelled, dispatched → cancelled,
+//   failed_delivery → cancelled
+//
+// `failed_delivery` was missing here, and it is the one that mattered: a failed
+// delivery only has two exits, re-dispatch or cancel, and cancelling is the ONLY
+// one that restocks the items. With it absent from this set the Cancel button
+// stayed disabled on exactly those orders, so an order the courier could not
+// deliver could never be closed out and its stock never returned to the shelf —
+// it just sat in failed_delivery forever. Verified against the backend before
+// fixing: failed_delivery → cancelled succeeds and restocks (variant 5 → 7).
+const CANCELLABLE_RAW = new Set(["pending", "processing", "dispatched", "failed_delivery"]);
+
+// Mirrors the orders.payment_status ENUM (and PAYMENT_STATUSES in orders.ts).
+// Keep the two in lockstep — the resolver rejects anything outside this set.
+const PAYMENT_STATUSES = ["pending", "paid", "refunded", "failed"];
+const PAYMENT_STATUS_LABEL = {
+  pending: "Pending",
+  paid: "Paid",
+  refunded: "Refunded",
+  failed: "Failed",
+};
 
 export default function OrderManager() {
   const [rows, setRows] = useState([]);
@@ -42,7 +73,11 @@ export default function OrderManager() {
   const [error, setError] = useState(null);
 
   const [filter, setFilter] = useState("all"); // display key | "all"
-  const [query, setQuery] = useState("");
+  // Seeded from `?q=` so the TopBar global search can hand off a term and land
+  // on a pre-filtered list. Read during the useState initializer (not a mount
+  // effect) — an effect here would be a `set-state-in-effect` lint error and
+  // would flash the unfiltered list for one frame first.
+  const [query, setQuery] = useState(useSearchParams().get("q") || "");
   const [selected, setSelected] = useState(null);
 
   // Commerce settings resolve the shipping-method key (standard/express/pickup)
@@ -51,6 +86,12 @@ export default function OrderManager() {
 
   const debounceRef = useRef(null);
   const mountedRef = useRef(false);
+  // Monotonic request token. Filter chips and the search box both refetch, and
+  // without this the SLOWER of two in-flight requests wins whenever it lands
+  // second — click "Delivered" then "Cancelled" quickly and the table can end up
+  // showing delivered orders under the Cancelled chip, with the counts and the
+  // "Showing N of M" line disagreeing with the rows. Same guard as SearchOverlay.
+  const reqSeq = useRef(0);
 
   const buildInput = useCallback(
     (offset) => {
@@ -64,6 +105,7 @@ export default function OrderManager() {
 
   const fetchOrders = useCallback(
     async ({ reset = true, offset = 0 } = {}) => {
+      const seq = ++reqSeq.current;
       if (reset) setLoading(true);
       else setLoadingMore(true);
       setError(null);
@@ -71,16 +113,24 @@ export default function OrderManager() {
         const data = await repairCall("myAppAdminListOrders", buildInput(reset ? 0 : offset), {
           isQuery: true,
         });
+        // A newer request was issued while this one was in flight — drop it
+        // rather than overwrite fresher rows with stale ones.
+        if (seq !== reqSeq.current) return;
         const mapped = (data?.items || []).map(mapAdminOrderRow);
         setRows((prev) => (reset ? mapped : [...prev, ...mapped]));
         setTotal(data?.total ?? mapped.length);
         setStatusCounts(data?.statusCounts || {});
       } catch (err) {
-        setError(err?.message || "Failed to load orders");
+        if (seq !== reqSeq.current) return;
+        setError(cleanErr(err, "Failed to load orders"));
         if (reset) setRows([]);
       } finally {
-        setLoading(false);
-        setLoadingMore(false);
+        // Only the newest request may clear the spinners, or a superseded
+        // response would blank them while the real fetch is still running.
+        if (seq === reqSeq.current) {
+          setLoading(false);
+          setLoadingMore(false);
+        }
       }
     },
     [buildInput]
@@ -135,11 +185,24 @@ export default function OrderManager() {
   }
 
   // `deliveryUserId` is only meaningful on the Prepared → With Delivery
-  // (dispatched → out_for_delivery) handoff: a numeric id assigns + emails that
-  // delivery account, `null`/undefined leaves the order unassigned (admin keeps
-  // it). It's passed through to the resolver's optional `deliveryUserId`.
-  async function applyStatus(rawNext, note, deliveryUserId) {
+  // (dispatched → out_for_delivery) handoff.
+  //
+  // THREE distinct values, and the difference matters:
+  //   undefined → key omitted, the resolver leaves the assignment untouched
+  //   null      → key sent as null, the resolver UNASSIGNS the order
+  //   number    → assigns + emails that delivery account
+  //
+  // This used to collapse null into undefined (`deliveryUserId != null`), so
+  // picking "Don't assign — I'll handle delivery" on an order that was ALREADY
+  // assigned silently kept the old assignee: the modal reported success, the
+  // drawer still showed them, and that account kept the order on its dispatch
+  // dashboard. Unassignment was simply unreachable from the console.
+  //
+  // `paymentStatus` rides the same call — the resolver tolerates a same-status
+  // "transition" as long as delivery or payment is actually changing.
+  async function applyStatus(rawNext, opts = {}) {
     if (!selected || busy) return;
+    const { reason, note, deliveryUserId, paymentStatus } = opts;
     setBusy(true);
     setActionError(null);
     try {
@@ -148,8 +211,13 @@ export default function OrderManager() {
         {
           orderId: Number(selected.id),
           status: rawNext,
+          // `reason` is emailed to the customer; `note` never is.
+          ...(reason ? { reason } : {}),
           ...(note ? { note } : {}),
-          ...(deliveryUserId != null ? { deliveryUserId: Number(deliveryUserId) } : {}),
+          ...(deliveryUserId !== undefined
+            ? { deliveryUserId: deliveryUserId === null ? null : Number(deliveryUserId) }
+            : {}),
+          ...(paymentStatus ? { paymentStatus } : {}),
         },
         { isQuery: false }
       );
@@ -160,14 +228,17 @@ export default function OrderManager() {
               ...s,
               status: display,
               rawStatus: rawNext,
-              ...(deliveryUserId != null ? { deliveryUserId: Number(deliveryUserId) } : {}),
+              ...(deliveryUserId !== undefined
+                ? { deliveryUserId: deliveryUserId === null ? null : Number(deliveryUserId) }
+                : {}),
+              ...(paymentStatus ? { payment: paymentStatus } : {}),
             }
           : s
       );
       await loadDetail(selected.id); // refresh activity log
       await fetchOrders({ reset: true }); // refresh rows + chip counts
     } catch (err) {
-      setActionError(err?.message || "Couldn't update the order status. The transition may not be allowed.");
+      setActionError(cleanErr(err, "Couldn't update the order status. The transition may not be allowed."));
     } finally {
       setBusy(false);
     }
@@ -209,7 +280,7 @@ export default function OrderManager() {
       await fetchOrders({ reset: true });
       return true;
     } catch (err) {
-      setActionError(err?.message || "Couldn't hand the order to Thunder. Please retry or contact Thunder.");
+      setActionError(cleanErr(err, "Couldn't hand the order to Thunder. Please retry or contact Thunder."));
       return false;
     } finally {
       setBusy(false);
@@ -247,7 +318,7 @@ export default function OrderManager() {
       await loadDetail(selected.id);
       await fetchOrders({ reset: true });
     } catch (err) {
-      setActionError(err?.message || "Couldn't refresh from Thunder.");
+      setActionError(cleanErr(err, "Couldn't refresh from Thunder."));
     } finally {
       setBusy(false);
     }
@@ -354,8 +425,8 @@ export default function OrderManager() {
         open={!!selected}
         onClose={() => setSelected(null)}
         width={680}
-        title={selected ? `Order ${selected.orderNumber}` : ""}
-        subtitle={selected ? `Placed ${selected.placed}` : ""}
+        title={selected ? `Order ${selected?.orderNumber}` : ""}
+        subtitle={selected ? `Placed ${selected?.placed}` : ""}
         footer={
           selected ? (
             <>
@@ -365,7 +436,7 @@ export default function OrderManager() {
               <Button
                 variant="dangerSolid"
                 onClick={() => applyStatus("cancelled")}
-                disabled={busy || !CANCELLABLE_RAW.has(selected.rawStatus)}
+                disabled={busy || !CANCELLABLE_RAW.has(selected?.rawStatus)}
               >
                 Cancel order
               </Button>
@@ -446,7 +517,7 @@ function OrderDetail({
         if (active) setDeliveryUsers(Array.isArray(data?.users) ? data.users : []);
       })
       .catch((err) => {
-        if (active) setUsersError(err?.message || "Couldn't load delivery accounts.");
+        if (active) setUsersError(cleanErr(err, "Couldn't load delivery accounts."));
       })
       .finally(() => {
         if (active) setLoadingUsers(false);
@@ -496,7 +567,10 @@ function OrderDetail({
   function confirmAssign() {
     setAssignOpen(false);
     // null selection → no deliveryUserId sent → order stays unassigned.
-    onApplyStatus("out_for_delivery", undefined, assignSelection);
+    // `assignSelection` is null for "Don't assign — I'll handle delivery".
+    // Passed through explicitly (not dropped) so that choice actually clears an
+    // existing assignment — see the three-value contract on applyStatus.
+    onApplyStatus("out_for_delivery", { deliveryUserId: assignSelection });
   }
 
   async function confirmThunder() {
@@ -829,7 +903,7 @@ function OrderDetail({
               style={{ color: order.status === "failed_delivery" ? "#9a3412" : "#991b1b" }}
             >
               {order.status === "failed_delivery"
-                ? "Delivery failed. You can re-dispatch the order to try again."
+                ? "Delivery failed. Re-dispatch to try again, or cancel the order (Cancel order, below) to close it out and return the items to stock."
                 : "This order is terminal — no further status transitions from the admin."}
             </p>
             {order.status === "failed_delivery" ? (
@@ -997,6 +1071,47 @@ function OrderDetail({
             <div className="mt-2 flex items-center justify-between gap-2">
               <span className="font-body text-[12px] text-[#6b7280]">Payment status</span>
               <StatusBadge status={order.payment} label={order.payment} dot={false} size="sm" />
+            </div>
+
+            {/* Payment status was DISPLAY-ONLY, and nothing anywhere could
+                change it. `myAppCheckout` writes "pending" on every order (no
+                real processor settles the demo gateway), the delivery resolver
+                never touches the column, and no frontend call site sent
+                `paymentStatus` — so every order in the store read "pending"
+                forever. That is wrong in the case the store most depends on:
+                Cash on Delivery. The driver collects the cash, and there was no
+                way to record that it was collected — the admin's Payment column,
+                the payment filter, and the refunded-count report all stayed
+                stuck at the checkout-time value.
+
+                The resolver already accepted and validated `paymentStatus`; the
+                control simply did not exist. Deliberately MANUAL rather than
+                auto-flipping COD to paid on delivery: whether the money actually
+                arrived is a business fact the system can't observe. Prepaid
+                orders are left alone for the same reason — with a demo gateway,
+                "pending" is the honest value. */}
+            <div className="mt-3 border-t border-[#e5e7eb] pt-3">
+              <span className="font-body text-[11px] text-[#6b7280]">Mark payment as</span>
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {PAYMENT_STATUSES.map((ps) => (
+                  <Button
+                    key={ps}
+                    size="sm"
+                    variant={order.payment === ps ? "primary" : "secondary"}
+                    disabled={busy || order.payment === ps}
+                    onClick={() =>
+                      onApplyStatus(order.rawStatus, { paymentStatus: ps })
+                    }
+                  >
+                    {PAYMENT_STATUS_LABEL[ps]}
+                  </Button>
+                ))}
+              </div>
+              {isCod && order.payment !== "paid" ? (
+                <p className="mt-2 font-body text-[11px] text-[#9a3412]">
+                  Cash on Delivery — mark as Paid once the driver has handed over the cash.
+                </p>
+              ) : null}
             </div>
           </div>
         </div>

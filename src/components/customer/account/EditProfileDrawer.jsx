@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import CountryCodePicker from "@/components/customer/contact/CountryCodePicker";
 import { DEFAULT_COUNTRY, parseE164, phoneLengthFor } from "@/lib/countryCodes";
+import useDelayedUnmount from "@/lib/useDelayedUnmount";
 
 // EDIT PERSONAL INFO drawer — lets the signed-in user update their phone
 // (with a country-code picker) and date of birth. Email stays read-only
@@ -17,28 +18,6 @@ import { DEFAULT_COUNTRY, parseE164, phoneLengthFor } from "@/lib/countryCodes";
 // duplicated dial code first, the same contract the auth forms use.
 
 const EXIT_MS = 320;
-
-function useDelayedUnmount(open, exitMs) {
-  const [render, setRender] = useState(open);
-  const [closing, setClosing] = useState(false);
-
-  useEffect(() => {
-    if (open) {
-      setRender(true);
-      setClosing(false);
-      return undefined;
-    }
-    if (!render) return undefined;
-    setClosing(true);
-    const t = setTimeout(() => {
-      setRender(false);
-      setClosing(false);
-    }, exitMs);
-    return () => clearTimeout(t);
-  }, [open, render, exitMs]);
-
-  return { render, dataState: closing ? "closing" : "open" };
-}
 
 // Strip a leading trunk-0 and any duplicated dial code, returning just the
 // national digits we measure + send.

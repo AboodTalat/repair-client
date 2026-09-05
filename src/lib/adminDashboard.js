@@ -23,18 +23,10 @@
 import { repairCall } from "@/lib/repairAuthedApi";
 import { num, priorRange, pctDelta, fetchRevenueReport } from "@/lib/adminReports";
 import { mapAdminOrderRow, statusLabel } from "@/lib/adminOrders";
+import { todayISO, daysAgoISO } from "@/lib/adminDates";
 
 const RECENT_ORDERS_LIMIT = 6;
 const LOW_STOCK_LIMIT = 6;
-
-function isoToday() {
-  return new Date().toISOString().slice(0, 10);
-}
-function isoMinus(days) {
-  const d = new Date();
-  d.setDate(d.getDate() - days);
-  return d.toISOString().slice(0, 10);
-}
 
 // Inclusive-of-the-full-end-day range input (mirrors adminReports.rangeInput).
 function rangeInput(from, to, extra = {}) {
@@ -55,20 +47,38 @@ function sumRevenue(rows) {
   return (rows || []).reduce((s, r) => s + num(r.placed_revenue), 0);
 }
 
-// The last `n` calendar-day keys ("YYYY-MM-DD"), oldest → today. Built the same
-// UTC-slice way as isoToday/isoMinus so the keys line up with the range window.
+// The last `n` calendar-day keys ("YYYY-MM-DD"), oldest → today. Built from the
+// same LOCAL-calendar helper as the range window, so these keys match both the
+// requested range and the `bucket` values the resolver groups by. Formatting
+// them in UTC instead put the whole chart a day out of step for three hours
+// every night — see lib/adminDates.js.
 function lastNDayKeys(n) {
   const keys = [];
-  for (let i = n - 1; i >= 0; i--) keys.push(isoMinus(i));
+  for (let i = n - 1; i >= 0; i--) keys.push(daysAgoISO(i));
   return keys;
 }
 
 export async function fetchDashboardData() {
-  const to = isoToday();
-  const from = isoMinus(29); // last 30 days, inclusive
+  const to = todayISO();
+  const from = daysAgoISO(29); // last 30 days, inclusive
   const prior = priorRange(from, to);
 
-  const [summary, salesCur, salesPrev, revenue, inventory, ordersRes] = await Promise.all([
+  // allSettled, NOT all.
+  //
+  // This is the console's landing page (/r3pr-console redirects here) and it
+  // fans out to six independent resolvers. Under Promise.all a single rejection
+  // took the whole page down: `repairCall` throws on
+  // `blnRequestSuccessful:false` (repairClientApi.js), DashboardView catches and
+  // renders ONLY its error box, and the five panels that answered fine are
+  // discarded. Reproduced against the running server with one bad date on the
+  // revenue call — five panels returned data, the page showed nothing.
+  //
+  // So every panel now stands or falls alone. A failed one renders its own empty
+  // state; `failures` carries the rest up so the view can say which parts are
+  // missing instead of pretending the page is complete. Only a total wipe-out
+  // (every call failed — almost always auth or the server being down) still
+  // throws, because at that point there is genuinely nothing to show.
+  const settled = await Promise.allSettled([
     repairCall("myAppDashboardSummary", {}, { isQuery: true }),
     repairCall("myAppReportSalesByPeriod", rangeInput(from, to, { groupBy: "day" }), { isQuery: true }),
     prior
@@ -78,6 +88,36 @@ export async function fetchDashboardData() {
     repairCall("myAppReportInventoryStatus", { limit: LOW_STOCK_LIMIT, offset: 0 }, { isQuery: true }),
     repairCall("myAppAdminListOrders", { limit: RECENT_ORDERS_LIMIT, offset: 0 }, { isQuery: true }),
   ]);
+
+  const PANELS = ["summary", "sales", "salesPrior", "revenue", "inventory", "orders"];
+  const LABELS = {
+    summary: "KPIs and top products",
+    sales: "sales trend",
+    salesPrior: "prior-period comparison",
+    revenue: "revenue by category",
+    inventory: "low stock",
+    orders: "recent orders",
+  };
+  const failures = [];
+  const value = {};
+  settled.forEach((r, i) => {
+    if (r.status === "fulfilled") {
+      value[PANELS[i]] = r.value;
+    } else {
+      value[PANELS[i]] = null;
+      failures.push(LABELS[PANELS[i]]);
+    }
+  });
+  if (failures.length === PANELS.length) {
+    throw new Error(settled[0]?.reason?.message || "Failed to load the dashboard");
+  }
+
+  const summary = value.summary;
+  const salesCur = value.sales;
+  const salesPrev = value.salesPrior;
+  const revenue = value.revenue;
+  const inventory = value.inventory;
+  const ordersRes = value.orders;
 
   // ── Sales: 30d total (+ prior-period delta) and the last-7-days trend ──────
   const curRows = salesCur?.rows || [];
@@ -156,5 +196,8 @@ export async function fetchDashboardData() {
     topProducts,
     lowStock,
     recentOrders,
+    // Which panels couldn't be loaded this time (empty when all six answered).
+    // The view renders this as a banner above the still-usable page.
+    failures,
   };
 }

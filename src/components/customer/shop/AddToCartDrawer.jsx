@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import Image from "next/image";
 import { repairCall } from "@/lib/repairAuthedApi";
 import { useRepairStore } from "@/lib/useRepairStore";
+import useDelayedUnmount from "@/lib/useDelayedUnmount";
 
 // Quick-add dialog triggered by the plus button on ProductCard.
 //   Mobile (Figma 7:1358 → node 12:2286): BOTTOM-ANCHORED CARD —
@@ -30,45 +31,25 @@ import { useRepairStore } from "@/lib/useRepairStore";
 //     Footer: ADD TO CART full-width, h:48, radius:4, #11191F bg, 14px Expanded Bold white.
 //     No header divider, no sticky footer with border — clean spacing.
 
-// Keep the dialog mounted while the close animation plays (same pattern as
-// FilterDrawer). `open` toggles in the parent; we hold render=true through
-// the exit window. The parent also clears `product` to null on close, so we
-// cache the last-seen product in a ref to keep rendering it during the exit.
-function useDelayedUnmount(open, exitMs) {
-  const [render, setRender] = useState(open);
-  const [closing, setClosing] = useState(false);
-
-  useEffect(() => {
-    if (open) {
-      setRender(true);
-      setClosing(false);
-      return undefined;
-    }
-    if (!render) return undefined;
-    setClosing(true);
-    const t = setTimeout(() => {
-      setRender(false);
-      setClosing(false);
-    }, exitMs);
-    return () => clearTimeout(t);
-  }, [open, render, exitMs]);
-
-  return { render, dataState: closing ? "closing" : "open" };
-}
-
 export default function AddToCartDrawer({ open, product, onClose, onAdd }) {
-  const lastProductRef = useRef(product);
-  if (product) lastProductRef.current = product;
+  // Hold the last non-null product so it keeps rendering while the drawer
+  // animates out — the parent clears `product` the moment it closes.
+  // Derived state, not a ref: a ref written and read during render is torn by
+  // concurrent rendering and StrictMode's double invoke (react-hooks/refs).
+  // Updating state during render in response to a changed prop is the
+  // documented React pattern for exactly this.
+  const [lastProduct, setLastProduct] = useState(product);
+  if (product && product !== lastProduct) setLastProduct(product);
 
   const { render, dataState } = useDelayedUnmount(open && Boolean(product), 320);
-  if (!render || !lastProductRef.current) return null;
+  if (!render || !lastProduct) return null;
 
   return (
     <DialogBody
       // Key by product id so switching products gives a fresh mount — selection
       // + fetched detail reset for free, no synchronous state-reset in the effect.
-      key={lastProductRef.current.id}
-      product={lastProductRef.current}
+      key={lastProduct.id}
+      product={lastProduct}
       onClose={onClose}
       onAdd={onAdd}
       dataState={dataState}

@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { BrandTile } from "./AccountIcons";
+import useDelayedUnmount from "@/lib/useDelayedUnmount";
 
 // DELETE CARD confirmation — Figma mobile 79:2191.
 //
@@ -25,33 +26,12 @@ import { BrandTile } from "./AccountIcons";
 
 const EXIT_MS = 320;
 
-function useDelayedUnmount(open, exitMs) {
-  const [render, setRender] = useState(open);
-  const [closing, setClosing] = useState(false);
-
-  useEffect(() => {
-    if (open) {
-      setRender(true);
-      setClosing(false);
-      return undefined;
-    }
-    if (!render) return undefined;
-    setClosing(true);
-    const t = setTimeout(() => {
-      setRender(false);
-      setClosing(false);
-    }, exitMs);
-    return () => clearTimeout(t);
-  }, [open, render, exitMs]);
-
-  return { render, dataState: closing ? "closing" : "open" };
-}
-
 export default function DeleteCardDrawer({ open, method, onClose, onConfirm }) {
   // Keep showing the last method during the exit animation — parent clears it
   // when the drawer closes (same pattern as AddToCartDrawer).
-  const lastMethodRef = useRef(method);
-  if (method) lastMethodRef.current = method;
+  // Derived state rather than a render-written ref — see AddToCartDrawer.
+  const [lastMethod, setLastMethod] = useState(method);
+  if (method && method !== lastMethod) setLastMethod(method);
 
   const { render, dataState } = useDelayedUnmount(open && Boolean(method), EXIT_MS);
 
@@ -64,10 +44,10 @@ export default function DeleteCardDrawer({ open, method, onClose, onConfirm }) {
     return () => document.removeEventListener("keydown", onKey);
   }, [open, onClose]);
 
-  if (!render || !lastMethodRef.current) return null;
+  if (!render || !lastMethod) return null;
   return (
     <DrawerBody
-      method={lastMethodRef.current}
+      method={lastMethod}
       onClose={onClose}
       onConfirm={onConfirm}
       dataState={dataState}

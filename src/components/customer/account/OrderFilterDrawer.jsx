@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { ORDER_STATUS_OPTIONS, ORDER_DATE_RANGES } from "@/lib/orders";
+import useDelayedUnmount from "@/lib/useDelayedUnmount";
 
 // Order filter dialog — mirrors the shop FilterDrawer's footprint and motion
 // so the customer surfaces feel consistent.
@@ -21,29 +22,6 @@ import { ORDER_STATUS_OPTIONS, ORDER_DATE_RANGES } from "@/lib/orders";
 const TXT_BODY = "var(--font-zalando-sans)";
 const TXT_DISPLAY = "var(--font-zalando-expanded)";
 const INK = "#11191F";
-
-// Keeps the drawer mounted while the exit animation plays.
-function useDelayedUnmount(open, exitMs) {
-  const [render, setRender] = useState(open);
-  const [closing, setClosing] = useState(false);
-
-  useEffect(() => {
-    if (open) {
-      setRender(true);
-      setClosing(false);
-      return undefined;
-    }
-    if (!render) return undefined;
-    setClosing(true);
-    const t = setTimeout(() => {
-      setRender(false);
-      setClosing(false);
-    }, exitMs);
-    return () => clearTimeout(t);
-  }, [open, render, exitMs]);
-
-  return { render, dataState: closing ? "closing" : "open" };
-}
 
 export default function OrderFilterDrawer(props) {
   const { render, dataState } = useDelayedUnmount(props.open, 320);

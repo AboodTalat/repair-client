@@ -24,7 +24,11 @@ import { repairCall } from "@/lib/repairAuthedApi";
 
 const PREFIX = "/r3pr-console";
 
-const SECTIONS = [
+// EXPORTED and load-bearing: `lib/adminNav.js` flattens this into the TopBar
+// global search's "Pages & settings" index, so a route added here becomes
+// searchable automatically. Keep it the single source of admin destinations —
+// don't fork a second list for search.
+export const SECTIONS = [
   {
     title: "Overview",
     items: [{ href: `${PREFIX}/dashboard`, label: "Dashboard", icon: IconDashboard }],
@@ -34,7 +38,7 @@ const SECTIONS = [
     items: [
       { href: `${PREFIX}/categories`, label: "Categories", icon: IconFolder },
       { href: `${PREFIX}/products`, label: "Products", icon: IconBox },
-      { href: `${PREFIX}/taxonomies`, label: "Taxonomies", icon: IconTag },
+      { href: `${PREFIX}/taxonomies`, label: "Materials", icon: IconTag },
       { href: `${PREFIX}/discounts`, label: "Discounts", icon: IconTag },
       { href: `${PREFIX}/promo-codes`, label: "Promo Codes", icon: IconPercent },
     ],
@@ -90,7 +94,7 @@ export default function SideNav({ onNavigate, counts }) {
       <div className="flex items-center gap-3 px-6 py-6">
         <div className="grid size-9 place-items-center rounded-[2px] bg-white">
           <Image
-            src="/home/logo-re.png"
+            src="/home/logo-re-v2.png"
             alt="Repair"
             width={20}
             height={20}

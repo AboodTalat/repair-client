@@ -30,6 +30,7 @@ import {
   selectCheckoutInfo,
   selectPaymentCards,
 } from "@/lib/useRepairStore";
+import useStoreHydrated from "@/lib/useStoreHydrated";
 
 // /checkout/payment — Payment step (step 3 of cart → details → payment).
 // Matches Figma mobile 84:6733 + desktop 119:5877.
@@ -766,13 +767,7 @@ export default function PaymentPageClient() {
   // Gate on store rehydration (skipHydration) — without this, a logged-in user
   // who refreshes /checkout/payment would read isLoggedIn=false on the first
   // frame and get bounced to /cart before the persisted auth state loads.
-  const [hydrated, setHydrated] = useState(() => useRepairStore.persist.hasHydrated());
-  useEffect(() => {
-    if (hydrated) return undefined;
-    const unsub = useRepairStore.persist.onFinishHydration(() => setHydrated(true));
-    if (useRepairStore.persist.hasHydrated()) setHydrated(true);
-    return unsub;
-  }, [hydrated]);
+  const hydrated = useStoreHydrated();
 
   // Checkout requires an account (guests register on the details step). Only
   // evaluate AFTER hydration so a real session isn't misread as logged-out.
@@ -845,8 +840,16 @@ export default function PaymentPageClient() {
     }
     for (const m of enabledPayments) {
       const k = String(m.key).toLowerCase();
-      if (k === "applepay" || k === "googlepay") {
-        list.push({ id: `method:${k}`, kind: k, paymentKey: m.key, tileKey: k, title: m.name, subtitle: "Quick payment" });
+      // Alias-tolerant, matching isCardKey above and the tile map below — both of
+      // which already accept more than one spelling. This branch did NOT, so a
+      // `gpay` row matched neither arm and was dropped from the options list
+      // entirely: the customer never saw Google Pay, and the `gpay` case in
+      // PaymentMethodTile was unreachable because nothing could ever select it.
+      // `paymentKey` stays the RAW m.key because myAppCheckout matches the DB
+      // value; only the display/kind is canonicalised.
+      const wallet = k === "applepay" ? "applepay" : k === "googlepay" || k === "gpay" ? "googlepay" : null;
+      if (wallet) {
+        list.push({ id: `method:${wallet}`, kind: wallet, paymentKey: m.key, tileKey: wallet, title: m.name, subtitle: "Quick payment" });
       } else if (k === "cod") {
         list.push({ id: "method:cod", kind: "cod", paymentKey: m.key, tileKey: "cod", title: m.name, subtitle: "Pay when you receive" });
       }

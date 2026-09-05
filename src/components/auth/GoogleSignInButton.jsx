@@ -76,10 +76,10 @@ export default function GoogleSignInButton({ children }) {
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    if (!CLIENT_ID) {
-      setError("Google sign-in is not configured.");
-      return undefined;
-    }
+    // No setState here — a missing CLIENT_ID is a build-time constant, so the
+    // message is derived at render (see `shownError` below) rather than pushed
+    // into state by an effect that can only ever run once with the same result.
+    if (!CLIENT_ID) return undefined;
 
     let cancelled = false;
     (async () => {
@@ -173,18 +173,23 @@ export default function GoogleSignInButton({ children }) {
     tokenClient.requestAccessToken({ prompt: "consent" });
   }
 
+  // A missing CLIENT_ID is a constant, so it is derived here rather than pushed
+  // into `error` state by an effect. A runtime error still wins — it is the more
+  // specific, more recent thing that went wrong.
+  const shownError = error || (CLIENT_ID ? "" : "Google sign-in is not configured.");
+
   return (
     <div className="flex w-full flex-col gap-3">
       <GoogleButton onClick={handleClick} disabled={busy || !ready} aria-busy={busy}>
         {busy ? "Signing in…" : children}
       </GoogleButton>
-      {error ? (
+      {shownError ? (
         <p
           role="alert"
           aria-live="polite"
           className="font-display text-[12px] uppercase tracking-[0.3px] text-[#A50013]"
         >
-          {error}
+          {shownError}
         </p>
       ) : null}
     </div>

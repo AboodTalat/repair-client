@@ -134,17 +134,38 @@ export default function DashboardView() {
       ) : error ? (
         <ErrorBox message={error} onRetry={reload} />
       ) : (
-        <DashboardBody data={data} />
+        <DashboardBody data={data} onRetry={reload} />
       )}
     </>
   );
 }
 
-function DashboardBody({ data }) {
-  const { kpis, sales, donut, topProducts, lowStock, recentOrders } = data;
+// Some panels loaded, some didn't. Naming the missing ones beats silently
+// rendering them empty — an empty "Recent orders" that actually failed to load
+// reads as "no orders", which is a different and much worse message.
+function PartialNotice({ failures, onRetry }) {
+  if (!failures || failures.length === 0) return null;
+  return (
+    <div className="mb-4 flex flex-wrap items-center gap-3 rounded-[4px] border border-[#fde68a] bg-[#fffbeb] px-4 py-3">
+      <span className="grid size-4 shrink-0 place-items-center text-[#b45309]">
+        <IconAlert />
+      </span>
+      <p className="flex-1 font-body text-[12px] text-[#92400e]">
+        Couldn&apos;t load {failures.join(", ")}. Everything else on this page is up to date.
+      </p>
+      <Button variant="secondary" size="sm" onClick={onRetry}>
+        Retry
+      </Button>
+    </div>
+  );
+}
+
+function DashboardBody({ data, onRetry }) {
+  const { kpis, sales, donut, topProducts, lowStock, recentOrders, failures } = data;
 
   return (
     <>
+      <PartialNotice failures={failures} onRetry={onRetry} />
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 sm:gap-4 lg:grid-cols-4">
         <KpiCard
           label="Total Sales"
@@ -241,9 +262,18 @@ function DashboardBody({ data }) {
 
         <section className="flex min-w-0 flex-col gap-3 sm:gap-4">
           <div className="rounded-[4px] border border-[#e5e7eb] bg-white p-4 sm:p-5">
-            <h2 className="mb-4 font-display text-[13px] font-bold uppercase tracking-[1.4px] text-[#11191f] sm:text-[14px]">
-              Top-selling products
-            </h2>
+            {/* Period label is load-bearing: this list comes from
+                myAppDashboardSummary, which has NO date filter, while every
+                other panel here is 30-day scoped. Unlabelled, it read as a
+                30-day ranking. */}
+            <div className="mb-4">
+              <h2 className="font-display text-[13px] font-bold uppercase tracking-[1.4px] text-[#11191f] sm:text-[14px]">
+                Top-selling products
+              </h2>
+              <p className="font-body text-[12px] text-[#6b7280]">
+                All-time units sold (fulfilled orders).
+              </p>
+            </div>
             {topProducts.length ? (
               <ul className="flex flex-col gap-3">
                 {topProducts.map((p, i) => (

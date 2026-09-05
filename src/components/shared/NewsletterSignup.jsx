@@ -32,6 +32,12 @@ import { repairCall } from "@/lib/repairAuthedApi";
 
 // Same shape the auth forms validate against (SignUpForm / RequestPasswordResetForm).
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+// Mirrors `EMAIL_MAX` in resolvers/newsletter.ts, the width of the
+// `newsletter_subscribers.email` column. It has to be checked HERE too: this
+// form rewrites every server failure as fixed copy, so a rule only the server
+// enforces reaches the visitor as an unexplained error — a retry prompt for a
+// condition retrying can never fix. Same coupling as ContactForm/contact.ts.
+const EMAIL_MAX = 150;
 
 const TONE = {
   light: {
@@ -86,6 +92,11 @@ export default function NewsletterSignup({ tone = "light", source = "footer" }) 
     if (submitting) return;
 
     const value = email.trim().toLowerCase();
+    if (value.length > EMAIL_MAX) {
+      setStatus("error");
+      setMessage("That email address is too long.");
+      return;
+    }
     if (!EMAIL_RE.test(value)) {
       setStatus("error");
       setMessage("Please enter a valid email address.");
@@ -131,6 +142,7 @@ export default function NewsletterSignup({ tone = "light", source = "footer" }) 
           }}
           placeholder="Enter your email"
           aria-label="Email"
+          maxLength={EMAIL_MAX}
           autoComplete="email"
           disabled={submitting}
           className={t.input}

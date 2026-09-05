@@ -17,28 +17,29 @@ const PENDING_GOOGLE_SIGNUP_KEY = "pendingGoogleSignup";
 
 export default function CompleteProfileForm() {
   const router = useRouter();
-  const [pending, setPending] = useState(null);
+  // Read the stashed signup in a LAZY INITIALISER, not an effect. sessionStorage
+  // is available synchronously on the client, so there is nothing to wait for —
+  // and setting it from an effect rendered one pass with `pending: null`, which
+  // is the same state as "no pending signup". The effect below then only does
+  // the genuinely effectful part: navigating away.
+  const [pending] = useState(() => {
+    if (typeof window === "undefined") return null;
+    try {
+      const raw = window.sessionStorage.getItem(PENDING_GOOGLE_SIGNUP_KEY);
+      if (!raw) return null;
+      const data = JSON.parse(raw);
+      return data?.signupToken ? data : null;
+    } catch {
+      return null;
+    }
+  });
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
-    try {
-      const raw = window.sessionStorage.getItem(PENDING_GOOGLE_SIGNUP_KEY);
-      if (!raw) {
-        // No pending signup — user shouldn't be here. Send them back to sign-up.
-        router.replace("/sign-up");
-        return;
-      }
-      const data = JSON.parse(raw);
-      if (!data?.signupToken) {
-        router.replace("/sign-up");
-        return;
-      }
-      setPending(data);
-    } catch {
-      router.replace("/sign-up");
-    }
-  }, [router]);
+    // No pending signup — the user shouldn't be here.
+    if (!pending) router.replace("/sign-up");
+  }, [pending, router]);
 
   async function onSubmit(e) {
     e.preventDefault();

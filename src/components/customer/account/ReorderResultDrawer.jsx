@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { repairCall } from "@/lib/repairAuthedApi";
+import useDelayedUnmount from "@/lib/useDelayedUnmount";
 
 // Shown after "Buy Again" when some of the order's items are out of stock.
 // Lists each sold-out item with a "Notify me" button that subscribes the
@@ -14,28 +15,6 @@ import { repairCall } from "@/lib/repairAuthedApi";
 // a local useDelayedUnmount, and Escape-to-close.
 
 const EXIT_MS = 320;
-
-function useDelayedUnmount(open, exitMs) {
-  const [render, setRender] = useState(open);
-  const [closing, setClosing] = useState(false);
-
-  useEffect(() => {
-    if (open) {
-      setRender(true);
-      setClosing(false);
-      return undefined;
-    }
-    if (!render) return undefined;
-    setClosing(true);
-    const t = setTimeout(() => {
-      setRender(false);
-      setClosing(false);
-    }, exitMs);
-    return () => clearTimeout(t);
-  }, [open, render, exitMs]);
-
-  return { render, dataState: closing ? "closing" : "open" };
-}
 
 export default function ReorderResultDrawer({ open, items = [], addedCount = 0, onClose, onGoToCart }) {
   const { render, dataState } = useDelayedUnmount(open, EXIT_MS);

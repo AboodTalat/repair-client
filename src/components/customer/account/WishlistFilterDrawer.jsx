@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { WISHLIST_TYPE_OPTIONS, WISHLIST_PRICE_RANGES } from "@/lib/mockWishlist";
+import useDelayedUnmount from "@/lib/useDelayedUnmount";
 
 // Wishlist filter dialog — mirrors customer/account/OrderFilterDrawer's footprint,
 // motion, and chip primitives so the customer surfaces feel consistent. The two
@@ -15,28 +16,6 @@ import { WISHLIST_TYPE_OPTIONS, WISHLIST_PRICE_RANGES } from "@/lib/mockWishlist
 const TXT_BODY = "var(--font-zalando-sans)";
 const TXT_DISPLAY = "var(--font-zalando-expanded)";
 const INK = "#11191F";
-
-function useDelayedUnmount(open, exitMs) {
-  const [render, setRender] = useState(open);
-  const [closing, setClosing] = useState(false);
-
-  useEffect(() => {
-    if (open) {
-      setRender(true);
-      setClosing(false);
-      return undefined;
-    }
-    if (!render) return undefined;
-    setClosing(true);
-    const t = setTimeout(() => {
-      setRender(false);
-      setClosing(false);
-    }, exitMs);
-    return () => clearTimeout(t);
-  }, [open, render, exitMs]);
-
-  return { render, dataState: closing ? "closing" : "open" };
-}
 
 export default function WishlistFilterDrawer(props) {
   const { render, dataState } = useDelayedUnmount(props.open, 320);
